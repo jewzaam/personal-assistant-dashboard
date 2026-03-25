@@ -96,6 +96,24 @@ Pull tasks from external systems:
 - Could show: task count badge, quick-add, priority alerts
 - User did cited-research on cross-platform pitfalls — reference that
 
+### Cross-Cutting: Proactive Feedback
+
+The assistant should not just display state — it should actively nudge the user. Two modes:
+
+**Real-time feedback:**
+- Detect when the user is working on something that isn't their top priority
+- Requires awareness of current activity (Claude Code hooks) and the priority stack
+- Lightweight interrupts, not blocking — a notification or terminal message
+
+**Retrospective insights (dashboard):**
+- Analyze meetings attended and assess whether attendance was necessary
+- Signals: did the user speak? Were action items assigned to them? Could the content have been consumed async via transcript?
+- Not a rigid RACI check — more like pattern detection that improves over time based on user feedback
+- Could surface: "You attended 3 meetings this week where transcript review would have sufficed"
+- Requires meeting transcript analysis + participation data from GWS/Meet APIs
+
+The retrospective side is judgment-heavy. The agent would need to learn what "necessary attendance" looks like for this specific user over time — initial heuristics refined by explicit feedback ("no, that one was important because...").
+
 ## Streaming Transcription PoC
 
 Not necessarily part of the initial feature set, but important to investigate:
