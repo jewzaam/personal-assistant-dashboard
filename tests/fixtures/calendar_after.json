@@ -1,0 +1,53 @@
+[
+  {
+    "id": "event-001",
+    "summary": "Team Standup",
+    "start": "2026-03-30T09:30:00-04:00",
+    "end": "2026-03-30T10:00:00-04:00",
+    "all_day": false,
+    "status": "confirmed",
+    "organizer_email": "boss@example.com",
+    "organizer_self": false,
+    "attendees": [
+      {"email": "boss@example.com", "response_status": "accepted", "self": false},
+      {"email": "me@example.com", "response_status": "accepted", "self": true}
+    ],
+    "hangout_link": "https://meet.google.com/abc-defg-hij",
+    "event_type": "default",
+    "recurring_event_id": null
+  },
+  {
+    "id": "event-002",
+    "summary": "Sprint Review",
+    "start": "2026-03-30T14:00:00-04:00",
+    "end": "2026-03-30T15:00:00-04:00",
+    "all_day": false,
+    "status": "confirmed",
+    "organizer_email": "me@example.com",
+    "organizer_self": true,
+    "attendees": [
+      {"email": "me@example.com", "response_status": "accepted", "self": true},
+      {"email": "dev1@example.com", "response_status": "accepted", "self": false},
+      {"email": "dev2@example.com", "response_status": "needsAction", "self": false}
+    ],
+    "hangout_link": "https://meet.google.com/xyz-uvwx-rst",
+    "event_type": "default",
+    "recurring_event_id": null
+  },
+  {
+    "id": "event-new",
+    "summary": "New Planning Session",
+    "start": "2026-03-31T10:00:00-04:00",
+    "end": "2026-03-31T11:00:00-04:00",
+    "all_day": false,
+    "status": "confirmed",
+    "organizer_email": "pm@example.com",
+    "organizer_self": false,
+    "attendees": [
+      {"email": "me@example.com", "response_status": "accepted", "self": true}
+    ],
+    "hangout_link": null,
+    "event_type": "default",
+    "recurring_event_id": null
+  }
+]
