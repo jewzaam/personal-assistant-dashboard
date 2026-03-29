@@ -119,10 +119,21 @@ def _cmd_gui(args: argparse.Namespace) -> None:
         except Exception:
             pass
 
-    from personal_assistant.controller import AppController
+    import tkinter as tk
+    from personal_assistant.dashboard import Dashboard
 
-    app = AppController(debug=args.debug)
-    app.run()
+    state_path = getattr(args, "state_path", state_repo.DEFAULT_STATE_PATH)
+
+    root = tk.Tk()
+    root.withdraw()
+
+    dashboard = Dashboard(root, state_path=state_path, on_quit=root.quit)
+    dashboard.show()
+
+    # Auto-refresh on launch
+    root.after(100, dashboard.refresh)
+
+    root.mainloop()
 
 
 def main() -> None:
@@ -218,7 +229,8 @@ def main() -> None:
     analyze_cal.set_defaults(func=_cmd_analyze_calendar)
 
     # --- gui ---
-    gui_parser = subparsers.add_parser("gui", help="launch the GUI")
+    gui_parser = subparsers.add_parser("gui", help="launch the dashboard")
+    _add_repo_path_arg(gui_parser)
     gui_parser.set_defaults(func=_cmd_gui)
 
     # --- parse and dispatch ---
