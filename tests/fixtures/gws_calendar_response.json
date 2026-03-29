@@ -1,0 +1,47 @@
+{
+  "accessRole": "owner",
+  "defaultReminders": [],
+  "items": [
+    {
+      "id": "event-001",
+      "summary": "Team Standup",
+      "start": {"dateTime": "2026-03-30T09:00:00-04:00", "timeZone": "America/New_York"},
+      "end": {"dateTime": "2026-03-30T09:30:00-04:00", "timeZone": "America/New_York"},
+      "status": "confirmed",
+      "organizer": {"email": "boss@example.com"},
+      "attendees": [
+        {"email": "boss@example.com", "responseStatus": "accepted"},
+        {"email": "me@example.com", "responseStatus": "accepted", "self": true}
+      ],
+      "hangoutLink": "https://meet.google.com/abc-defg-hij",
+      "eventType": "default"
+    },
+    {
+      "id": "event-002",
+      "summary": "Sprint Review",
+      "start": {"dateTime": "2026-03-30T14:00:00-04:00", "timeZone": "America/New_York"},
+      "end": {"dateTime": "2026-03-30T15:00:00-04:00", "timeZone": "America/New_York"},
+      "status": "confirmed",
+      "organizer": {"email": "me@example.com", "self": true},
+      "attendees": [
+        {"email": "me@example.com", "responseStatus": "accepted", "self": true},
+        {"email": "dev1@example.com", "responseStatus": "accepted"},
+        {"email": "dev2@example.com", "responseStatus": "needsAction"}
+      ],
+      "hangoutLink": "https://meet.google.com/xyz-uvwx-rst",
+      "eventType": "default"
+    },
+    {
+      "id": "event-003",
+      "summary": "Company Holiday",
+      "start": {"date": "2026-04-01"},
+      "end": {"date": "2026-04-02"},
+      "status": "confirmed",
+      "organizer": {"email": "calendar@example.com"},
+      "eventType": "default"
+    }
+  ],
+  "kind": "calendar#events",
+  "summary": "Test Calendar",
+  "timeZone": "America/New_York"
+}
