@@ -11,6 +11,8 @@ from personal_assistant.collectors.calendar_collector import (
     CalendarCollectorError,
     collect_all_calendars,
     collect_events,
+    format_calendar_list,
+    list_available_calendars,
     _normalize_event,
     _output_path,
 )
@@ -189,3 +191,96 @@ def test_output_path_primary(tmp_path: Path) -> None:
 def test_output_path_shared(tmp_path: Path) -> None:
     path = _output_path("eng@group.calendar.google.com", repo_path=tmp_path)
     assert "eng_at_group_calendar_google_com" in path.name
+
+
+def test_normalize_event_new_fields() -> None:
+    raw = {
+        "id": "x",
+        "start": {"dateTime": "2026-03-30T09:00:00-04:00"},
+        "end": {"dateTime": "2026-03-30T10:00:00-04:00"},
+        "description": "Test description",
+        "location": "Room 42",
+        "htmlLink": "https://calendar.google.com/event/x",
+        "attachments": [
+            {
+                "title": "Doc",
+                "fileUrl": "https://docs.google.com/d/123",
+            }
+        ],
+    }
+    normalized = _normalize_event(raw)
+    assert normalized["description"] == "Test description"
+    assert normalized["location"] == "Room 42"
+    assert normalized["html_link"] == "https://calendar.google.com/event/x"
+    assert len(normalized["attachments"]) == 1
+    assert normalized["attachments"][0]["title"] == "Doc"
+
+
+def test_list_available_calendars() -> None:
+    page_json = json.dumps(
+        {
+            "items": [
+                {
+                    "id": "primary@test.com",
+                    "summary": "Main",
+                    "accessRole": "owner",
+                    "primary": True,
+                },
+                {
+                    "id": "shared@group.calendar.google.com",
+                    "summary": "Shared",
+                    "accessRole": "reader",
+                },
+            ]
+        }
+    )
+    with patch(
+        "personal_assistant.collectors.calendar_collector.subprocess.run"
+    ) as mock_run:
+        from unittest.mock import MagicMock
+
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = page_json
+        result.stderr = ""
+        mock_run.return_value = result
+        calendars = list_available_calendars()
+
+    assert len(calendars) == 2
+    assert calendars[0]["id"] == "primary@test.com"
+    assert calendars[0]["primary"] == "yes"
+    assert calendars[1]["primary"] == "no"
+
+
+def test_list_available_calendars_failure() -> None:
+    with patch(
+        "personal_assistant.collectors.calendar_collector.subprocess.run"
+    ) as mock_run:
+        from unittest.mock import MagicMock
+
+        result = MagicMock()
+        result.returncode = 1
+        result.stdout = ""
+        result.stderr = "auth error"
+        mock_run.return_value = result
+
+        with pytest.raises(CalendarCollectorError):
+            list_available_calendars()
+
+
+def test_format_calendar_list_empty() -> None:
+    assert "No calendars" in format_calendar_list([])
+
+
+def test_format_calendar_list() -> None:
+    calendars = [
+        {
+            "id": "x@test.com",
+            "summary": "Test",
+            "access_role": "owner",
+            "primary": "yes",
+        }
+    ]
+    output = format_calendar_list(calendars)
+    assert "Test" in output
+    assert "x@test.com" in output

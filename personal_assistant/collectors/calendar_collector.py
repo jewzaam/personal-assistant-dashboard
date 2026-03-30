@@ -218,8 +218,18 @@ def _normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
             for a in attendees
         ],
         "hangout_link": raw.get("hangoutLink"),
+        "html_link": raw.get("htmlLink"),
         "event_type": raw.get("eventType", "default"),
         "recurring_event_id": raw.get("recurringEventId"),
+        "description": raw.get("description", ""),
+        "location": raw.get("location", ""),
+        "attachments": [
+            {
+                "title": att.get("title", ""),
+                "url": att.get("fileUrl", ""),
+            }
+            for att in raw.get("attachments", [])
+        ],
     }
 
 

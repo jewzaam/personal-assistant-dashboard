@@ -130,8 +130,9 @@ def _cmd_gui(args: argparse.Namespace) -> None:
     dashboard = Dashboard(root, state_path=state_path, on_quit=root.quit)
     dashboard.show()
 
-    # Auto-refresh on launch
+    # Auto-refresh and scope check on launch
     root.after(100, dashboard.refresh)
+    root.after(200, dashboard._check_scopes)
 
     root.mainloop()
 
