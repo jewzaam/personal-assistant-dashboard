@@ -39,3 +39,12 @@ warn_unused_configs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+omit = [
+    "personal_assistant/dashboard.py",
+    "personal_assistant/config.py",
+]
+
+[tool.coverage.report]
+fail_under = 80

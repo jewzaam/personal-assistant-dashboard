@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 import threading
 import tkinter as tk
 from datetime import date, datetime, timedelta
@@ -30,21 +31,23 @@ from personal_assistant.state_repo import DEFAULT_STATE_PATH
 
 logger = logging.getLogger(__name__)
 
-# Colors
-COLOR_CONFLICT = "#e06c75"
-COLOR_CONFLICT_BG = "#3d2020"
-COLOR_NORMAL = "#61afef"
-COLOR_NORMAL_BG = "#1e2a3a"
-COLOR_ONEONE = "#d19a66"
-COLOR_ONEONE_BG = "#2e2418"
+# Colors — research-backed palette (WCAG compliant, colorblind-safe)
+# See ~/source/cited-research/research/dark-theme-calendar-ui/
+COLOR_CONFLICT = "#B85450"  # muted red — conflict category
+COLOR_NORMAL = "#357E63"  # teal green — regular meetings
+COLOR_ONEONE = "#4272A4"  # steel blue — 1:1s
+COLOR_EVENT_TEXT = "#FFFFFF"  # white text on event blocks
+COLOR_EVENT_TEXT_SECONDARY = "#C0C0C0"  # secondary text (legend, etc.)
 COLOR_CHANGE_NEW = "#98c379"
 COLOR_CHANGE_CANCELLED = "#e5c07b"
 COLOR_CHANGE_MOVED = "#61afef"
 COLOR_SECTION_HEADER = "#c678dd"
-COLOR_GRID_LINE = "#2a2a2a"
-COLOR_HOUR_TEXT = "#5c6370"
-COLOR_NOW_LINE = "#e06c75"
+COLOR_GRID_LINE = "#5A5A5A"  # hour lines — subtle orientation aid
+COLOR_GRID_LINE_HALF = "#3F3F3F"  # half-hour lines
+COLOR_HOUR_TEXT = "#B0B0B0"  # hour labels — AAA compliant
+COLOR_NOW_LINE = "#FF3B30"  # current time indicator
 COLOR_NAV_BTN = "#4e4e4e"
+COLOR_BORDER_TENTATIVE = "#FFFFFF"  # white border for tentative
 
 # Layout
 HOUR_HEIGHT = 60
@@ -52,7 +55,7 @@ MIN_BLOCK_HEIGHT = 22  # Minimum pixels for a readable event block
 TIME_LABEL_WIDTH = 50
 EVENT_LEFT_MARGIN = 55
 EVENT_RIGHT_MARGIN = 15
-WORK_DAY_START = 7
+WORK_DAY_START = 6
 WORK_DAY_END = 18
 
 
@@ -79,8 +82,16 @@ class Dashboard:
         self._date_var = tk.StringVar()
         self._current_date: date = date.today()
         self._all_events: list[dict[str, Any]] = []
+        self._canvas_event_map: dict[str, dict[str, Any]] = {}
         self._all_conflicts: list[Any] = []
         self._all_changes: list[Any] = []
+        self._collected_until: date | None = None
+        self._context_menu: tk.Menu | None = None
+        self._menu_timer: str | None = None
+        self._tooltip: tk.Toplevel | None = None
+        self._tooltip_tag: str | None = None
+        self._tooltip_timer: str | None = None
+        self._tooltip_pending_pos: tuple[int, int] = (0, 0)
 
     def show(self) -> None:
         if self._window and self._window.winfo_exists():
@@ -104,7 +115,7 @@ class Dashboard:
     def _build(self) -> None:
         self._window = tk.Toplevel(self._root)
         self._window.title("PA — Calendar Dashboard")
-        self._window.geometry("900x700")
+        self._window.geometry("900x820")
         self._window.configure(bg=BG_WINDOW)
         self._window.protocol("WM_DELETE_WINDOW", self._on_quit)
         self._window.minsize(width=600, height=400)
@@ -139,7 +150,8 @@ class Dashboard:
             bg=BG_WINDOW,
             fg=FG_ACCENT,
             font=FONT_HEADING,
-            padx=12,
+            width=30,
+            anchor=tk.W,
         )
         self._date_label.pack(side=tk.LEFT)
         self._date_label.bind("<Button-1>", lambda e: self._go_today())
@@ -183,6 +195,18 @@ class Dashboard:
             cursor="hand2",
             padx=12,
         ).pack(side=tk.RIGHT)
+
+        # Scope status indicator (green/red dot)
+        self._scope_indicator = tk.Label(
+            top_bar,
+            text="\u25cf",
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=FONT_BODY,
+            cursor="hand2",
+        )
+        self._scope_indicator.pack(side=tk.RIGHT, padx=(0, 8))
+        self._scope_indicator.bind("<Button-1>", lambda e: self._show_scope_details())
 
         # Legend
         # (legend moved to bottom bar)
@@ -234,6 +258,12 @@ class Dashboard:
         self._canvas.bind("<Button-4>", self._on_scroll)
         self._canvas.bind("<Button-5>", self._on_scroll)
 
+        # Right-click context menu
+        self._canvas.bind("<Button-3>", self._on_right_click)
+        self._canvas.bind("<Button-1>", self._on_left_click)
+        self._canvas.bind("<Motion>", self._on_hover)
+        self._canvas.bind("<Leave>", self._hide_tooltip)
+
         # Bottom bar: legend + status
         bottom = tk.Frame(main, bg=BG_WINDOW)
         bottom.pack(fill=tk.X, pady=(PAD, 0))
@@ -242,9 +272,9 @@ class Dashboard:
         legend = tk.Frame(bottom, bg=BG_WINDOW)
         legend.pack(side=tk.LEFT)
         for label_text, color in [
-            ("conflict", COLOR_CONFLICT),
-            ("1:1", COLOR_ONEONE),
             ("meeting", COLOR_NORMAL),
+            ("1:1", COLOR_ONEONE),
+            ("conflict", COLOR_CONFLICT),
         ]:
             swatch = tk.Frame(legend, bg=color, width=10, height=10)
             swatch.pack(side=tk.LEFT, padx=(0, 2))
@@ -256,18 +286,6 @@ class Dashboard:
                 fg=FG_DIM,
                 font=FONT_BODY,
             ).pack(side=tk.LEFT, padx=(0, 8))
-
-        tk.Label(
-            legend,
-            text=(
-                "\u2501\u2501 accepted   - - tentative"
-                "   no border = no response"
-                "   (2/5) = attendees"
-            ),
-            bg=BG_WINDOW,
-            fg=FG_DIM,
-            font=FONT_BODY,
-        ).pack(side=tk.LEFT, padx=(8, 0))
 
         # Status (right side)
         tk.Label(
@@ -283,7 +301,104 @@ class Dashboard:
         self._window.bind("<Left>", lambda e: self._prev_day())
         self._window.bind("<Right>", lambda e: self._next_day())
 
+        # Redraw on window resize
+        self._resize_timer: str | None = None
+        self._canvas.bind("<Configure>", self._on_canvas_resize)
+
         self._update_date_label()
+
+    def _check_scopes(self) -> None:
+        """Check GWS scopes in background and update indicator."""
+        thread = threading.Thread(
+            target=self._do_check_scopes,
+            daemon=True,
+            name="scope-check",
+        )
+        thread.start()
+
+    def _do_check_scopes(self) -> None:
+        from personal_assistant.gws_auth import check_scopes
+
+        status = check_scopes()
+        if status.all_required_met:
+            color = "#98c379"  # green
+        else:
+            color = COLOR_CONFLICT  # red
+
+        self._root.after(0, self._scope_indicator.configure, {"fg": color})
+        self._scope_status = status
+
+    def _show_scope_details(self) -> None:
+        """Show scope status in a popup."""
+        self._dismiss_context_menu()
+        status = getattr(self, "_scope_status", None)
+        if not status:
+            return
+
+        from personal_assistant.gws_auth import check_scopes
+
+        if status is None:
+            status = check_scopes()
+
+        lines = [status.summary, ""]
+
+        # Show what's granted
+        oauth_granted = [s for s in status.granted_scopes if s.startswith("https://")]
+        if oauth_granted:
+            lines.append("Granted scopes:")
+            for scope in sorted(oauth_granted):
+                lines.append(f"  \u2713 {scope}")
+            lines.append("")
+
+        # Show what's missing
+        if status.missing_required:
+            lines.append("Missing required scopes:")
+            for scope, label in status.missing_required.items():
+                lines.append(f"  \u2717 {label}: {scope}")
+            lines.append("")
+            lines.append("To fix, logout first then re-login:")
+            lines.append("  gws auth logout")
+            lines.append(f"  {status.reauth_command}")
+            lines.append("")
+            lines.append(
+                "Logout clears the cached token so the new" " scopes take effect."
+            )
+
+        if status.missing_optional:
+            lines.append("")
+            lines.append("Missing optional scopes:")
+            for scope, label in status.missing_optional.items():
+                lines.append(f"  - {label}: {scope}")
+
+        # Simple toplevel popup
+        popup = tk.Toplevel(self._root)
+        popup.title("GWS Scope Status")
+        popup.configure(bg=BG_WINDOW)
+        popup.geometry("700x400")
+        frame = tk.Frame(popup, bg=BG_OUTPUT)
+        frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        text = tk.Text(
+            frame,
+            bg=BG_OUTPUT,
+            fg=FG_TEXT,
+            font=FONT_BODY,
+            wrap=tk.WORD,
+            padx=8,
+            pady=8,
+            highlightthickness=0,
+        )
+        scrollbar = tk.Scrollbar(frame, command=text.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        text.configure(yscrollcommand=scrollbar.set)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        text.insert("1.0", "\n".join(lines))
+        text.configure(state=tk.DISABLED)
+
+    def _on_canvas_resize(self, event: Any) -> None:
+        """Debounced redraw on canvas resize."""
+        if self._resize_timer:
+            self._root.after_cancel(self._resize_timer)
+        self._resize_timer = self._root.after(150, self._render_current_day)
 
     def _on_scroll(self, event: Any) -> None:
         if not self._canvas:
@@ -293,20 +408,531 @@ class Dashboard:
         elif event.num == 5 or getattr(event, "delta", 0) < 0:
             self._canvas.yview_scroll(3, "units")
 
+    def _on_hover(self, event: Any) -> None:
+        """Schedule tooltip after a delay on hover."""
+        if not self._canvas:
+            return
+        item = self._canvas.find_closest(
+            self._canvas.canvasx(event.x),
+            self._canvas.canvasy(event.y),
+        )
+        if not item:
+            self._hide_tooltip()
+            return
+
+        tags = self._canvas.gettags(item[0])
+        evt_tag = next((t for t in tags if t.startswith("evt_")), None)
+        if not evt_tag or evt_tag not in self._canvas_event_map:
+            self._hide_tooltip()
+            return
+
+        # Already showing tooltip for this event — just move it
+        if evt_tag == self._tooltip_tag and self._tooltip:
+            self._tooltip.geometry(f"+{event.x_root + 12}+{event.y_root + 12}")
+            return
+
+        # Same event, timer already pending — update position
+        if evt_tag == self._tooltip_tag:
+            self._tooltip_pending_pos = (
+                event.x_root + 12,
+                event.y_root + 12,
+            )
+            return
+
+        # New event — cancel old timer, schedule new one
+        self._hide_tooltip()
+        self._tooltip_tag = evt_tag
+        self._tooltip_pending_pos = (
+            event.x_root + 12,
+            event.y_root + 12,
+        )
+        self._tooltip_timer = self._root.after(800, self._show_tooltip, evt_tag)
+
+    def _show_tooltip(self, evt_tag: str) -> None:
+        """Actually create the tooltip after the delay."""
+        self._tooltip_timer = None
+        if evt_tag != self._tooltip_tag:
+            return
+        if evt_tag not in self._canvas_event_map:
+            return
+
+        cal_event = self._canvas_event_map[evt_tag]
+        summary = cal_event.get("summary", "")
+        start = _format_time(cal_event.get("start", ""))
+        end = _format_time(cal_event.get("end", ""))
+        tip_text = f"{start}-{end}  {summary}"
+
+        x, y = self._tooltip_pending_pos
+        tip = tk.Toplevel(self._root)
+        tip.wm_overrideredirect(True)
+        tip.geometry(f"+{x}+{y}")
+        tk.Label(
+            tip,
+            text=tip_text,
+            bg="#333333",
+            fg="#ffffff",
+            font=FONT_BODY,
+            padx=6,
+            pady=3,
+            wraplength=400,
+        ).pack()
+        self._tooltip = tip
+
+    def _hide_tooltip(self, _event: Any = None) -> None:
+        """Destroy the tooltip and cancel any pending timer."""
+        if self._tooltip_timer:
+            self._root.after_cancel(self._tooltip_timer)
+            self._tooltip_timer = None
+        if self._tooltip:
+            try:
+                self._tooltip.destroy()
+            except tk.TclError:
+                pass
+            self._tooltip = None
+        self._tooltip_tag = None
+
+    def _dismiss_context_menu(self) -> None:
+        """Destroy the current context menu and cancel its timer."""
+        if self._menu_timer:
+            self._root.after_cancel(self._menu_timer)
+            self._menu_timer = None
+        if self._context_menu:
+            try:
+                self._context_menu.unpost()
+                self._context_menu.destroy()
+            except tk.TclError:
+                pass
+            self._context_menu = None
+
+    def _on_right_click(self, event: Any) -> None:
+        """Show context menu for the clicked event."""
+        if not self._canvas:
+            return
+
+        # Dismiss any existing menu first
+        self._dismiss_context_menu()
+
+        item = self._canvas.find_closest(
+            self._canvas.canvasx(event.x),
+            self._canvas.canvasy(event.y),
+        )
+        if not item:
+            return
+
+        tags = self._canvas.gettags(item[0])
+        evt_tag = next((t for t in tags if t.startswith("evt_")), None)
+        if not evt_tag or evt_tag not in self._canvas_event_map:
+            return
+
+        cal_event = self._canvas_event_map[evt_tag]
+        response = _user_response_status(cal_event)
+
+        menu = tk.Menu(
+            self._window,
+            tearoff=0,
+            bg="#2a2a2a",
+            fg="#ffffff",
+            activebackground="#444444",
+            activeforeground="#ffffff",
+        )
+        self._context_menu = menu
+
+        def menu_action(status: str) -> None:
+            self._dismiss_context_menu()
+            self._update_response(cal_event, status)
+
+        for label, status_val in [
+            ("Accept", "accepted"),
+            ("Maybe", "tentative"),
+            ("Decline", "declined"),
+        ]:
+            if response == status_val:
+                menu.add_command(label=label, state=tk.DISABLED)
+            else:
+
+                def _make_cmd(s: str = status_val) -> None:
+                    menu_action(s)
+
+                menu.add_command(label=label, command=_make_cmd)
+
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+        # Auto-dismiss after 5 seconds
+        self._menu_timer = self._root.after(5000, self._dismiss_context_menu)
+
+    def _make_response_cmd(
+        self,
+        cal_event: dict[str, Any],
+        status_val: str,
+        popup: tk.Toplevel,
+    ) -> Callable[[], None]:
+        """Create a callback for response buttons."""
+
+        def cmd() -> None:
+            self._update_response(cal_event, status_val)
+            popup.destroy()
+
+        return cmd
+
+    def _on_left_click(self, event: Any) -> None:
+        """Show event details popup on left-click."""
+        if not self._canvas:
+            return
+
+        item = self._canvas.find_closest(
+            self._canvas.canvasx(event.x),
+            self._canvas.canvasy(event.y),
+        )
+        if not item:
+            return
+
+        tags = self._canvas.gettags(item[0])
+        evt_tag = next((t for t in tags if t.startswith("evt_")), None)
+        if not evt_tag or evt_tag not in self._canvas_event_map:
+            return
+
+        cal_event = self._canvas_event_map[evt_tag]
+        self._show_event_details(cal_event)
+
+    def _show_event_details(self, cal_event: dict[str, Any]) -> None:
+        """Show event details in a modal popup."""
+        import webbrowser
+
+        summary = cal_event.get("summary", "(no title)")
+        start = _format_time(cal_event.get("start", ""))
+        end = _format_time(cal_event.get("end", ""))
+        response = _user_response_status(cal_event)
+        organizer = cal_event.get("organizer_email", "")
+        description = cal_event.get("description", "")
+        location = cal_event.get("location", "")
+        hangout = cal_event.get("hangout_link", "")
+        html_link = cal_event.get("html_link", "")
+        attachments = cal_event.get("attachments", [])
+        attendees = cal_event.get("attendees", [])
+
+        popup = tk.Toplevel(self._root)
+        popup.title(f"\U0001f4c5 {summary[:50]}")
+        popup.configure(bg=BG_WINDOW)
+        popup.geometry("650x450")
+        popup.transient(self._window)
+        popup.update_idletasks()
+        popup.grab_set()
+
+        # Close on escape or click outside
+        popup.bind("<Escape>", lambda e: popup.destroy())
+        popup.protocol("WM_DELETE_WINDOW", popup.destroy)
+
+        # Title row
+        tk.Label(
+            popup,
+            text=summary,
+            bg=BG_WINDOW,
+            fg=FG_ACCENT,
+            font=FONT_HEADING,
+            anchor=tk.W,
+        ).pack(fill=tk.X, padx=8, pady=(8, 2))
+
+        # Subtitle row: time + status + action buttons
+        sub = tk.Frame(popup, bg=BG_WINDOW)
+        sub.pack(fill=tk.X, padx=8, pady=(0, 4))
+
+        tk.Label(
+            sub,
+            text=f"{start} - {end}    {response}",
+            bg=BG_WINDOW,
+            fg=COLOR_HOUR_TEXT,
+            font=FONT_BODY,
+            anchor=tk.W,
+        ).pack(side=tk.LEFT)
+
+        # Action buttons on subtitle row
+        for label, status_val, color in [
+            ("Decline", "declined", COLOR_CONFLICT),
+            ("Maybe", "tentative", "#e5c07b"),
+            ("Accept", "accepted", "#98c379"),
+        ]:
+            btn = tk.Button(
+                sub,
+                text=label,
+                bg=color if response != status_val else "#3a3a3a",
+                fg="#ffffff" if response != status_val else "#666666",
+                font=FONT_BODY,
+                relief=tk.FLAT,
+                padx=6,
+                pady=1,
+                cursor="hand2" if response != status_val else "",
+                command=self._make_response_cmd(cal_event, status_val, popup),
+            )
+            btn.pack(side=tk.RIGHT, padx=1)
+            if response == status_val:
+                btn.configure(state=tk.DISABLED)
+
+        # Content area
+        content_frame = tk.Frame(popup, bg=BG_OUTPUT)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+        text = tk.Text(
+            content_frame,
+            bg=BG_OUTPUT,
+            fg=FG_TEXT,
+            font=FONT_BODY,
+            wrap=tk.WORD,
+            padx=8,
+            pady=8,
+            highlightthickness=0,
+            cursor="arrow",
+        )
+        scrollbar = tk.Scrollbar(content_frame, command=text.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        text.configure(yscrollcommand=scrollbar.set)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Configure tags
+        text.tag_configure("section", foreground=COLOR_SECTION_HEADER)
+        text.tag_configure("link", foreground="#61afef", underline=True)
+        text.tag_configure("accepted_att", foreground="#98c379")
+        text.tag_configure("tentative_att", foreground="#e5c07b")
+        text.tag_configure("declined_att", foreground=COLOR_CONFLICT)
+        text.tag_configure("noresponse_att", foreground=COLOR_HOUR_TEXT)
+        text.tag_configure("you_marker", foreground=FG_ACCENT)
+        text.tag_configure("dim", foreground=COLOR_HOUR_TEXT)
+
+        def insert_link(label: str, url: str, tag_name: str) -> None:
+            text.insert(tk.END, label, tag_name)
+
+            def open_url(_event: Any, u: str = url) -> None:
+                webbrowser.open(u)
+
+            text.tag_bind(tag_name, "<Button-1>", open_url)
+            text.tag_configure(tag_name, foreground="#61afef", underline=True)
+
+        # Description first — render with clickable links
+        if description:
+            text.insert(tk.END, "Description\n", "section")
+            _render_html_description(text, description, insert_link, id(cal_event))
+            text.insert(tk.END, "\n")
+
+        # Links
+        links_added = False
+        if hangout:
+            link_tag = f"link_meet_{id(cal_event)}"
+            text.insert(tk.END, "Meet: ", "dim")
+            insert_link("Join meeting", hangout, link_tag)
+            text.insert(tk.END, "    ")
+            links_added = True
+        if html_link:
+            link_tag = f"link_cal_{id(cal_event)}"
+            text.insert(tk.END, "Calendar: ", "dim")
+            insert_link("Open in Calendar", html_link, link_tag)
+            links_added = True
+        if links_added:
+            text.insert(tk.END, "\n\n")
+
+        # Metadata
+        if organizer:
+            text.insert(tk.END, "Organizer: ", "dim")
+            text.insert(tk.END, f"{organizer}\n")
+        if location:
+            text.insert(tk.END, "Location: ", "dim")
+            text.insert(tk.END, f"{location}\n")
+
+        # Attachments
+        if attachments:
+            text.insert(tk.END, "\nAttachments\n", "section")
+            for i, att in enumerate(attachments):
+                title = att.get("title", "untitled")
+                url = att.get("url", "")
+                if url:
+                    att_tag = f"link_att_{i}_{id(cal_event)}"
+                    text.insert(tk.END, "  ")
+                    insert_link(title, url, att_tag)
+                    text.insert(tk.END, "\n")
+                else:
+                    text.insert(tk.END, f"  {title}\n")
+
+        # Attendees last
+        if attendees:
+            text.insert(tk.END, "\nAttendees", "section")
+            text.insert(tk.END, f" ({len(attendees)})\n", "dim")
+
+            status_groups = [
+                ("accepted", "accepted_att", "\u2713"),
+                ("tentative", "tentative_att", "?"),
+                ("needsAction", "noresponse_att", "-"),
+                ("declined", "declined_att", "\u2717"),
+            ]
+            for status_val, tag, icon in status_groups:
+                group = [a for a in attendees if a.get("response_status") == status_val]
+                for a in group:
+                    email = a["email"]
+                    text.insert(tk.END, f"  {icon} ", tag)
+                    text.insert(tk.END, email)
+                    if a.get("self"):
+                        text.insert(tk.END, " (you)", "you_marker")
+                    text.insert(tk.END, "\n")
+
+        text.configure(state=tk.DISABLED)
+
+    def _update_response(self, cal_event: dict[str, Any], new_status: str) -> None:
+        """Update event response status via GWS CLI, then refresh."""
+        self._status_var.set(f"Updating {cal_event.get('summary', '')}...")
+        thread = threading.Thread(
+            target=self._do_update_response,
+            args=(cal_event, new_status),
+            daemon=True,
+            name="update-response",
+        )
+        thread.start()
+
+    def _do_update_response(self, cal_event: dict[str, Any], new_status: str) -> None:
+        """Background: call GWS to patch event response, then refresh."""
+        event_id = cal_event.get("id", "")
+        if not event_id:
+            self._root.after(
+                0,
+                self._status_var.set,
+                "Error: missing event ID",
+            )
+            return
+
+        # Build full attendees list with user's status changed.
+        # Must send ALL attendees — API replaces the entire list.
+        updated_attendees = []
+        found_self = False
+        for att in cal_event.get("attendees", []):
+            entry = {"email": att["email"]}
+            if att.get("self"):
+                entry["responseStatus"] = new_status
+                found_self = True
+            else:
+                entry["responseStatus"] = att.get("response_status", "needsAction")
+            updated_attendees.append(entry)
+
+        if not found_self:
+            self._root.after(
+                0,
+                self._status_var.set,
+                "Error: user not in attendee list",
+            )
+            return
+
+        params = json.dumps({"calendarId": "primary", "eventId": event_id})
+        body = json.dumps({"attendees": updated_attendees})
+
+        try:
+            result = subprocess.run(
+                [
+                    "gws",
+                    "calendar",
+                    "events",
+                    "patch",
+                    "--params",
+                    params,
+                    "--json",
+                    body,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            logger.info(
+                "GWS patch %s -> %s: exit=%d",
+                cal_event.get("summary", ""),
+                new_status,
+                result.returncode,
+            )
+            if result.stderr.strip():
+                logger.debug("GWS stderr: %s", result.stderr.strip())
+            if result.returncode != 0:
+                err = result.stderr.strip() or result.stdout.strip()
+                self._root.after(
+                    0,
+                    self._status_var.set,
+                    f"Error: {err[:80]}",
+                )
+                return
+        except Exception as exc:
+            self._root.after(
+                0,
+                self._status_var.set,
+                f"Error: {exc}",
+            )
+            return
+
+        # Re-collect and refresh
+        self._do_refresh()
+
     def _prev_day(self) -> None:
+        self._dismiss_context_menu()
         self._current_date -= timedelta(days=1)
         self._update_date_label()
         self._render_current_day()
 
     def _next_day(self) -> None:
+        self._dismiss_context_menu()
         self._current_date += timedelta(days=1)
         self._update_date_label()
         self._render_current_day()
+        self._extend_range_if_needed()
 
     def _go_today(self) -> None:
+        self._dismiss_context_menu()
         self._current_date = date.today()
         self._update_date_label()
         self._render_current_day()
+
+    def _extend_range_if_needed(self) -> None:
+        """Auto-fetch more data if viewing beyond collected range."""
+        if self._collected_until and self._current_date >= self._collected_until:
+            self._status_var.set("Fetching more events...")
+            thread = threading.Thread(
+                target=self._do_extend_range,
+                daemon=True,
+                name="extend-range",
+            )
+            thread.start()
+
+    def _do_extend_range(self) -> None:
+        """Background: re-collect with extended range."""
+        try:
+            from personal_assistant.collectors.calendar_collector import (
+                collect_all_calendars,
+            )
+            from personal_assistant.config_manager import load_config
+
+            days_needed = (self._current_date - date.today()).days + 7
+            config = load_config(repo_path=self._state_path)
+            calendar_ids = config.get("calendars", ["primary"])
+            collect_all_calendars(
+                calendar_ids,
+                days_ahead=days_needed,
+                repo_path=self._state_path,
+            )
+            self._collected_until = date.today() + timedelta(days=days_needed)
+
+            # Reload events
+            import json
+
+            all_events: list[dict[str, Any]] = []
+            abs_path = self._state_path / "calendar" / "events.json"
+            if abs_path.exists():
+                with open(abs_path) as f:
+                    all_events = json.load(f)
+
+            self._root.after(0, self._on_extended_data, all_events)
+        except Exception as exc:
+            logger.exception("Extend range failed")
+            self._root.after(0, self._status_var.set, f"Error: {exc}")
+
+    def _on_extended_data(self, events: list[dict[str, Any]]) -> None:
+        self._all_events = events
+        self._render_current_day()
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self._status_var.set(f"Updated at {timestamp}")
 
     def _update_date_label(self) -> None:
         today = date.today()
@@ -321,6 +947,7 @@ class Dashboard:
         self._date_var.set(f"{prefix}{self._current_date.strftime('%A, %B %d')}")
 
     def refresh(self) -> None:
+        self._dismiss_context_menu()
         self._status_var.set("Collecting...")
         thread = threading.Thread(
             target=self._do_refresh,
@@ -349,8 +976,13 @@ class Dashboard:
                 self._status_var.set,
                 f"Collecting from {len(calendar_ids)} calendar(s)...",
             )
-            collect_all_calendars(calendar_ids, repo_path=self._state_path)
+            collect_all_calendars(
+                calendar_ids,
+                days_ahead=14,
+                repo_path=self._state_path,
+            )
 
+            self._collected_until = date.today() + timedelta(days=14)
             self._root.after(0, self._status_var.set, "Analyzing...")
             analyses = analyze_all_calendars(repo_path=self._state_path)
 
@@ -461,7 +1093,10 @@ class Dashboard:
         now = datetime.now().astimezone()
         is_today = self._current_date == date.today()
 
-        # True conflicts: only when BOTH events are accepted
+        # Conflict rendering: an event gets conflict color if:
+        # - It's unaccepted and overlaps with another event, OR
+        # - Both events in the overlap are accepted (unresolved)
+        # An accepted event next to an unaccepted one is fine — user chose.
         conflict_ids: set[str] = set()
         events_by_id = {e.get("id", ""): e for e in day_events}
         for c in self._all_conflicts:
@@ -474,26 +1109,46 @@ class Dashboard:
             a_status = _user_response_status(a_evt)
             b_status = _user_response_status(b_evt)
             if a_status == "accepted" and b_status == "accepted":
+                # Both accepted — true unresolved conflict
                 conflict_ids.add(a_id)
                 conflict_ids.add(b_id)
+            else:
+                # Mark unaccepted events in the overlap
+                if a_status != "accepted":
+                    conflict_ids.add(a_id)
+                if b_status != "accepted":
+                    conflict_ids.add(b_id)
 
         # Time range
         earliest, latest = _day_time_range(day_events)
         total_hours = latest - earliest
         canvas_height = max(total_hours * HOUR_HEIGHT + 20, 200)
 
-        self._canvas.configure(scrollregion=(0, 0, 2000, canvas_height))
+        self._canvas.update_idletasks()
+        canvas_width = max(self._canvas.winfo_width(), 800)
 
-        # Hour grid
+        self._canvas.configure(scrollregion=(0, 0, canvas_width, canvas_height))
+
+        # Hour and half-hour grid
         for hour in range(earliest, latest + 1):
             y = (hour - earliest) * HOUR_HEIGHT
             self._canvas.create_line(
                 TIME_LABEL_WIDTH,
                 y,
-                2000,
+                canvas_width,
                 y,
                 fill=COLOR_GRID_LINE,
             )
+            # Half-hour line
+            if hour < latest:
+                half_y = y + HOUR_HEIGHT // 2
+                self._canvas.create_line(
+                    TIME_LABEL_WIDTH,
+                    half_y,
+                    canvas_width,
+                    half_y,
+                    fill=COLOR_GRID_LINE_HALF,
+                )
             self._canvas.create_text(
                 TIME_LABEL_WIDTH - 5,
                 y + 2,
@@ -511,7 +1166,7 @@ class Dashboard:
                 self._canvas.create_line(
                     TIME_LABEL_WIDTH,
                     now_y,
-                    2000,
+                    canvas_width,
                     now_y,
                     fill=COLOR_NOW_LINE,
                     width=2,
@@ -527,10 +1182,9 @@ class Dashboard:
                 )
 
         # Layout and draw events
+        self._canvas_event_map.clear()
         positioned = _layout_events(day_events, earliest)
 
-        self._canvas.update_idletasks()
-        canvas_width = self._canvas.winfo_width() or 800
         available_width = canvas_width - EVENT_LEFT_MARGIN - EVENT_RIGHT_MARGIN
 
         for pos in positioned:
@@ -555,35 +1209,29 @@ class Dashboard:
             is_oneone = _is_one_on_one(event)
             response = _user_response_status(event)
 
-            if is_conflict:
-                fill, outline, text_color = (
-                    COLOR_CONFLICT_BG,
-                    COLOR_CONFLICT,
-                    COLOR_CONFLICT,
-                )
-            elif is_oneone:
-                fill, outline, text_color = (
-                    COLOR_ONEONE_BG,
-                    COLOR_ONEONE,
-                    COLOR_ONEONE,
-                )
-            else:
-                fill, outline, text_color = (
-                    COLOR_NORMAL_BG,
-                    COLOR_NORMAL,
-                    COLOR_NORMAL,
-                )
+            # Canvas tag for right-click identification
+            tag = f"evt_{event_id}"
+            self._canvas_event_map[tag] = event
 
-            # Border style encodes response status
+            if is_conflict:
+                category_color = COLOR_CONFLICT
+            elif is_oneone:
+                category_color = COLOR_ONEONE
+            else:
+                category_color = COLOR_NORMAL
+
+            # Border encodes response status
+            event_text_color = COLOR_EVENT_TEXT
             if response == "accepted":
                 self._canvas.create_rectangle(
                     x1,
                     y1,
                     x2,
                     y2,
-                    fill=fill,
-                    outline=outline,
+                    fill=category_color,
+                    outline=COLOR_BORDER_TENTATIVE,
                     width=2,
+                    tags=tag,
                 )
             elif response == "tentative":
                 self._canvas.create_rectangle(
@@ -591,58 +1239,45 @@ class Dashboard:
                     y1,
                     x2,
                     y2,
-                    fill=fill,
-                    outline=outline,
-                    width=2,
-                    dash=(6, 4),
+                    fill=category_color,
+                    outline=COLOR_BORDER_TENTATIVE,
+                    width=1,
+                    dash=(4, 4),
+                    tags=tag,
                 )
             else:
-                # No response — no border, just fill
                 self._canvas.create_rectangle(
                     x1,
                     y1,
                     x2,
                     y2,
-                    fill=fill,
+                    fill=category_color,
                     outline="",
                     width=0,
+                    tags=tag,
                 )
 
             summary = event.get("summary", "")
             start_t = _format_time(event["start"])
             attendee_info = _attendee_count(event)
 
-            # Build label: "HH:MM Title (accepted/total)"
             label = f"{start_t} {summary}"
             if attendee_info:
                 label += f" {attendee_info}"
 
-            # Right-side: ownership on conflicts
-            right_text = ""
-            if is_conflict:
-                right_text = _ownership_tag(event)
+            max_chars = max(int((x2 - x1 - 12) / 9), 5)
+            if len(label) > max_chars:
+                label = label[: max_chars - 1] + "\u2026"
 
-            text_width = x2 - x1 - 8
-
-            # Consistent single-line format for all events
             self._canvas.create_text(
                 x1 + 4,
                 y1 + 4,
                 text=label,
-                fill=text_color,
+                fill=event_text_color,
                 font=FONT_BODY,
                 anchor=tk.NW,
-                width=text_width,
+                tags=tag,
             )
-            if right_text:
-                self._canvas.create_text(
-                    x2 - 4,
-                    y1 + 4,
-                    text=right_text,
-                    fill=FG_DIM,
-                    font=FONT_BODY,
-                    anchor=tk.NE,
-                )
 
         # No events message
         if not day_events:
@@ -670,6 +1305,58 @@ class Dashboard:
             self._canvas.yview_moveto(0)
 
 
+def _render_html_description(
+    text_widget: tk.Text,
+    html: str,
+    insert_link_fn: Callable[[str, str, str], None],
+    event_id: int,
+) -> None:
+    """Render HTML description into a Text widget with clickable links."""
+    import re
+    from html import unescape
+
+    # Replace <br> with newlines before parsing
+    html = re.sub(r"<br\s*/?>", "\n", html, flags=re.IGNORECASE)
+    html = re.sub(r"</?p\s*>", "\n", html, flags=re.IGNORECASE)
+
+    # Split on <a> tags, preserving href and link text
+    pattern = re.compile(
+        r'<a\s+[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    link_counter = 0
+    pos = 0
+    for match in pattern.finditer(html):
+        # Insert text before this link
+        before = html[pos : match.start()]
+        before = re.sub(r"<[^>]+>", "", before)  # strip other tags
+        before = unescape(before)
+        if before:
+            text_widget.insert(tk.END, before)
+
+        # Insert the link as clickable text
+        url = match.group(1)
+        link_text = re.sub(r"<[^>]+>", "", match.group(2))
+        link_text = unescape(link_text).strip()
+        if not link_text:
+            link_text = url
+        tag_name = f"desc_link_{event_id}_{link_counter}"
+        insert_link_fn(link_text, url, tag_name)
+        link_counter += 1
+
+        pos = match.end()
+
+    # Insert remaining text after the last link
+    remaining = html[pos:]
+    remaining = re.sub(r"<[^>]+>", "", remaining)
+    remaining = unescape(remaining)
+    if remaining:
+        text_widget.insert(tk.END, remaining)
+
+    text_widget.insert(tk.END, "\n")
+
+
 def _format_time(time_str: str) -> str:
     if not time_str or len(time_str) <= 10:
         return ""
@@ -677,15 +1364,6 @@ def _format_time(time_str: str) -> str:
         return datetime.fromisoformat(time_str).strftime("%H:%M")
     except ValueError:
         return time_str[:5]
-
-
-def _ownership_tag(event: dict[str, Any]) -> str:
-    if event.get("organizer_self"):
-        return "[yours]"
-    organizer = event.get("organizer_email", "")
-    if organizer:
-        return f"[{organizer.split('@')[0]}]"
-    return ""
 
 
 def _attendee_count(event: dict[str, Any]) -> str:
@@ -730,15 +1408,21 @@ def _parse_hour(time_str: str) -> float:
 def _day_time_range(
     events: list[dict[str, Any]],
 ) -> tuple[int, int]:
+    """Fixed time range anchored to WORK_DAY_START-END.
+
+    Extends beyond the default range only if events fall outside it.
+    This keeps the grid consistent across days.
+    """
+    start = WORK_DAY_START
+    end = WORK_DAY_END
+
     timed = [e for e in events if not e.get("all_day", False)]
-    if not timed:
-        return WORK_DAY_START, WORK_DAY_END
+    if timed:
+        earliest_h = min(_parse_hour(e["start"]) for e in timed)
+        latest_h = max(_parse_hour(e["end"]) for e in timed)
+        start = min(start, max(int(earliest_h) - 1, 0))
+        end = max(end, min(int(latest_h) + 1, 24))
 
-    earliest_h = min(_parse_hour(e["start"]) for e in timed)
-    latest_h = max(_parse_hour(e["end"]) for e in timed)
-
-    start = max(int(earliest_h) - 1, 0)
-    end = min(int(latest_h) + 1, 24)
     return start, end
 
 

@@ -49,6 +49,11 @@ The collector fetches all event types from each calendar. Filtering by event typ
 ## CLI Commands
 
 ```bash
+# State repo
+pa state init                   # initialize the state repo
+pa state status                 # show uncommitted changes
+pa state commit -m "message"    # commit current state
+
 # Calendar management
 pa track calendars              # list available Google calendars
 pa track calendar <id>          # add a calendar
@@ -64,4 +69,45 @@ pa track repo <owner/repo>
 
 # View current config
 pa track list
+
+# Data collection and analysis
+pa collect calendar             # pull events from tracked calendars
+pa collect calendar --days 14   # look ahead 14 days (default: 7)
+pa analyze calendar             # show changes since last commit
+
+# Dashboard
+pa gui                          # launch the calendar dashboard
 ```
+
+## Dashboard
+
+The `pa gui` command opens a Canvas-based calendar day view.
+
+### Navigation
+- **Left/Right arrows** or **keyboard arrows** to change day
+- **Today button** to jump back to today
+- **Refresh** to re-collect from Google Calendar
+- **Window resize** auto-rescales the view
+
+### Visual Encoding
+
+**Fill color = event category:**
+- Teal green = regular meeting
+- Steel blue = 1:1
+- Red = conflict (overlapping events needing action)
+
+**Border = your response status:**
+- Solid white = accepted
+- Dashed white = tentative
+- No border = no response yet
+
+**Attendee count** shown as `(accepted/total)` after the title.
+
+### Right-Click Context Menu
+
+Right-click any event block to change your response:
+- **Accepted events**: Maybe | Decline
+- **No response**: Accept | Maybe | Decline
+- **Tentative events**: Accept | Decline
+
+Updates are sent to Google Calendar via GWS CLI and the view refreshes automatically.
