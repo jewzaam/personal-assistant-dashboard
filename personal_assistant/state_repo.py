@@ -25,7 +25,7 @@ _STATE_DIRS = [
     "digests",
 ]
 
-DEFAULT_STATE_PATH = Path.home() / ".local" / "share" / "pa-state"
+DEFAULT_STATE_PATH = Path.home() / ".local" / "share" / "claude-personal-assistant"
 
 
 @dataclass(frozen=True)

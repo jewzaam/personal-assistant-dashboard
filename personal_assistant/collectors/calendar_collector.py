@@ -24,6 +24,7 @@ def collect_events(
     calendar_id: str = "primary",
     *,
     days_ahead: int = 7,
+    days_back: int = 0,
     repo_path: Path = DEFAULT_STATE_PATH,
 ) -> list[dict[str, Any]]:
     """Pull events from a calendar and write to the state repo.
@@ -31,13 +32,16 @@ def collect_events(
     Args:
         calendar_id: Google Calendar ID ("primary" or an email address).
         days_ahead: How many days ahead to fetch.
+        days_back: How many days in the past to fetch (0 = start of today).
         repo_path: Path to the state repo.
 
     Returns:
         List of normalized event dicts.
     """
     now = datetime.now(timezone.utc)
-    time_min = now.isoformat()
+    # Start from beginning of today minus days_back
+    start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    time_min = (start_of_today - timedelta(days=days_back)).isoformat()
     time_max = (now + timedelta(days=days_ahead)).isoformat()
 
     raw_events = _fetch_events(calendar_id, time_min=time_min, time_max=time_max)
@@ -61,6 +65,7 @@ def collect_all_calendars(
     calendar_ids: list[str],
     *,
     days_ahead: int = 7,
+    days_back: int = 0,
     repo_path: Path = DEFAULT_STATE_PATH,
 ) -> dict[str, list[dict[str, Any]]]:
     """Collect events from multiple calendars.
@@ -71,7 +76,10 @@ def collect_all_calendars(
     for cal_id in calendar_ids:
         try:
             results[cal_id] = collect_events(
-                cal_id, days_ahead=days_ahead, repo_path=repo_path
+                cal_id,
+                days_ahead=days_ahead,
+                days_back=days_back,
+                repo_path=repo_path,
             )
         except CalendarCollectorError as exc:
             logger.error("Failed to collect %s: %s", cal_id, exc)
@@ -216,6 +224,7 @@ def _normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
                 "email": a.get("email", ""),
                 "response_status": a.get("responseStatus", "needsAction"),
                 "self": a.get("self", False),
+                "optional": a.get("optional", False),
             }
             for a in attendees
         ],
