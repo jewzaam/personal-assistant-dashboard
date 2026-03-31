@@ -86,7 +86,6 @@ class Dashboard:
         self._canvas: tk.Canvas | None = None
         self._canvas_container: tk.Frame | None = None
         self._scrollbar: tk.Scrollbar | None = None
-        self._changes_text: tk.Text | None = None
         self._calendar_frame: tk.Frame | None = None
         self._status_var = tk.StringVar(value="Starting...")
         self._date_var = tk.StringVar()
@@ -96,6 +95,8 @@ class Dashboard:
         self._all_conflicts: list[Any] = []
         self._all_changes: list[Any] = []
         self._collected_until: date | None = None
+        self._collected_start: date | None = None
+        self._dismissed_conflicts: set[str] = set()
         self._context_menu: tk.Menu | None = None
         self._menu_timer: str | None = None
         self._tooltip: tk.Toplevel | None = None
@@ -103,6 +104,8 @@ class Dashboard:
         self._tooltip_timer: str | None = None
         self._tooltip_pending_pos: tuple[int, int] = (0, 0)
         self._notebook: ttk.Notebook | None = None
+        self._run_now_btn: tk.Button | None = None
+        self._cal_refresh_timer: str | None = None
 
     def show(self) -> None:
         if self._window and self._window.winfo_exists():
@@ -170,7 +173,11 @@ class Dashboard:
 
         from personal_assistant.meetings_tab import MeetingsTab
 
-        self._meetings_tab = MeetingsTab(meetings_frame, self._root)
+        self._meetings_tab = MeetingsTab(
+            meetings_frame, self._root, console_log=self.log_console
+        )
+        self._meetings_tab._update_countdown_cb = self.update_countdown
+        self._meetings_tab._set_run_now_state_cb = self._set_run_now_enabled
 
         # Actions tab
         actions_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
@@ -182,6 +189,59 @@ class Dashboard:
             actions_frame,
             events_source=lambda: self._all_events,
         )
+        # Console tab — background activity log with timer controls
+        console_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(console_frame, text="Console")
+
+        # Console controls bar
+        console_controls = tk.Frame(console_frame, bg=BG_WINDOW)
+        console_controls.pack(fill=tk.X, padx=PAD, pady=(PAD, 0))
+
+        self._countdown_var = tk.StringVar(value="")
+        tk.Label(
+            console_controls,
+            textvariable=self._countdown_var,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=FONT_BODY,
+        ).pack(side=tk.LEFT)
+
+        self._run_now_btn = tk.Button(
+            console_controls,
+            text="Run Now",
+            command=self._force_pipeline,
+            bg=COLOR_NAV_BTN,
+            fg=FG_TEXT,
+            font=FONT_BODY,
+            relief=tk.FLAT,
+            activebackground="#5e5e5e",
+            cursor="hand2",
+            padx=8,
+        ).pack(side=tk.RIGHT)
+
+        # Console text area
+        self._console_text = tk.Text(
+            console_frame,
+            bg=BG_OUTPUT,
+            fg=FG_TEXT,
+            font=FONT_BODY,
+            wrap=tk.WORD,
+            padx=PAD,
+            pady=PAD,
+            state=tk.DISABLED,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self._console_text.tag_configure("info", foreground=FG_TEXT)
+        self._console_text.tag_configure("success", foreground="#98c379")
+        self._console_text.tag_configure("warning", foreground="#e5c07b")
+        self._console_text.tag_configure("error", foreground="#B85450")
+        self._console_text.tag_configure("progress", foreground="#61afef")
+        console_scroll = tk.Scrollbar(console_frame, command=self._console_text.yview)
+        console_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._console_text.configure(yscrollcommand=console_scroll.set)
+        self._console_text.pack(fill=tk.BOTH, expand=True)
+
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self._build_calendar_tab(cal_tab)
@@ -219,8 +279,20 @@ class Dashboard:
             anchor=tk.E,
         ).pack(side=tk.RIGHT)
 
+        # Right-click on notebook for Restart
+        self._notebook.bind("<Button-3>", self._on_notebook_right_click)
+
+        self._load_dismissed_conflicts()
         self._update_date_label()
         self._check_scopes()
+        # Restore saved UI state (tab, date, filters)
+        self._apply_ui_state()
+        # Start auto-refresh for whichever tab is active
+        if self._notebook:
+            tab_id = self._notebook.select()
+            tab_text = self._notebook.tab(tab_id, "text")
+            if tab_text == "Calendar":
+                self._start_cal_refresh()
 
     def _build_calendar_tab(self, cal_tab: tk.Frame) -> None:
         """Build the calendar tab with nav, changes, canvas, and bindings."""
@@ -256,7 +328,7 @@ class Dashboard:
             anchor=tk.W,
         )
         self._date_label.pack(side=tk.LEFT)
-        self._date_label.bind("<Button-1>", lambda e: self._go_today())
+        self._date_label.bind("<Button-1>", lambda e: self._show_date_picker())
 
         tk.Button(
             nav,
@@ -275,8 +347,8 @@ class Dashboard:
             nav,
             text="Today",
             command=self._go_today,
-            bg=COLOR_NAV_BTN,
-            fg=FG_TEXT,
+            bg=FG_ACCENT,
+            fg="#ffffff",
             font=FONT_BODY,
             relief=tk.FLAT,
             activebackground="#5e5e5e",
@@ -284,19 +356,7 @@ class Dashboard:
             padx=8,
         ).pack(side=tk.LEFT, padx=(8, 0))
 
-        # Refresh button
-        tk.Button(
-            top_bar,
-            text="Refresh",
-            command=self.refresh,
-            bg=COLOR_NAV_BTN,
-            fg=FG_TEXT,
-            font=FONT_BODY,
-            relief=tk.FLAT,
-            activebackground="#5e5e5e",
-            cursor="hand2",
-            padx=12,
-        ).pack(side=tk.RIGHT)
+        # Refresh button removed — calendar auto-refreshes every 60s
 
         # Scope status indicator (green/red dot)
         self._scope_indicator = tk.Label(
@@ -309,27 +369,6 @@ class Dashboard:
         )
         self._scope_indicator.pack(side=tk.RIGHT, padx=(0, 8))
         self._scope_indicator.bind("<Button-1>", lambda e: self._show_scope_details())
-
-        # Changes bar (only shown when there are changes)
-        self._changes_text = tk.Text(
-            cal_tab,
-            bg=BG_OUTPUT,
-            fg=FG_TEXT,
-            font=FONT_BODY,
-            wrap=tk.WORD,
-            relief=tk.FLAT,
-            height=2,
-            padx=PAD,
-            pady=4,
-            state=tk.DISABLED,
-            cursor="arrow",
-            highlightthickness=0,
-            borderwidth=0,
-        )
-        self._changes_text.tag_configure("new", foreground=COLOR_CHANGE_NEW)
-        self._changes_text.tag_configure("cancelled", foreground=COLOR_CHANGE_CANCELLED)
-        self._changes_text.tag_configure("moved", foreground=COLOR_CHANGE_MOVED)
-        self._changes_text.tag_configure("dim", foreground=FG_DIM)
 
         # Calendar area
         self._calendar_frame = tk.Frame(cal_tab, bg=BG_WINDOW)
@@ -372,16 +411,173 @@ class Dashboard:
         self._resize_timer: str | None = None
         self._canvas.bind("<Configure>", self._on_canvas_resize)
 
+    def _set_run_now_enabled(self, enabled: bool) -> None:
+        """Enable or disable the Run Now button."""
+        if self._run_now_btn is not None:
+            self._run_now_btn.configure(state="normal" if enabled else "disabled")
+
+    def _load_dismissed_conflicts(self) -> None:
+        """Load dismissed conflict event IDs from disk."""
+        path = self._state_path / "dismissed_conflicts.json"
+        if not path.exists():
+            return
+        try:
+            with open(path) as f:
+                self._dismissed_conflicts = set(json.load(f))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    def _save_dismissed_conflicts(self) -> None:
+        """Save dismissed conflict event IDs to disk."""
+        path = self._state_path / "dismissed_conflicts.json"
+        try:
+            with open(path, "w") as f:
+                json.dump(sorted(self._dismissed_conflicts), f)
+        except OSError:
+            pass
+
+    def _toggle_dismiss_conflict(self, event_id: str) -> None:
+        """Toggle dismissed state for a conflict event and re-render."""
+        if event_id in self._dismissed_conflicts:
+            self._dismissed_conflicts.discard(event_id)
+        else:
+            self._dismissed_conflicts.add(event_id)
+        self._save_dismissed_conflicts()
+        self._render_current_day()
+
+    def _force_pipeline(self) -> None:
+        """Force the pipeline to run immediately."""
+        if hasattr(self, "_meetings_tab"):
+            self._meetings_tab.force_pipeline()
+
+    def update_countdown(self, text: str) -> None:
+        """Update the countdown display in the Console tab."""
+        if hasattr(self, "_countdown_var"):
+            self._countdown_var.set(text)
+
+    def log_console(self, message: str, tag: str = "info") -> None:
+        """Append a message to the Console tab."""
+        if not hasattr(self, "_console_text"):
+            return
+        if not self._console_text.winfo_exists():
+            return
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self._console_text.configure(state=tk.NORMAL)
+        self._console_text.insert(tk.END, f"[{timestamp}] ", "info")
+        self._console_text.insert(tk.END, f"{message}\n", tag)
+        self._console_text.see(tk.END)
+        self._console_text.configure(state=tk.DISABLED)
+
     def _on_tab_changed(self, _event: Any) -> None:
         """Refresh tabs when they become visible."""
         if not self._notebook:
             return
         tab_id = self._notebook.select()
         tab_text = self._notebook.tab(tab_id, "text")
+        if tab_text == "Calendar":
+            self._start_cal_refresh()
+        else:
+            self._stop_cal_refresh()
         if tab_text == "Actions" and hasattr(self, "_actions_tab"):
             self._actions_tab.refresh()
         elif tab_text == "Transcripts" and hasattr(self, "_meetings_tab"):
             self._meetings_tab.refresh()
+
+    def _start_cal_refresh(self) -> None:
+        """Start auto-refreshing the calendar every 60 seconds."""
+        self._stop_cal_refresh()
+        self.refresh()
+        self._cal_refresh_timer = self._root.after(60_000, self._start_cal_refresh)
+
+    def _stop_cal_refresh(self) -> None:
+        """Stop the calendar auto-refresh timer."""
+        if self._cal_refresh_timer is not None:
+            self._root.after_cancel(self._cal_refresh_timer)
+            self._cal_refresh_timer = None
+
+    def _on_notebook_right_click(self, event: Any) -> None:
+        """Show context menu with Restart option on notebook tab bar."""
+        menu = tk.Menu(
+            self._window,
+            tearoff=0,
+            bg="#2a2a2a",
+            fg="#ffffff",
+            activebackground="#444444",
+            activeforeground="#ffffff",
+        )
+        menu.add_command(label="Restart", command=self._restart)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _save_ui_state(self) -> None:
+        """Save UI state to disk for restart continuity."""
+        state: dict[str, Any] = {
+            "calendar_date": self._current_date.isoformat(),
+        }
+        if self._notebook:
+            tab_id = self._notebook.select()
+            state["tab"] = self._notebook.tab(tab_id, "text")
+        if hasattr(self, "_meetings_tab"):
+            state["transcript_filters"] = self._meetings_tab.get_filter_state()
+        state_file = self._state_path / "ui_state.json"
+        try:
+            with open(state_file, "w") as f:
+                json.dump(state, f)
+        except OSError:
+            pass
+
+    def _load_ui_state(self) -> dict[str, Any]:
+        """Load saved UI state from disk."""
+        state_file = self._state_path / "ui_state.json"
+        if not state_file.exists():
+            return {}
+        try:
+            with open(state_file) as f:
+                return json.load(f)  # type: ignore[no-any-return]
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _apply_ui_state(self) -> None:
+        """Apply saved UI state after build."""
+        state = self._load_ui_state()
+        if not state:
+            return
+
+        # Restore calendar date
+        cal_date = state.get("calendar_date")
+        if cal_date:
+            try:
+                self._current_date = date.fromisoformat(cal_date)
+                self._update_date_label()
+            except ValueError:
+                pass
+
+        # Restore selected tab
+        tab_name = state.get("tab")
+        if tab_name and self._notebook:
+            for tab_id in self._notebook.tabs():
+                if self._notebook.tab(tab_id, "text") == tab_name:
+                    self._notebook.select(tab_id)
+                    break
+
+        # Restore transcript filters
+        filters = state.get("transcript_filters")
+        if filters and hasattr(self, "_meetings_tab"):
+            self._meetings_tab.set_filter_state(filters)
+
+    def _restart(self) -> None:
+        """Save state, re-exec the process to restart the application."""
+        import os
+        import sys
+
+        logger.info("Restarting application")
+        self._save_ui_state()
+        self._stop_cal_refresh()
+        self._root.quit()
+        args = [sys.executable, "-m", "personal_assistant", "gui"]
+        os.execv(sys.executable, args)
 
     def _check_scopes(self) -> None:
         """Check GWS scopes in background and update indicator."""
@@ -613,16 +809,49 @@ class Dashboard:
         )
         self._context_menu = menu
 
+        # Determine if event is in the past
+        event_start = cal_event.get("start", "")
+        is_past = False
+        if event_start and len(event_start) > 10:
+            try:
+                start_dt = datetime.fromisoformat(event_start)
+                is_past = start_dt < datetime.now().astimezone()
+            except ValueError:
+                pass
+
+        # View Summary — at top for past meetings with a meet link
+        hangout = cal_event.get("hangout_link", "")
+        if is_past and hangout:
+            event_date = event_start[:10] if len(event_start) >= 10 else ""
+            summary_content = self._get_meeting_summary(hangout, event_date)
+            if summary_content is not None:
+                resolved_content: str = summary_content
+                resolved_title: str = cal_event.get("summary", "")
+
+                def _show_summary() -> None:
+                    self._dismiss_context_menu()
+                    self._show_summary_popup(resolved_title, resolved_content)
+
+                menu.add_command(label="View Summary", command=_show_summary)
+            else:
+                menu.add_command(label="View Summary", state=tk.DISABLED)
+            menu.add_separator()
+
         def menu_action(status: str) -> None:
             self._dismiss_context_menu()
             self._update_response(cal_event, status)
+
+        is_organizer = cal_event.get("organizer_self", False)
 
         for label, status_val in [
             ("Accept", "accepted"),
             ("Maybe", "tentative"),
             ("Decline", "declined"),
         ]:
-            if response == status_val:
+            # Can't decline own meeting (no self in attendee list)
+            if status_val == "declined" and is_organizer:
+                menu.add_command(label=label, state=tk.DISABLED)
+            elif response == status_val:
                 menu.add_command(label=label, state=tk.DISABLED)
             else:
 
@@ -631,6 +860,25 @@ class Dashboard:
 
                 menu.add_command(label=label, command=_make_cmd)
 
+        # Dismiss conflict — only if event is in a conflict
+        event_id = cal_event.get("id", "")
+        in_conflict = any(
+            c.event_a["id"] == event_id or c.event_b["id"] == event_id
+            for c in self._all_conflicts
+        )
+        if in_conflict:
+            is_dismissed = event_id in self._dismissed_conflicts
+            dismiss_label = (
+                "\u2713 Dismiss conflict" if is_dismissed else "Dismiss conflict"
+            )
+
+            def _toggle_dismiss(eid: str = event_id) -> None:
+                self._dismiss_context_menu()
+                self._toggle_dismiss_conflict(eid)
+
+            menu.add_separator()
+            menu.add_command(label=dismiss_label, command=_toggle_dismiss)
+
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -638,6 +886,61 @@ class Dashboard:
 
         # Auto-dismiss after 5 seconds
         self._menu_timer = self._root.after(5000, self._dismiss_context_menu)
+
+    def _get_meeting_summary(
+        self, hangout_link: str, event_date: str = ""
+    ) -> str | None:
+        """Look up a meeting summary by meet code + date.
+
+        Meet codes are reused across recurring meeting series, so date
+        is required to find the correct instance.
+        """
+        import re
+
+        match = re.search(r"meet\.google\.com/([a-z]+-[a-z]+-[a-z]+)", hangout_link)
+        if not match:
+            return None
+        meet_code = match.group(1)
+
+        try:
+            from meet_enrich.discovery import scan_meeting_folders
+            from meet_enrich.config import TRANSCRIPTS_ROOT
+            from meet_summarize.summary import get_summary
+
+            folders = scan_meeting_folders(transcripts_root=TRANSCRIPTS_ROOT)
+            for folder in folders:
+                if folder.meet_code == meet_code and folder.date == event_date:
+                    result: str | None = get_summary(folder.path)
+                    return result
+        except ImportError:
+            pass
+        return None
+
+    def _show_summary_popup(self, title: str, content: str) -> None:
+        """Show summary content in a popup window."""
+        popup = tk.Toplevel(self._root)
+        popup.title(f"Summary — {title}")
+        popup.configure(bg=BG_WINDOW)
+        popup.geometry("700x500")
+
+        text = tk.Text(
+            popup,
+            bg=BG_OUTPUT,
+            fg=FG_TEXT,
+            font=FONT_BODY,
+            wrap=tk.WORD,
+            padx=PAD,
+            pady=PAD,
+            highlightthickness=0,
+        )
+        scrollbar = tk.Scrollbar(popup, command=text.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        text.configure(yscrollcommand=scrollbar.set)
+        text.pack(fill=tk.BOTH, expand=True)
+        text.insert("1.0", content)
+        text.configure(state=tk.DISABLED)
+
+        popup.bind("<Escape>", lambda _: popup.destroy())
 
     def _make_response_cmd(
         self,
@@ -785,13 +1088,7 @@ class Dashboard:
             text.tag_bind(tag_name, "<Button-1>", open_url)
             text.tag_configure(tag_name, foreground="#61afef", underline=True)
 
-        # Description first — render with clickable links
-        if description:
-            text.insert(tk.END, "Description\n", "section")
-            _render_html_description(text, description, insert_link, id(cal_event))
-            text.insert(tk.END, "\n")
-
-        # Links
+        # Links first
         links_added = False
         if hangout:
             link_tag = f"link_meet_{id(cal_event)}"
@@ -806,6 +1103,12 @@ class Dashboard:
             links_added = True
         if links_added:
             text.insert(tk.END, "\n\n")
+
+        # Description
+        if description:
+            text.insert(tk.END, "Description\n", "section")
+            _render_html_description(text, description, insert_link, id(cal_event))
+            text.insert(tk.END, "\n")
 
         # Metadata
         if organizer:
@@ -947,6 +1250,7 @@ class Dashboard:
         self._current_date -= timedelta(days=1)
         self._update_date_label()
         self._render_current_day()
+        self._extend_range_if_needed()
 
     def _next_day(self) -> None:
         self._dismiss_context_menu()
@@ -961,10 +1265,149 @@ class Dashboard:
         self._update_date_label()
         self._render_current_day()
 
+    def _show_date_picker(self) -> None:
+        """Show a calendar grid date picker for jumping to an arbitrary date."""
+        import calendar as cal_mod
+
+        popup = tk.Toplevel(self._root)
+        popup.title("Go to date")
+        popup.configure(bg=BG_WINDOW)
+        popup.geometry("340x320")
+        popup.transient(self._window)
+        popup.update_idletasks()
+        popup.grab_set()
+        popup.bind("<Escape>", lambda e: popup.destroy())
+
+        viewing_year = self._current_date.year
+        viewing_month = self._current_date.month
+        selected_date = self._current_date
+        today_date = date.today()
+
+        # Header: < Month Year >
+        header = tk.Frame(popup, bg=BG_WINDOW)
+        header.pack(fill=tk.X, padx=PAD, pady=(PAD, 4))
+
+        month_label = tk.Label(header, bg=BG_WINDOW, fg=FG_TEXT, font=FONT_HEADING)
+        month_label.pack(side=tk.LEFT, expand=True)
+
+        def _prev_month() -> None:
+            nonlocal viewing_year, viewing_month
+            viewing_month -= 1
+            if viewing_month < 1:
+                viewing_month = 12
+                viewing_year -= 1
+            _render_grid()
+
+        def _next_month() -> None:
+            nonlocal viewing_year, viewing_month
+            viewing_month += 1
+            if viewing_month > 12:
+                viewing_month = 1
+                viewing_year += 1
+            _render_grid()
+
+        tk.Button(
+            header,
+            text="\u25b6",
+            command=_next_month,
+            bg=COLOR_NAV_BTN,
+            fg=FG_TEXT,
+            font=FONT_BODY,
+            relief=tk.FLAT,
+            padx=4,
+        ).pack(side=tk.RIGHT)
+        tk.Button(
+            header,
+            text="\u25c0",
+            command=_prev_month,
+            bg=COLOR_NAV_BTN,
+            fg=FG_TEXT,
+            font=FONT_BODY,
+            relief=tk.FLAT,
+            padx=4,
+        ).pack(side=tk.RIGHT)
+
+        # Day-of-week headers
+        dow_frame = tk.Frame(popup, bg=BG_WINDOW)
+        dow_frame.pack(fill=tk.X, padx=PAD)
+        for day_name in ["S", "M", "T", "W", "T", "F", "S"]:
+            tk.Label(
+                dow_frame,
+                text=day_name,
+                bg=BG_WINDOW,
+                fg=FG_DIM,
+                font=FONT_BODY,
+                width=2,
+                anchor=tk.CENTER,
+            ).pack(side=tk.LEFT, expand=True)
+
+        # Grid of days
+        grid_frame = tk.Frame(popup, bg=BG_WINDOW)
+        grid_frame.pack(fill=tk.BOTH, expand=True, padx=PAD, pady=(0, PAD))
+
+        def _pick(d: date) -> None:
+            popup.destroy()
+            self._dismiss_context_menu()
+            self._current_date = d
+            self._update_date_label()
+            self._render_current_day()
+            self._extend_range_if_needed()
+
+        def _render_grid() -> None:
+            for w in grid_frame.winfo_children():
+                w.destroy()
+            month_label.configure(
+                text=f"{cal_mod.month_name[viewing_month]} {viewing_year}"
+            )
+
+            cal_obj = cal_mod.Calendar(firstweekday=6)  # Sunday first
+            weeks = cal_obj.monthdatescalendar(viewing_year, viewing_month)
+
+            for week in weeks:
+                row = tk.Frame(grid_frame, bg=BG_WINDOW)
+                row.pack(fill=tk.X)
+                for d in week:
+                    # Colors
+                    if d == today_date:
+                        bg = FG_ACCENT  # matches calendar tab date label
+                        fg = "#ffffff"
+                    elif d == selected_date and d != today_date:
+                        bg = COLOR_NORMAL  # teal for viewing day
+                        fg = "#ffffff"
+                    elif d.month == viewing_month:
+                        bg = BG_WINDOW
+                        fg = FG_TEXT
+                    else:
+                        bg = BG_WINDOW
+                        fg = FG_DIM  # dimmed for other months
+
+                    def _make_pick(target: date = d) -> None:
+                        _pick(target)
+
+                    btn = tk.Button(
+                        row,
+                        text=str(d.day),
+                        bg=bg,
+                        fg=fg,
+                        font=FONT_BODY,
+                        relief=tk.FLAT,
+                        width=2,
+                        activebackground="#5e5e5e",
+                        command=_make_pick,
+                    )
+                    btn.pack(side=tk.LEFT, expand=True)
+
+        _render_grid()
+
     def _extend_range_if_needed(self) -> None:
         """Auto-fetch more data if viewing beyond collected range."""
+        needs_fetch = False
         if self._collected_until and self._current_date >= self._collected_until:
-            self._status_var.set("Fetching more events...")
+            needs_fetch = True
+        if self._collected_start and self._current_date < self._collected_start:
+            needs_fetch = True
+        if needs_fetch:
+            self._status_var.set("Fetching events...")
             thread = threading.Thread(
                 target=self._do_extend_range,
                 daemon=True,
@@ -980,15 +1423,20 @@ class Dashboard:
             )
             from personal_assistant.config_manager import load_config
 
-            days_needed = (self._current_date - date.today()).days + 7
+            today = date.today()
+            days_ahead = max((self._current_date - today).days + 7, 14)
+            days_back = max((today - self._current_date).days + 1, 0)
+
             config = load_config(repo_path=self._state_path)
             calendar_ids = config.get("calendars", ["primary"])
             collect_all_calendars(
                 calendar_ids,
-                days_ahead=days_needed,
+                days_ahead=days_ahead,
+                days_back=days_back,
                 repo_path=self._state_path,
             )
-            self._collected_until = date.today() + timedelta(days=days_needed)
+            self._collected_until = today + timedelta(days=days_ahead)
+            self._collected_start = today - timedelta(days=days_back)
 
             # Reload events
             import json
@@ -1055,9 +1503,11 @@ class Dashboard:
             collect_all_calendars(
                 calendar_ids,
                 days_ahead=14,
+                days_back=0,
                 repo_path=self._state_path,
             )
 
+            self._collected_start = date.today()
             self._collected_until = date.today() + timedelta(days=14)
             self._root.after(0, self._status_var.set, "Analyzing...")
             analyses = analyze_all_calendars(repo_path=self._state_path)
@@ -1100,66 +1550,11 @@ class Dashboard:
         self._all_events = events
         self._all_conflicts = conflicts
         self._all_changes = changes
-        self._render_changes()
         self._render_current_day()
         if hasattr(self, "_actions_tab"):
             self._actions_tab.refresh()
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._status_var.set(f"Updated at {timestamp}")
-
-    def _render_changes(self) -> None:
-        if not self._changes_text or not self._changes_text.winfo_exists():
-            return
-
-        self._changes_text.configure(state=tk.NORMAL)
-        self._changes_text.delete("1.0", tk.END)
-
-        if not self._all_changes:
-            self._changes_text.pack_forget()
-            self._changes_text.configure(state=tk.DISABLED)
-            return
-
-        if self._calendar_frame:
-            self._changes_text.pack(
-                fill=tk.X,
-                pady=(0, PAD),
-                before=self._calendar_frame,
-            )
-        else:
-            self._changes_text.pack(fill=tk.X, pady=(0, PAD))
-
-        self._changes_text.insert(tk.END, "Changes: ", "dim")
-
-        for change in self._all_changes:
-            if change.change_type == "new":
-                self._changes_text.insert(
-                    tk.END,
-                    f"+ {change.event['summary']} "
-                    f"at {format_event_time(change.event['start'])}  ",
-                    "new",
-                )
-            elif change.change_type == "cancelled":
-                self._changes_text.insert(
-                    tk.END,
-                    f"- {change.event['summary']}  ",
-                    "cancelled",
-                )
-            elif change.change_type == "time_changed":
-                prev = format_event_time(change.previous_event["start"])
-                new_t = format_event_time(change.event["start"])
-                self._changes_text.insert(
-                    tk.END,
-                    f"~ {change.event['summary']} " f"{prev}->{new_t}  ",
-                    "moved",
-                )
-            elif change.change_type == "attendees_changed":
-                self._changes_text.insert(
-                    tk.END,
-                    f"~ {change.event['summary']} attendees  ",
-                    "moved",
-                )
-
-        self._changes_text.configure(state=tk.DISABLED)
 
     def _resolve_conflict_ids(self, day_events: list[dict[str, Any]]) -> set[str]:
         """Resolve which event IDs should be marked as conflicts.
@@ -1174,6 +1569,9 @@ class Dashboard:
         for c in self._all_conflicts:
             a_id = c.event_a["id"]
             b_id = c.event_b["id"]
+            # If either side is dismissed, skip the entire conflict pair
+            if a_id in self._dismissed_conflicts or b_id in self._dismissed_conflicts:
+                continue
             a_evt = events_by_id.get(a_id)
             b_evt = events_by_id.get(b_id)
             if not a_evt or not b_evt:
@@ -1181,11 +1579,9 @@ class Dashboard:
             a_status = _user_response_status(a_evt)
             b_status = _user_response_status(b_evt)
             if a_status == "accepted" and b_status == "accepted":
-                # Both accepted — true unresolved conflict
                 conflict_ids.add(a_id)
                 conflict_ids.add(b_id)
             else:
-                # Mark unaccepted events in the overlap
                 if a_status != "accepted":
                     conflict_ids.add(a_id)
                 if b_status != "accepted":
@@ -1197,6 +1593,14 @@ class Dashboard:
     ) -> None:
         """Render hour lines, half-hour lines, hour labels, and the 'now' line."""
         assert self._canvas is not None
+        # Compute now-line position to avoid overlapping hour labels
+        now_y_pos: float | None = None
+        if is_today:
+            now = datetime.now().astimezone()
+            now_hour_f = now.hour + now.minute / 60
+            if earliest <= now_hour_f <= latest:
+                now_y_pos = (now_hour_f - earliest) * HOUR_HEIGHT
+
         # Hour and half-hour grid
         for hour in range(earliest, latest + 1):
             y = (hour - earliest) * HOUR_HEIGHT
@@ -1217,6 +1621,9 @@ class Dashboard:
                     half_y,
                     fill=COLOR_GRID_LINE_HALF,
                 )
+            # Skip hour label if now-line is within font height range
+            if now_y_pos is not None and abs(y - now_y_pos) < 22:
+                continue
             self._canvas.create_text(
                 TIME_LABEL_WIDTH - 5,
                 y + 2,
@@ -1232,8 +1639,19 @@ class Dashboard:
             now_hour = now.hour + now.minute / 60
             if earliest <= now_hour <= latest:
                 now_y = (now_hour - earliest) * HOUR_HEIGHT
+                # Background behind time label to cover hour text
+                now_text = now.strftime("%H:%M")
+                self._canvas.create_rectangle(
+                    0,
+                    now_y - 22,
+                    TIME_LABEL_WIDTH - 2,
+                    now_y + 10,
+                    fill=BG_OUTPUT,
+                    outline="",
+                )
+                # Line drawn after background so it's on top
                 self._canvas.create_line(
-                    TIME_LABEL_WIDTH,
+                    0,
                     now_y,
                     canvas_width,
                     now_y,
@@ -1244,7 +1662,7 @@ class Dashboard:
                 self._canvas.create_text(
                     TIME_LABEL_WIDTH - 5,
                     now_y,
-                    text=now.strftime("%H:%M"),
+                    text=now_text,
                     fill=COLOR_NOW_LINE,
                     font=FONT_BODY,
                     anchor=tk.NE,
@@ -1293,8 +1711,9 @@ class Dashboard:
             x1 = EVENT_LEFT_MARGIN + col * col_width + 1
             x2 = x1 + col_width - 2
 
-            # Enforce minimum block height for readability
-            block_height = y2 - y1
+            # Track original height for padding decisions
+            original_height = y2 - y1
+            block_height = original_height
             if block_height < MIN_BLOCK_HEIGHT:
                 y2 = y1 + MIN_BLOCK_HEIGHT
                 block_height = MIN_BLOCK_HEIGHT
@@ -1367,15 +1786,43 @@ class Dashboard:
             if len(label) > max_chars:
                 label = label[: max_chars - 1] + "\u2026"
 
+            # Remove top padding for short events (15-min = ~15px original)
+            text_pad = 0 if original_height < HOUR_HEIGHT // 2 else 4
+
+            # Warning indicator for unaccepted events — left of time
+            text_x = x1 + 4
+            if response == "needsAction":
+                self._canvas.create_text(
+                    text_x,
+                    y1 + text_pad,
+                    text="\u26a0",
+                    fill="#e5c07b",
+                    font=FONT_BODY,
+                    anchor=tk.NW,
+                    tags=tag,
+                )
+                text_x += 16
+
             self._canvas.create_text(
-                x1 + 4,
-                y1 + 4,
+                text_x,
+                y1 + text_pad,
                 text=label,
                 fill=event_text_color,
                 font=FONT_BODY,
                 anchor=tk.NW,
                 tags=tag,
             )
+
+            # Dismissed conflict indicator — RHS
+            if event_id in self._dismissed_conflicts:
+                self._canvas.create_text(
+                    x2 - 4,
+                    y1 + text_pad,
+                    text="\U0001f44c",
+                    font=FONT_BODY,
+                    anchor=tk.NE,
+                    tags=tag,
+                )
 
         # No events message
         if not day_events:
