@@ -6,6 +6,8 @@ of external system state (calendar, Jira, GitHub). Collectors write
 data here; analyzers read diffs to detect changes.
 """
 
+from __future__ import annotations
+
 import logging
 import subprocess
 from dataclasses import dataclass

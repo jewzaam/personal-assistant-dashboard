@@ -4,8 +4,6 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from personal_assistant.analyzers.calendar_analyzer import (
     CalendarAnalysis,
     CalendarChange,
@@ -16,17 +14,8 @@ from personal_assistant.analyzers.calendar_analyzer import (
     _parse_event_time,
     _user_declined,
 )
-from personal_assistant.state_repo import commit_state, init_repo
-
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
-
-
-@pytest.fixture()
-def state_dir(tmp_path: Path) -> Path:
-    """Create and initialize a state repo."""
-    repo = tmp_path / "pa-state"
-    init_repo(path=repo)
-    return repo
+from personal_assistant.state_repo import commit_state
+from tests.conftest import FIXTURES_DIR
 
 
 def _write_events(

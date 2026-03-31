@@ -4,6 +4,8 @@
 Dispatches to subcommands: state, track, collect, analyze, digest, gui.
 """
 
+from __future__ import annotations
+
 import argparse
 import logging
 import sys
