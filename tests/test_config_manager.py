@@ -16,15 +16,8 @@ from personal_assistant.config_manager import (
     remove_jira_tracking,
     save_config,
 )
-from personal_assistant.state_repo import init_repo
 
-
-@pytest.fixture()
-def state_dir(tmp_path: Path) -> Path:
-    """Create and initialize a state repo for config tests."""
-    repo = tmp_path / "pa-state"
-    init_repo(path=repo)
-    return repo
+# state_dir fixture provided by conftest.py
 
 
 def test_load_config_returns_defaults(state_dir: Path) -> None:

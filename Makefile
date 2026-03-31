@@ -31,6 +31,7 @@ install: $(PYTHON)  ## Install package
 
 install-dev: $(PYTHON)  ## Install in editable mode with dev deps
 	$(PYTHON) -m pip install -e ".[dev]"
+	$(PYTHON) -m pip install --force-reinstall --no-deps "meet-enrich @ git+https://github.com/jewzaam/meet-enrich.git" "meet-summarize @ git+https://github.com/jewzaam/meet-summarize.git"
 
 install-no-deps: $(PYTHON)  ## Install in editable mode without dependencies
 	$(PYTHON) -m pip install -e . --no-deps

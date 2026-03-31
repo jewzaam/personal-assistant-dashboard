@@ -2,6 +2,7 @@
 """Tests for gws_auth module."""
 
 import json
+import subprocess
 from unittest.mock import MagicMock, patch
 
 from personal_assistant.gws_auth import (
@@ -135,3 +136,15 @@ def test_optional_scopes_tracked() -> None:
     assert status.all_required_met
     # Drive and docs are optional, should be in missing_optional
     assert len(status.missing_optional) > 0
+
+
+def test_check_scopes_timeout() -> None:
+    """Timeout during gws auth status returns error state."""
+    with patch(
+        "personal_assistant.gws_auth.subprocess.run",
+        side_effect=subprocess.TimeoutExpired("gws", 10),
+    ):
+        status = check_scopes()
+
+    assert not status.available
+    assert "timed out" in status.error

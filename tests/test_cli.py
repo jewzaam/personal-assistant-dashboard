@@ -6,17 +6,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
-from personal_assistant.state_repo import init_repo
-
-
-@pytest.fixture()
-def state_dir(tmp_path: Path) -> Path:
-    """Create and initialize a state repo."""
-    repo = tmp_path / "pa-state"
-    init_repo(path=repo)
-    return repo
+# state_dir fixture provided by conftest.py
 
 
 def _run_cli(*args: str) -> tuple[str, int]:

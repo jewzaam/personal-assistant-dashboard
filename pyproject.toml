@@ -13,6 +13,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+meetings = [
+    "meet-enrich @ git+https://github.com/jewzaam/meet-enrich.git",
+    "meet-summarize @ git+https://github.com/jewzaam/meet-summarize.git",
+]
 dev = [
     "black>=23.0",
     "flake8>=6.0",
@@ -31,11 +35,16 @@ include = ["personal_assistant*"]
 
 [tool.black]
 line-length = 88
+target-version = ["py313"]
 
 [tool.mypy]
 python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["meet_enrich.*", "meet_summarize.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -43,6 +52,8 @@ testpaths = ["tests"]
 [tool.coverage.run]
 omit = [
     "personal_assistant/dashboard.py",
+    "personal_assistant/actions_tab.py",
+    "personal_assistant/meetings_tab.py",
     "personal_assistant/config.py",
 ]
 

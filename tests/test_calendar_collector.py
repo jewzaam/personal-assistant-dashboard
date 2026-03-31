@@ -2,6 +2,7 @@
 """Tests for calendar_collector module."""
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,41 +17,14 @@ from personal_assistant.collectors.calendar_collector import (
     _normalize_event,
     _output_path,
 )
-from personal_assistant.state_repo import init_repo
-
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
-
-
-@pytest.fixture()
-def state_dir(tmp_path: Path) -> Path:
-    """Create and initialize a state repo."""
-    repo = tmp_path / "pa-state"
-    init_repo(path=repo)
-    return repo
-
-
-@pytest.fixture()
-def gws_response() -> str:
-    """Load the sample GWS calendar response."""
-    return (FIXTURES_DIR / "gws_calendar_response.json").read_text()
-
-
-def _mock_run_success(gws_response: str):
-    """Create a mock subprocess.run that returns the GWS response."""
-    from unittest.mock import MagicMock
-
-    result = MagicMock()
-    result.returncode = 0
-    result.stdout = gws_response
-    result.stderr = ""
-    return result
+from tests.conftest import mock_subprocess_result
 
 
 def test_collect_events_writes_json(state_dir: Path, gws_response: str) -> None:
     with patch(
         "personal_assistant.collectors.calendar_collector.subprocess.run"
     ) as mock_run:
-        mock_run.return_value = _mock_run_success(gws_response)
+        mock_run.return_value = mock_subprocess_result(stdout=gws_response)
         events = collect_events("primary", repo_path=state_dir)
 
     assert len(events) == 3
@@ -64,7 +38,7 @@ def test_collect_events_normalizes_fields(state_dir: Path, gws_response: str) ->
     with patch(
         "personal_assistant.collectors.calendar_collector.subprocess.run"
     ) as mock_run:
-        mock_run.return_value = _mock_run_success(gws_response)
+        mock_run.return_value = mock_subprocess_result(stdout=gws_response)
         events = collect_events("primary", repo_path=state_dir)
 
     event = events[0]
@@ -80,7 +54,7 @@ def test_collect_events_handles_all_day(state_dir: Path, gws_response: str) -> N
     with patch(
         "personal_assistant.collectors.calendar_collector.subprocess.run"
     ) as mock_run:
-        mock_run.return_value = _mock_run_success(gws_response)
+        mock_run.return_value = mock_subprocess_result(stdout=gws_response)
         events = collect_events("primary", repo_path=state_dir)
 
     all_day = events[2]
@@ -133,7 +107,7 @@ def test_collect_all_calendars(state_dir: Path, gws_response: str) -> None:
     with patch(
         "personal_assistant.collectors.calendar_collector.subprocess.run"
     ) as mock_run:
-        mock_run.return_value = _mock_run_success(gws_response)
+        mock_run.return_value = mock_subprocess_result(stdout=gws_response)
         results = collect_all_calendars(
             ["primary", "shared@group.calendar.google.com"],
             repo_path=state_dir,
@@ -153,7 +127,7 @@ def test_collect_all_calendars_handles_failure(
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return _mock_run_success(gws_response)
+            return mock_subprocess_result(stdout=gws_response)
         from unittest.mock import MagicMock
 
         result = MagicMock()
@@ -284,3 +258,60 @@ def test_format_calendar_list() -> None:
     output = format_calendar_list(calendars)
     assert "Test" in output
     assert "x@test.com" in output
+
+
+def test_collect_events_timeout(state_dir: Path) -> None:
+    """Timeout during GWS CLI call raises CalendarCollectorError."""
+    with patch(
+        "personal_assistant.collectors.calendar_collector.subprocess.run",
+        side_effect=subprocess.TimeoutExpired("gws", 30),
+    ):
+        with pytest.raises(CalendarCollectorError, match="timed out"):
+            collect_events("primary", repo_path=state_dir)
+
+
+def test_collect_commit_analyze_integration(state_dir: Path, gws_response: str) -> None:
+    """Integration test: collect → commit → modify → analyze detects changes."""
+    from personal_assistant.analyzers.calendar_analyzer import analyze_calendar
+    from personal_assistant.state_repo import commit_state
+
+    # Collect initial events
+    with patch(
+        "personal_assistant.collectors.calendar_collector.subprocess.run"
+    ) as mock_run:
+        mock_run.return_value = mock_subprocess_result(stdout=gws_response)
+        collect_events("primary", repo_path=state_dir)
+
+    # Commit initial state
+    commit_state("initial collection", repo_path=state_dir)
+
+    # Modify events (add a new event)
+    events_file = state_dir / "calendar" / "events.json"
+    events = json.loads(events_file.read_text())
+    events.append(
+        {
+            "id": "new_event_123",
+            "summary": "New Meeting",
+            "start": "2026-03-31T14:00:00-04:00",
+            "end": "2026-03-31T15:00:00-04:00",
+            "all_day": False,
+            "status": "confirmed",
+            "organizer_email": "test@example.com",
+            "organizer_self": False,
+            "attendees": [],
+            "hangout_link": None,
+            "html_link": "",
+            "event_type": "default",
+            "recurring_event_id": None,
+            "description": "",
+            "location": "",
+            "attachments": [],
+        }
+    )
+    events_file.write_text(json.dumps(events))
+
+    # Analyze — should detect the new event
+    analysis = analyze_calendar(repo_path=state_dir)
+    new_changes = [c for c in analysis.changes if c.change_type == "new"]
+    assert len(new_changes) >= 1
+    assert any(c.event["id"] == "new_event_123" for c in new_changes)

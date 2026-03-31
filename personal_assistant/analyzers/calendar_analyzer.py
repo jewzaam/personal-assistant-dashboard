@@ -8,7 +8,8 @@ to identify new, cancelled, moved, and conflicting events.
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -20,11 +21,18 @@ from personal_assistant.state_repo import (
 logger = logging.getLogger(__name__)
 
 
+class ChangeType(str, Enum):
+    NEW = "new"
+    CANCELLED = "cancelled"
+    TIME_CHANGED = "time_changed"
+    ATTENDEES_CHANGED = "attendees_changed"
+
+
 @dataclass
 class CalendarChange:
     """A single detected change in the calendar."""
 
-    change_type: str  # "new", "cancelled", "time_changed", "attendees_changed"
+    change_type: ChangeType
     event: dict[str, Any]
     previous_event: dict[str, Any] | None = None
     detail: str = ""
@@ -76,7 +84,7 @@ def analyze_calendar(
         if event_id not in previous_by_id and not _user_declined(event):
             analysis.changes.append(
                 CalendarChange(
-                    change_type="new",
+                    change_type=ChangeType.NEW,
                     event=event,
                     detail=f"New: {event['summary']} at {event['start']}",
                 )
@@ -87,7 +95,7 @@ def analyze_calendar(
         if event_id not in current_by_id and not _user_declined(event):
             analysis.changes.append(
                 CalendarChange(
-                    change_type="cancelled",
+                    change_type=ChangeType.CANCELLED,
                     event=event,
                     detail=(f"Cancelled: {event['summary']} " f"at {event['start']}"),
                 )
@@ -104,7 +112,7 @@ def analyze_calendar(
         if current["start"] != previous["start"] or current["end"] != previous["end"]:
             analysis.changes.append(
                 CalendarChange(
-                    change_type="time_changed",
+                    change_type=ChangeType.TIME_CHANGED,
                     event=current,
                     previous_event=previous,
                     detail=(
@@ -126,7 +134,7 @@ def analyze_calendar(
                 parts.append(f"removed: {', '.join(sorted(removed))}")
             analysis.changes.append(
                 CalendarChange(
-                    change_type="attendees_changed",
+                    change_type=ChangeType.ATTENDEES_CHANGED,
                     event=current,
                     previous_event=previous,
                     detail=(
@@ -277,14 +285,22 @@ def _detect_conflicts(events: list[dict[str, Any]]) -> list[Conflict]:
         if not start_a or not end_a:
             continue
 
+        # Normalize to UTC for comparison
+        start_a_utc = start_a.astimezone(timezone.utc)
+        end_a_utc = end_a.astimezone(timezone.utc)
+
         for event_b in attending[i + 1 :]:
             start_b = _parse_event_time(event_b["start"])
             end_b = _parse_event_time(event_b["end"])
             if not start_b or not end_b:
                 continue
 
+            # Normalize to UTC for comparison
+            start_b_utc = start_b.astimezone(timezone.utc)
+            end_b_utc = end_b.astimezone(timezone.utc)
+
             # Overlap: A starts before B ends AND B starts before A ends
-            if start_a < end_b and start_b < end_a:
+            if start_a_utc < end_b_utc and start_b_utc < end_a_utc:
                 conflicts.append(
                     Conflict(
                         event_a=event_a,

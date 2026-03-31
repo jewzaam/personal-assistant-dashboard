@@ -4,6 +4,8 @@
 Writes normalized event data to the state repo as JSON files.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import subprocess

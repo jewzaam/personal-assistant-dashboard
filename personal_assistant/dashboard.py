@@ -12,6 +12,7 @@ import logging
 import subprocess
 import threading
 import tkinter as tk
+from tkinter import ttk
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -28,6 +29,7 @@ from personal_assistant.config import (
     PAD,
 )
 from personal_assistant.state_repo import DEFAULT_STATE_PATH
+from personal_assistant.utils import format_event_time
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,14 @@ EVENT_LEFT_MARGIN = 55
 EVENT_RIGHT_MARGIN = 15
 WORK_DAY_START = 6
 WORK_DAY_END = 18
+
+# Text truncation constants
+CHAR_WIDTH_PIXELS = 9
+TEXT_PADDING_PIXELS = 12
+MIN_TRUNCATION_CHARS = 5
+
+# Scroll offset
+SCROLL_CONTEXT_HOURS = 1
 
 
 class Dashboard:
@@ -92,6 +102,7 @@ class Dashboard:
         self._tooltip_tag: str | None = None
         self._tooltip_timer: str | None = None
         self._tooltip_pending_pos: tuple[int, int] = (0, 0)
+        self._notebook: ttk.Notebook | None = None
 
     def show(self) -> None:
         if self._window and self._window.winfo_exists():
@@ -114,7 +125,7 @@ class Dashboard:
 
     def _build(self) -> None:
         self._window = tk.Toplevel(self._root)
-        self._window.title("PA — Calendar Dashboard")
+        self._window.title("PA — Dashboard")
         self._window.geometry("900x820")
         self._window.configure(bg=BG_WINDOW)
         self._window.protocol("WM_DELETE_WINDOW", self._on_quit)
@@ -123,8 +134,99 @@ class Dashboard:
         main = tk.Frame(self._window, bg=BG_WINDOW)
         main.pack(fill=tk.BOTH, expand=True, padx=PAD, pady=PAD)
 
+        # Notebook (tabs)
+        self._style = ttk.Style()
+        self._style.theme_use("clam")
+        self._style.configure(
+            "Dark.TNotebook",
+            background=BG_WINDOW,
+            borderwidth=0,
+            tabmargins=(0, 0, 0, 0),
+        )
+        self._style.configure(
+            "Dark.TNotebook.Tab",
+            background="#333333",
+            foreground=FG_DIM,
+            padding=(16, 6),
+            font=FONT_BODY,
+            borderwidth=0,
+        )
+        self._style.map(
+            "Dark.TNotebook.Tab",
+            background=[("selected", BG_WINDOW)],
+            foreground=[("selected", FG_TEXT)],
+        )
+
+        self._notebook = ttk.Notebook(main, style="Dark.TNotebook")
+        self._notebook.pack(fill=tk.BOTH, expand=True)
+
+        # Calendar tab
+        cal_tab = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(cal_tab, text="Calendar")
+
+        # Transcripts tab
+        meetings_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(meetings_frame, text="Transcripts")
+
+        from personal_assistant.meetings_tab import MeetingsTab
+
+        self._meetings_tab = MeetingsTab(meetings_frame, self._root)
+
+        # Actions tab
+        actions_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(actions_frame, text="Actions")
+
+        from personal_assistant.actions_tab import ActionsTab
+
+        self._actions_tab = ActionsTab(
+            actions_frame,
+            events_source=lambda: self._all_events,
+        )
+        self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        self._build_calendar_tab(cal_tab)
+
+        # Bottom bar: legend + status
+        bottom = tk.Frame(main, bg=BG_WINDOW)
+        bottom.pack(fill=tk.X, pady=(PAD, 0))
+
+        # Legend (left side)
+        legend = tk.Frame(bottom, bg=BG_WINDOW)
+        legend.pack(side=tk.LEFT)
+        for label_text, color in [
+            ("meeting", COLOR_NORMAL),
+            ("1:1", COLOR_ONEONE),
+            ("conflict", COLOR_CONFLICT),
+        ]:
+            swatch = tk.Frame(legend, bg=color, width=10, height=10)
+            swatch.pack(side=tk.LEFT, padx=(0, 2))
+            swatch.pack_propagate(False)
+            tk.Label(
+                legend,
+                text=label_text,
+                bg=BG_WINDOW,
+                fg=FG_DIM,
+                font=FONT_BODY,
+            ).pack(side=tk.LEFT, padx=(0, 8))
+
+        # Status (right side)
+        tk.Label(
+            bottom,
+            textvariable=self._status_var,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=FONT_BODY,
+            anchor=tk.E,
+        ).pack(side=tk.RIGHT)
+
+        self._update_date_label()
+        self._check_scopes()
+
+    def _build_calendar_tab(self, cal_tab: tk.Frame) -> None:
+        """Build the calendar tab with nav, changes, canvas, and bindings."""
+        assert self._window is not None
         # Top bar: nav + legend + refresh
-        top_bar = tk.Frame(main, bg=BG_WINDOW)
+        top_bar = tk.Frame(cal_tab, bg=BG_WINDOW)
         top_bar.pack(fill=tk.X, pady=(0, PAD))
 
         # Date navigation: < date >
@@ -208,12 +310,9 @@ class Dashboard:
         self._scope_indicator.pack(side=tk.RIGHT, padx=(0, 8))
         self._scope_indicator.bind("<Button-1>", lambda e: self._show_scope_details())
 
-        # Legend
-        # (legend moved to bottom bar)
-
         # Changes bar (only shown when there are changes)
         self._changes_text = tk.Text(
-            main,
+            cal_tab,
             bg=BG_OUTPUT,
             fg=FG_TEXT,
             font=FONT_BODY,
@@ -230,9 +329,10 @@ class Dashboard:
         self._changes_text.tag_configure("new", foreground=COLOR_CHANGE_NEW)
         self._changes_text.tag_configure("cancelled", foreground=COLOR_CHANGE_CANCELLED)
         self._changes_text.tag_configure("moved", foreground=COLOR_CHANGE_MOVED)
+        self._changes_text.tag_configure("dim", foreground=FG_DIM)
 
         # Calendar area
-        self._calendar_frame = tk.Frame(main, bg=BG_WINDOW)
+        self._calendar_frame = tk.Frame(cal_tab, bg=BG_WINDOW)
         self._calendar_frame.pack(fill=tk.BOTH, expand=True)
 
         # Canvas + scrollbar (persistent, redrawn on nav)
@@ -264,39 +364,6 @@ class Dashboard:
         self._canvas.bind("<Motion>", self._on_hover)
         self._canvas.bind("<Leave>", self._hide_tooltip)
 
-        # Bottom bar: legend + status
-        bottom = tk.Frame(main, bg=BG_WINDOW)
-        bottom.pack(fill=tk.X, pady=(PAD, 0))
-
-        # Legend (left side)
-        legend = tk.Frame(bottom, bg=BG_WINDOW)
-        legend.pack(side=tk.LEFT)
-        for label_text, color in [
-            ("meeting", COLOR_NORMAL),
-            ("1:1", COLOR_ONEONE),
-            ("conflict", COLOR_CONFLICT),
-        ]:
-            swatch = tk.Frame(legend, bg=color, width=10, height=10)
-            swatch.pack(side=tk.LEFT, padx=(0, 2))
-            swatch.pack_propagate(False)
-            tk.Label(
-                legend,
-                text=label_text,
-                bg=BG_WINDOW,
-                fg=FG_DIM,
-                font=FONT_BODY,
-            ).pack(side=tk.LEFT, padx=(0, 8))
-
-        # Status (right side)
-        tk.Label(
-            bottom,
-            textvariable=self._status_var,
-            bg=BG_WINDOW,
-            fg=FG_DIM,
-            font=FONT_BODY,
-            anchor=tk.E,
-        ).pack(side=tk.RIGHT)
-
         # Keyboard nav
         self._window.bind("<Left>", lambda e: self._prev_day())
         self._window.bind("<Right>", lambda e: self._next_day())
@@ -305,7 +372,16 @@ class Dashboard:
         self._resize_timer: str | None = None
         self._canvas.bind("<Configure>", self._on_canvas_resize)
 
-        self._update_date_label()
+    def _on_tab_changed(self, _event: Any) -> None:
+        """Refresh tabs when they become visible."""
+        if not self._notebook:
+            return
+        tab_id = self._notebook.select()
+        tab_text = self._notebook.tab(tab_id, "text")
+        if tab_text == "Actions" and hasattr(self, "_actions_tab"):
+            self._actions_tab.refresh()
+        elif tab_text == "Transcripts" and hasattr(self, "_meetings_tab"):
+            self._meetings_tab.refresh()
 
     def _check_scopes(self) -> None:
         """Check GWS scopes in background and update indicator."""
@@ -458,8 +534,8 @@ class Dashboard:
 
         cal_event = self._canvas_event_map[evt_tag]
         summary = cal_event.get("summary", "")
-        start = _format_time(cal_event.get("start", ""))
-        end = _format_time(cal_event.get("end", ""))
+        start = format_event_time(cal_event.get("start", ""))
+        end = format_event_time(cal_event.get("end", ""))
         tip_text = f"{start}-{end}  {summary}"
 
         x, y = self._tooltip_pending_pos
@@ -602,8 +678,8 @@ class Dashboard:
         import webbrowser
 
         summary = cal_event.get("summary", "(no title)")
-        start = _format_time(cal_event.get("start", ""))
-        end = _format_time(cal_event.get("end", ""))
+        start = format_event_time(cal_event.get("start", ""))
+        end = format_event_time(cal_event.get("end", ""))
         response = _user_response_status(cal_event)
         organizer = cal_event.get("organizer_email", "")
         description = cal_event.get("description", "")
@@ -1026,6 +1102,8 @@ class Dashboard:
         self._all_changes = changes
         self._render_changes()
         self._render_current_day()
+        if hasattr(self, "_actions_tab"):
+            self._actions_tab.refresh()
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._status_var.set(f"Updated at {timestamp}")
 
@@ -1050,12 +1128,14 @@ class Dashboard:
         else:
             self._changes_text.pack(fill=tk.X, pady=(0, PAD))
 
+        self._changes_text.insert(tk.END, "Changes: ", "dim")
+
         for change in self._all_changes:
             if change.change_type == "new":
                 self._changes_text.insert(
                     tk.END,
                     f"+ {change.event['summary']} "
-                    f"at {_format_time(change.event['start'])}  ",
+                    f"at {format_event_time(change.event['start'])}  ",
                     "new",
                 )
             elif change.change_type == "cancelled":
@@ -1065,8 +1145,8 @@ class Dashboard:
                     "cancelled",
                 )
             elif change.change_type == "time_changed":
-                prev = _format_time(change.previous_event["start"])
-                new_t = _format_time(change.event["start"])
+                prev = format_event_time(change.previous_event["start"])
+                new_t = format_event_time(change.event["start"])
                 self._changes_text.insert(
                     tk.END,
                     f"~ {change.event['summary']} " f"{prev}->{new_t}  ",
@@ -1081,22 +1161,14 @@ class Dashboard:
 
         self._changes_text.configure(state=tk.DISABLED)
 
-    def _render_current_day(self) -> None:
-        if not self._canvas or not self._canvas.winfo_exists():
-            return
+    def _resolve_conflict_ids(self, day_events: list[dict[str, Any]]) -> set[str]:
+        """Resolve which event IDs should be marked as conflicts.
 
-        self._canvas.delete("all")
-
-        date_str = self._current_date.strftime("%Y-%m-%d")
-        day_events = _filter_events_for_date(self._all_events, date_str)
-
-        now = datetime.now().astimezone()
-        is_today = self._current_date == date.today()
-
-        # Conflict rendering: an event gets conflict color if:
-        # - It's unaccepted and overlaps with another event, OR
-        # - Both events in the overlap are accepted (unresolved)
-        # An accepted event next to an unaccepted one is fine — user chose.
+        An event gets conflict color if:
+        - It's unaccepted and overlaps with another event, OR
+        - Both events in the overlap are accepted (unresolved)
+        An accepted event next to an unaccepted one is fine — user chose.
+        """
         conflict_ids: set[str] = set()
         events_by_id = {e.get("id", ""): e for e in day_events}
         for c in self._all_conflicts:
@@ -1118,17 +1190,13 @@ class Dashboard:
                     conflict_ids.add(a_id)
                 if b_status != "accepted":
                     conflict_ids.add(b_id)
+        return conflict_ids
 
-        # Time range
-        earliest, latest = _day_time_range(day_events)
-        total_hours = latest - earliest
-        canvas_height = max(total_hours * HOUR_HEIGHT + 20, 200)
-
-        self._canvas.update_idletasks()
-        canvas_width = max(self._canvas.winfo_width(), 800)
-
-        self._canvas.configure(scrollregion=(0, 0, canvas_width, canvas_height))
-
+    def _render_grid(
+        self, earliest: int, latest: int, canvas_width: int, is_today: bool
+    ) -> None:
+        """Render hour lines, half-hour lines, hour labels, and the 'now' line."""
+        assert self._canvas is not None
         # Hour and half-hour grid
         for hour in range(earliest, latest + 1):
             y = (hour - earliest) * HOUR_HEIGHT
@@ -1160,6 +1228,7 @@ class Dashboard:
 
         # "Now" line
         if is_today:
+            now = datetime.now().astimezone()
             now_hour = now.hour + now.minute / 60
             if earliest <= now_hour <= latest:
                 now_y = (now_hour - earliest) * HOUR_HEIGHT
@@ -1180,6 +1249,32 @@ class Dashboard:
                     font=FONT_BODY,
                     anchor=tk.NE,
                 )
+
+    def _render_current_day(self) -> None:
+        if not self._canvas or not self._canvas.winfo_exists():
+            return
+
+        self._canvas.delete("all")
+
+        date_str = self._current_date.strftime("%Y-%m-%d")
+        day_events = _filter_events_for_date(self._all_events, date_str)
+
+        now = datetime.now().astimezone()
+        is_today = self._current_date == date.today()
+
+        conflict_ids = self._resolve_conflict_ids(day_events)
+
+        # Time range
+        earliest, latest = _day_time_range(day_events)
+        total_hours = latest - earliest
+        canvas_height = max(total_hours * HOUR_HEIGHT + 20, 200)
+
+        self._canvas.update_idletasks()
+        canvas_width = max(self._canvas.winfo_width(), 800)
+
+        self._canvas.configure(scrollregion=(0, 0, canvas_width, canvas_height))
+
+        self._render_grid(earliest, latest, canvas_width, is_today)
 
         # Layout and draw events
         self._canvas_event_map.clear()
@@ -1258,14 +1353,17 @@ class Dashboard:
                 )
 
             summary = event.get("summary", "")
-            start_t = _format_time(event["start"])
+            start_t = format_event_time(event["start"])
             attendee_info = _attendee_count(event)
 
             label = f"{start_t} {summary}"
             if attendee_info:
                 label += f" {attendee_info}"
 
-            max_chars = max(int((x2 - x1 - 12) / 9), 5)
+            max_chars = max(
+                int((x2 - x1 - TEXT_PADDING_PIXELS) / CHAR_WIDTH_PIXELS),
+                MIN_TRUNCATION_CHARS,
+            )
             if len(label) > max_chars:
                 label = label[: max_chars - 1] + "\u2026"
 
@@ -1296,7 +1394,7 @@ class Dashboard:
             if earliest <= now_hour <= latest:
                 frac = max(
                     0,
-                    (now_hour - earliest - 1) / total_hours,
+                    (now_hour - earliest - SCROLL_CONTEXT_HOURS) / total_hours,
                 )
                 self._canvas.yview_moveto(frac)
             else:
@@ -1355,15 +1453,6 @@ def _render_html_description(
         text_widget.insert(tk.END, remaining)
 
     text_widget.insert(tk.END, "\n")
-
-
-def _format_time(time_str: str) -> str:
-    if not time_str or len(time_str) <= 10:
-        return ""
-    try:
-        return datetime.fromisoformat(time_str).strftime("%H:%M")
-    except ValueError:
-        return time_str[:5]
 
 
 def _attendee_count(event: dict[str, Any]) -> str:
@@ -1431,7 +1520,9 @@ def _layout_events(
     earliest_hour: int,
 ) -> list[dict[str, Any]]:
     timed = [
-        e for e in events if not e.get("all_day", False) and _format_time(e["start"])
+        e
+        for e in events
+        if not e.get("all_day", False) and format_event_time(e["start"])
     ]
     timed.sort(key=lambda e: e["start"])
 
