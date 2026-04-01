@@ -94,6 +94,7 @@ class Dashboard:
         self._canvas_event_map: dict[str, dict[str, Any]] = {}
         self._all_conflicts: list[Any] = []
         self._all_changes: list[Any] = []
+        self._missed_meetings: list[dict[str, Any]] = []
         self._collected_until: date | None = None
         self._collected_start: date | None = None
         self._dismissed_conflicts: set[str] = set()
@@ -153,8 +154,10 @@ class Dashboard:
         self._drag_start_y = 0
         self._dragged = False
 
+        # Off-white border around the window (no WM decorations)
+        self._window.configure(bg="#555555")
         main = tk.Frame(self._window, bg=BG_WINDOW)
-        main.pack(fill=tk.BOTH, expand=True, padx=PAD, pady=PAD)
+        main.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 
         # Notebook (tabs)
         self._style = ttk.Style()
@@ -169,7 +172,7 @@ class Dashboard:
             "Dark.TNotebook.Tab",
             background="#333333",
             foreground=FG_DIM,
-            padding=(16, 6),
+            padding=(16, 3),
             font=FONT_BODY,
             borderwidth=0,
         )
@@ -309,7 +312,7 @@ class Dashboard:
 
         # Bottom bar: legend + status
         bottom = tk.Frame(main, bg=BG_WINDOW)
-        bottom.pack(fill=tk.X, pady=(PAD, 0))
+        bottom.pack(fill=tk.X, pady=(2, 0))
 
         # Legend (left side)
         legend = tk.Frame(bottom, bg=BG_WINDOW)
@@ -417,7 +420,18 @@ class Dashboard:
             padx=8,
         ).pack(side=tk.LEFT, padx=(8, 0))
 
-        # Refresh button removed — calendar auto-refreshes every 60s
+        tk.Button(
+            nav,
+            text="\U0001f504",
+            command=self._start_cal_refresh,
+            bg=COLOR_NAV_BTN,
+            fg=FG_TEXT,
+            font=FONT_BODY,
+            relief=tk.FLAT,
+            activebackground="#5e5e5e",
+            cursor="hand2",
+            padx=4,
+        ).pack(side=tk.LEFT, padx=(4, 0))
 
         # Scope status indicator (green/red dot)
         self._scope_indicator = tk.Label(
@@ -643,7 +657,7 @@ class Dashboard:
             self._notebook.select(self._about_tab_id)  # type: ignore[union-attr]
             self._root.after(100, self._rebind_tab_changed)
             self._window.minsize(width=600, height=1)
-            self._window.geometry(f"{w}x52+{x}+{y}")
+            self._window.geometry(f"{w}x36+{x}+{y}")
 
     def _unshade(self) -> None:
         """Restore window from shaded state."""
@@ -1186,9 +1200,9 @@ class Dashboard:
             ("Maybe", "tentative"),
             ("Decline", "declined"),
         ]:
-            # Can't decline own meeting (no self in attendee list)
             if status_val == "declined" and is_organizer:
-                menu.add_command(label=label, state=tk.DISABLED)
+                # Organizer can't decline — offer DELETE instead
+                continue
             elif response == status_val:
                 menu.add_command(label=label, state=tk.DISABLED)
             else:
@@ -1197,6 +1211,14 @@ class Dashboard:
                     menu_action(s)
 
                 menu.add_command(label=label, command=_make_cmd)
+
+        if is_organizer:
+
+            def _delete_cmd() -> None:
+                self._dismiss_context_menu()
+                self._delete_event(cal_event)
+
+            menu.add_command(label="DELETE \U0001f4a5", command=_delete_cmd)
 
         # Dismiss conflict — only if event is in a conflict
         event_id = cal_event.get("id", "")
@@ -1366,26 +1388,53 @@ class Dashboard:
         ).pack(side=tk.LEFT)
 
         # Action buttons on subtitle row
-        for label, status_val, color in [
-            ("Decline", "declined", COLOR_CONFLICT),
-            ("Maybe", "tentative", "#e5c07b"),
-            ("Accept", "accepted", "#98c379"),
-        ]:
-            btn = tk.Button(
-                sub,
-                text=label,
-                bg=color if response != status_val else "#3a3a3a",
-                fg="#ffffff" if response != status_val else "#666666",
-                font=FONT_BODY,
-                relief=tk.FLAT,
-                padx=6,
-                pady=1,
-                cursor="hand2" if response != status_val else "",
-                command=self._make_response_cmd(cal_event, status_val, popup),
-            )
-            btn.pack(side=tk.RIGHT, padx=1)
-            if response == status_val:
-                btn.configure(state=tk.DISABLED)
+        is_organizer = cal_event.get("organizer_self", False)
+        buttons: list[tuple[str, str, str]] = []
+        if is_organizer:
+            buttons.append(("DELETE \U0001f4a5", "delete", COLOR_CONFLICT))
+        else:
+            buttons.append(("Decline", "declined", COLOR_CONFLICT))
+        buttons.append(("Maybe", "tentative", "#e5c07b"))
+        buttons.append(("Accept", "accepted", "#98c379"))
+
+        for label, status_val, color in buttons:
+            if status_val == "delete":
+
+                def _del_cmd(
+                    evt: dict[str, Any] = cal_event,
+                    p: tk.Toplevel = popup,
+                ) -> None:
+                    self._delete_event(evt)
+                    p.destroy()
+
+                tk.Button(
+                    sub,
+                    text=label,
+                    bg=color,
+                    fg="#ffffff",
+                    font=FONT_BODY,
+                    relief=tk.FLAT,
+                    padx=6,
+                    pady=1,
+                    cursor="hand2",
+                    command=_del_cmd,
+                ).pack(side=tk.RIGHT, padx=1)
+            else:
+                btn = tk.Button(
+                    sub,
+                    text=label,
+                    bg=color if response != status_val else "#3a3a3a",
+                    fg="#ffffff" if response != status_val else "#666666",
+                    font=FONT_BODY,
+                    relief=tk.FLAT,
+                    padx=6,
+                    pady=1,
+                    cursor="hand2" if response != status_val else "",
+                    command=self._make_response_cmd(cal_event, status_val, popup),
+                )
+                btn.pack(side=tk.RIGHT, padx=1)
+                if response == status_val:
+                    btn.configure(state=tk.DISABLED)
 
         # Content area
         content_frame = tk.Frame(popup, bg=BG_OUTPUT)
@@ -1492,6 +1541,56 @@ class Dashboard:
                     text.insert(tk.END, "\n")
 
         text.configure(state=tk.DISABLED)
+
+    def _delete_event(self, cal_event: dict[str, Any]) -> None:
+        """Delete an event via GWS CLI (organizer only), then refresh."""
+        self._status_var.set(f"Deleting {cal_event.get('summary', '')}...")
+        thread = threading.Thread(
+            target=self._do_delete_event,
+            args=(cal_event,),
+            daemon=True,
+            name="delete-event",
+        )
+        thread.start()
+
+    def _do_delete_event(self, cal_event: dict[str, Any]) -> None:
+        """Background: call GWS to delete event, then refresh."""
+        event_id = cal_event.get("id", "")
+        if not event_id:
+            self._root.after(0, self._status_var.set, "Error: missing event ID")
+            return
+
+        params = json.dumps({"calendarId": "primary", "eventId": event_id})
+        try:
+            result = subprocess.run(
+                [
+                    "gws",
+                    "calendar",
+                    "events",
+                    "delete",
+                    "--params",
+                    params,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            logger.info(
+                "GWS delete %s: exit=%d",
+                cal_event.get("summary", ""),
+                result.returncode,
+            )
+            if result.returncode != 0:
+                err = result.stderr.strip() or result.stdout.strip()
+                self._root.after(0, self._status_var.set, f"Error: {err[:80]}")
+                return
+        except Exception as exc:
+            self._root.after(0, self._status_var.set, f"Error: {exc}")
+            return
+
+        # Re-collect and refresh
+        self._do_refresh()
 
     def _update_response(self, cal_event: dict[str, Any], new_status: str) -> None:
         """Update event response status via GWS CLI, then refresh."""
@@ -1876,12 +1975,28 @@ class Dashboard:
                 all_conflicts.extend(analysis.conflicts)
                 all_changes.extend(analysis.changes)
 
+            # Check for active accepted meetings user hasn't joined
+            missed_meetings: list[dict[str, Any]] = []
+            try:
+                from personal_assistant.collectors.meet_attendance import (
+                    check_missed_meetings,
+                )
+
+                today_str = date.today().isoformat()
+                today_events = [
+                    e for e in all_events if today_str in e.get("start", "")
+                ]
+                missed_meetings = check_missed_meetings(today_events)
+            except Exception:
+                logger.debug("Meet attendance check failed", exc_info=True)
+
             self._root.after(
                 0,
                 self._on_data_loaded,
                 all_events,
                 all_conflicts,
                 all_changes,
+                missed_meetings,
             )
 
         except Exception as exc:
@@ -1893,10 +2008,12 @@ class Dashboard:
         events: list[dict[str, Any]],
         conflicts: list[Any],
         changes: list[Any],
+        missed_meetings: list[dict[str, Any]] | None = None,
     ) -> None:
         self._all_events = events
         self._all_conflicts = conflicts
         self._all_changes = changes
+        self._missed_meetings = missed_meetings or []
         self._render_current_day()
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._status_var.set(f"Updated at {timestamp}")
@@ -1925,7 +2042,7 @@ class Dashboard:
             if not is_first_load:
                 self._notify_tab("Calendar")
 
-        # Persistent bell: unaccepted events or unresolved conflicts for today
+        # Persistent bell: unaccepted events, unresolved conflicts, or missed meetings
         today_events = _filter_events_for_date(events, today_str)
         has_unaccepted = any(
             _user_response_status(e) == "needsAction"
@@ -1933,10 +2050,20 @@ class Dashboard:
             if e.get("attendees")  # skip user's own events with no attendees
         )
         today_conflict_ids = self._resolve_conflict_ids(today_events)
-        if has_unaccepted or today_conflict_ids:
+        if has_unaccepted or today_conflict_ids or self._missed_meetings:
             self._notify_tab_persistent("Calendar")
         else:
             self._clear_persistent_bell("Calendar")
+
+        # Log missed meetings to console
+        for evt in self._missed_meetings:
+            summary = evt.get("summary", "Unknown meeting")
+            start = evt.get("start", "")
+            time_part = start[11:16] if len(start) > 16 else start
+            self.log_console(
+                f"Calendar: missed meeting — {time_part} {summary}",
+                "error",
+            )
 
     def _resolve_conflict_ids(self, day_events: list[dict[str, Any]]) -> set[str]:
         """Resolve which event IDs should be marked as conflicts.
@@ -2063,6 +2190,7 @@ class Dashboard:
         is_today = self._current_date == date.today()
 
         conflict_ids = self._resolve_conflict_ids(day_events)
+        missed_ids = {e.get("id", "") for e in getattr(self, "_missed_meetings", [])}
 
         # Time range
         earliest, latest = _day_time_range(day_events)
@@ -2171,9 +2299,21 @@ class Dashboard:
             # Remove top padding for short events (15-min = ~15px original)
             text_pad = 0 if original_height < HOUR_HEIGHT // 2 else 4
 
-            # Warning indicator for unaccepted events — left of time
+            # Warning indicator — left of time
             text_x = x1 + 4
-            if response == "needsAction":
+            if event_id in missed_ids:
+                # Red alert for active meeting user hasn't joined
+                self._canvas.create_text(
+                    text_x,
+                    y1 + text_pad,
+                    text="\u26a0",
+                    fill="#e06c75",
+                    font=FONT_BODY,
+                    anchor=tk.NW,
+                    tags=tag,
+                )
+                text_x += 16
+            elif response == "needsAction":
                 self._canvas.create_text(
                     text_x,
                     y1 + text_pad,
