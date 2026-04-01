@@ -2,15 +2,17 @@
 """Assistant tab — renders HTML status page and triggers refresh commands.
 
 Displays an HTML file from ~/source/personal-assistant/ and provides
-a button to run a refresh command. Before refreshing the HTML, stages
-and commits changes in the working directory.
+a button to run a refresh command as a detached background process.
+The process survives dashboard restarts; PID is tracked in a state file.
+File-watch polling detects when the HTML is updated.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import subprocess
-import threading
 import tkinter as tk
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,7 @@ from personal_assistant.config import (
     FONT_BODY,
     PAD,
 )
+from personal_assistant.state_repo import DEFAULT_STATE_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -44,16 +47,25 @@ SPACING_CSS = (
 ASSISTANT_DIR = Path.home() / "Downloads" / "personal-assistant"
 ASSISTANT_HTML = ASSISTANT_DIR / "summary.html"
 ACTIONS_HTML = ASSISTANT_DIR / "actions.html"
-REFRESH_COMMAND = str('claude -p "/personal-assistant"')
+REFRESH_COMMAND = 'claude -p "/personal-assistant"'
+PID_FILE = DEFAULT_STATE_PATH / "assistant_refresh.pid"
+
+
+def _pid_alive(pid: int) -> bool:
+    """Check if a process with the given PID is still running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
 
 
 class AssistantTab:
     """Assistant tab for the PA dashboard.
 
-    Renders an HTML page and provides a refresh button that:
-    1. Runs a shell command to regenerate the HTML
-    2. Stages and commits changes in the working directory
-    3. Reloads the HTML display
+    Renders an HTML page and provides a refresh button that launches
+    a detached background process. PID is saved to a state file so the
+    process can be tracked across dashboard restarts.
     """
 
     def __init__(
@@ -71,8 +83,12 @@ class AssistantTab:
         self._console_log = console_log
         self._notify_tab = notify_tab
         self._running = False
+        self._refresh_pid: int | None = None
         self._age_timer: str | None = None
+        self._last_assistant_mtime: float = 0.0
+        self._last_actions_mtime: float = 0.0
         self._build()
+        self._recover_pid()
         self._start_age_timer()
 
     def _build(self) -> None:
@@ -175,18 +191,69 @@ class AssistantTab:
             )
             self._html_frame.load_html(body)
 
+    # --- PID management ---
+
+    def _save_pid(self, pid: int) -> None:
+        """Save the refresh process PID to a state file."""
+        PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PID_FILE.write_text(json.dumps({"pid": pid}), encoding="utf-8")
+
+    def _clear_pid(self) -> None:
+        """Remove the PID state file."""
+        self._refresh_pid = None
+        try:
+            PID_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _recover_pid(self) -> None:
+        """On startup, check for a previously running refresh process."""
+        if not PID_FILE.exists():
+            return
+        try:
+            data = json.loads(PID_FILE.read_text(encoding="utf-8"))
+            pid = data.get("pid")
+            if pid and _pid_alive(pid):
+                self._refresh_pid = pid
+                self._running = True
+                self._refresh_btn.configure(state="disabled")
+                self._status_var.set("Refreshing...")
+                self._log("Assistant: recovered running refresh (PID %d)" % pid, "info")
+            else:
+                self._clear_pid()
+        except (json.JSONDecodeError, OSError, TypeError):
+            self._clear_pid()
+
+    # --- Timer ---
+
     def _start_age_timer(self) -> None:
         """Start updating the page age every 10 seconds."""
         self._update_age()
 
     def _update_age(self) -> None:
-        """Update the status label with the age of the HTML file."""
-        if self._running:
-            self._age_timer = self._root.after(10_000, self._update_age)
-            return
-        if ASSISTANT_HTML.exists():
-            import time
+        """Update the status label with the age of the HTML file.
 
+        Also detects file changes (auto-reload + bell) and monitors
+        the refresh process PID.
+        """
+        import time
+
+        # Monitor refresh process
+        if self._running and self._refresh_pid is not None:
+            if not _pid_alive(self._refresh_pid):
+                # Process exited — check if it was success or failure
+                # We can't get exit code from a detached process, so just
+                # report completion. File-watch handles the HTML reload.
+                self._log(
+                    "Assistant: refresh process exited (PID %d)" % self._refresh_pid,
+                    "info",
+                )
+                self._clear_pid()
+                self._running = False
+                self._refresh_btn.configure(state="normal")
+
+        # Check for assistant HTML changes
+        if ASSISTANT_HTML.exists():
             mtime = ASSISTANT_HTML.stat().st_mtime
             age_seconds = int(time.time() - mtime)
             if age_seconds < 60:
@@ -200,58 +267,67 @@ class AssistantTab:
             else:
                 days = age_seconds // 86400
                 age_text = f"{days}d ago"
-            self._status_var.set(f"Updated {age_text}")
+            if not self._running:
+                self._status_var.set(f"Updated {age_text}")
+
+            if mtime != self._last_assistant_mtime:
+                if self._last_assistant_mtime != 0.0:
+                    self._load_html()
+                    if self._notify_tab is not None:
+                        self._notify_tab("Assistant")
+                self._last_assistant_mtime = mtime
         else:
-            self._status_var.set("No status page")
+            if not self._running:
+                self._status_var.set("No status page")
+
+        # Check for actions HTML changes
+        if ACTIONS_HTML.exists():
+            actions_mtime = ACTIONS_HTML.stat().st_mtime
+            if actions_mtime != self._last_actions_mtime:
+                if self._last_actions_mtime != 0.0:
+                    if self._on_actions_refresh is not None:
+                        try:
+                            self._on_actions_refresh()
+                        except Exception:
+                            pass
+                    if self._notify_tab is not None:
+                        self._notify_tab("Actions")
+                self._last_actions_mtime = actions_mtime
+
         self._age_timer = self._root.after(10_000, self._update_age)
 
+    # --- Refresh ---
+
     def _on_refresh(self) -> None:
-        """Run the refresh command in the background."""
+        """Launch the refresh command as a detached background process."""
         if self._running:
             return
         self._running = True
         self._refresh_btn.configure(state="disabled")
         self._status_var.set("Refreshing...")
-        self._log("Assistant: starting refresh...", "progress")
 
-        thread = threading.Thread(
-            target=self._do_refresh,
-            daemon=True,
-            name="assistant-refresh",
-        )
-        thread.start()
+        # Git commit before refresh (quick, synchronous)
+        self._git_commit()
 
-    def _do_refresh(self) -> None:
-        """Background: commit previous state, run refresh, reload HTML."""
+        # Launch detached process
         try:
-            # Stage and commit previous changes before refresh
-            self._git_commit()
-
-            # Run the refresh command in the assistant directory
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 REFRESH_COMMAND,
                 cwd=str(ASSISTANT_DIR),
-                capture_output=True,
-                text=True,
-                timeout=600,
-                check=False,
                 shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
             )
-            if result.returncode != 0:
-                self._log(
-                    f"Assistant: refresh command failed: {result.stderr.strip()[:200]}",
-                    "error",
-                )
-
-            # Reload HTML on the main thread
-            self._root.after(0, self._on_refresh_complete)
-        except subprocess.TimeoutExpired:
-            self._log("Assistant: refresh command timed out", "error")
-            self._root.after(0, self._on_refresh_complete)
+            self._refresh_pid = proc.pid
+            self._save_pid(proc.pid)
+            self._log("Assistant: refresh started (PID %d)" % proc.pid, "progress")
         except Exception as exc:
-            logger.exception("Assistant refresh failed")
-            self._log(f"Assistant: refresh error: {exc}", "error")
-            self._root.after(0, self._on_refresh_complete)
+            logger.exception("Failed to launch refresh process")
+            self._log(f"Assistant: refresh launch failed: {exc}", "error")
+            self._running = False
+            self._refresh_btn.configure(state="normal")
 
     def _git_commit(self) -> None:
         """Stage and commit changes in the assistant directory."""
@@ -281,26 +357,6 @@ class AssistantTab:
             )
         except Exception as exc:
             logger.debug("Git commit in assistant dir failed: %s", exc)
-
-    def _on_refresh_complete(self) -> None:
-        """Main thread: reload HTML and re-enable button."""
-        self._load_html()
-        self._running = False
-        self._refresh_btn.configure(state="normal")
-        self._update_age()
-        self._log("Assistant: refresh complete", "success")
-
-        # Notify tabs
-        if self._notify_tab is not None:
-            self._notify_tab("Assistant")
-            self._notify_tab("Actions")
-
-        # Also refresh the Actions tab
-        if self._on_actions_refresh is not None:
-            try:
-                self._on_actions_refresh()
-            except Exception:
-                pass
 
     def _log(self, message: str, tag: str = "info") -> None:
         """Forward to dashboard console."""
