@@ -68,4 +68,4 @@ coverage: install-dev  ## Run pytest with coverage
 	$(PYTHON) -m pytest --cov=personal_assistant --cov-report=term
 
 run: install install-meetings  ## Run the personal assistant GUI
-	$(PYTHON) -m personal_assistant gui --log-file pa-dashboard.log
+	$(PYTHON) -m personal_assistant --debug gui --log-file pa-dashboard.log

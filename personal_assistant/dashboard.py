@@ -81,7 +81,7 @@ class Dashboard:
     ):
         self._root = root
         self._state_path = state_path
-        self._on_quit = on_quit or root.quit
+        self._on_quit_cb = on_quit or root.quit
         self._window: tk.Toplevel | None = None
         self._canvas: tk.Canvas | None = None
         self._canvas_container: tk.Frame | None = None
@@ -101,6 +101,8 @@ class Dashboard:
         self._notified_change_ids: set[str] = set()
         self._first_cal_load = True
         self._sticky = False  # all workspaces
+        self._auto_shade = False
+        self._auto_shade_timer: str | None = None
         self._context_menu: tk.Menu | None = None
         self._menu_timer: str | None = None
         self._tooltip: tk.Toplevel | None = None
@@ -112,6 +114,7 @@ class Dashboard:
         self._cal_refresh_timer: str | None = None
         self._shaded = False
         self._unshaded_geometry: str = ""
+        self._last_good_geometry: str = ""
         self._shade_in_progress = False
 
     def show(self) -> None:
@@ -138,7 +141,7 @@ class Dashboard:
         self._window.title("PA — Dashboard")
         self._window.geometry("900x820")
         self._window.configure(bg=BG_WINDOW)
-        self._window.protocol("WM_DELETE_WINDOW", self._on_quit)
+        self._window.protocol("WM_DELETE_WINDOW", self._shutdown)
         self._window.minsize(width=600, height=400)
 
         # Remove title bar — use dock type on Linux (Wayland compatible)
@@ -158,6 +161,24 @@ class Dashboard:
         self._window.configure(bg="#555555")
         main = tk.Frame(self._window, bg=BG_WINDOW)
         main.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+
+        # Floating resize grip — always on top, bottom-right corner
+        grip_canvas = tk.Canvas(
+            self._window,
+            width=14,
+            height=14,
+            bg=BG_WINDOW,
+            highlightthickness=0,
+            cursor="bottom_right_corner",
+        )
+        # Draw diagonal lines like a classic resize grip
+        for offset in (3, 7, 11):
+            grip_canvas.create_line(offset, 13, 13, offset, fill="#666666", width=1)
+        grip_canvas.place(relx=1.0, rely=1.0, anchor=tk.SE, x=-2, y=-2)
+        # place() renders above pack()ed widgets — no explicit raise needed
+        grip = grip_canvas
+        grip.bind("<Button-1>", self._on_resize_start)
+        grip.bind("<B1-Motion>", self._on_resize_drag)
 
         # Notebook (tabs)
         self._style = ttk.Style()
@@ -203,6 +224,7 @@ class Dashboard:
             assistant_frame,
             self._root,
             on_actions_refresh=self._actions_tab.refresh,
+            on_actions_status=self._actions_tab.set_status,
             console_log=self.log_console,
             notify_tab=self._notify_tab,
         )
@@ -333,11 +355,7 @@ class Dashboard:
                 font=FONT_BODY,
             ).pack(side=tk.LEFT, padx=(0, 8))
 
-        # Resize grip (no title bar = no WM resize handles)
-        grip = ttk.Sizegrip(bottom)
-        grip.pack(side=tk.RIGHT, anchor=tk.SE)
-
-        # Status (right side, to the left of grip)
+        # Status (right side)
         tk.Label(
             bottom,
             textvariable=self._status_var,
@@ -355,6 +373,8 @@ class Dashboard:
         self._check_scopes()
         # Restore saved UI state (tab, date, filters)
         self._apply_ui_state()
+        # Capture initial geometry after restore
+        self._root.after(500, self._capture_geometry)
         # Always start calendar data refresh (bells need fresh data)
         self._start_cal_refresh()
 
@@ -610,8 +630,17 @@ class Dashboard:
         if hasattr(self, "_countdown_var"):
             self._countdown_var.set(text)
 
-    def log_console(self, message: str, tag: str = "info") -> None:
-        """Append a message to the Console tab. Bell on errors."""
+    def log_console(
+        self,
+        message: str,
+        tag: str = "info",
+        link: str = "",
+        link_label: str = "",
+    ) -> None:
+        """Append a message to the Console tab. Bell on errors.
+
+        If *link* is provided, a clickable link is appended after the message.
+        """
         if not hasattr(self, "_console_text"):
             return
         if not self._console_text.winfo_exists():
@@ -619,7 +648,33 @@ class Dashboard:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._console_text.configure(state=tk.NORMAL)
         self._console_text.insert(tk.END, f"[{timestamp}] ", "info")
-        self._console_text.insert(tk.END, f"{message}\n", tag)
+        self._console_text.insert(tk.END, message, tag)
+        if link:
+            label = link_label or link
+            link_tag = f"link_{id(link)}"
+            self._console_text.insert(tk.END, " ")
+            self._console_text.insert(tk.END, label, link_tag)
+            self._console_text.tag_configure(
+                link_tag, foreground="#61afef", underline=True
+            )
+            self._console_text.tag_bind(
+                link_tag,
+                "<Button-1>",
+                lambda e, url=link: __import__("webbrowser").open(  # type: ignore[misc]
+                    url
+                ),
+            )
+            self._console_text.tag_bind(
+                link_tag,
+                "<Enter>",
+                lambda e: self._console_text.configure(cursor="hand2"),
+            )
+            self._console_text.tag_bind(
+                link_tag,
+                "<Leave>",
+                lambda e: self._console_text.configure(cursor=""),
+            )
+        self._console_text.insert(tk.END, "\n")
         self._console_text.see(tk.END)
         self._console_text.configure(state=tk.DISABLED)
 
@@ -643,6 +698,7 @@ class Dashboard:
         # geometry() returns "WxH+X+Y" in WM coordinates — consistent
         # for round-tripping. winfo_x/y can differ by title bar height.
         self._unshaded_geometry = self._window.geometry()
+        self._last_good_geometry = self._unshaded_geometry
         # Parse width and position from geometry string
         import re
 
@@ -714,9 +770,42 @@ class Dashboard:
         self._do_cal_refresh_cycle()
 
     def _do_cal_refresh_cycle(self) -> None:
-        """One refresh cycle: collect data, schedule next."""
+        """One refresh cycle: collect data, capture geometry, schedule next."""
         self.refresh()
+        self._capture_geometry()
         self._cal_refresh_timer = self._root.after(60_000, self._do_cal_refresh_cycle)
+
+    def _capture_geometry(self) -> None:
+        """Snapshot current window geometry and persist to disk."""
+        if not self._window:
+            return
+        try:
+            if self._shaded and self._unshaded_geometry:
+                import re
+
+                m = re.match(r"(\d+)x(\d+)", self._unshaded_geometry)
+                if m:
+                    x = self._window.winfo_x()
+                    y = self._window.winfo_y()
+                    self._last_good_geometry = f"{m.group(1)}x{m.group(2)}+{x}+{y}"
+            else:
+                self._last_good_geometry = self._window.geometry()
+        except Exception as exc:
+            logger.info("CAPTURE failed: %s", exc)
+            return
+        logger.debug("CAPTURE: %s", self._last_good_geometry)
+        # Persist immediately — don't wait for shutdown
+        if self._last_good_geometry:
+            try:
+                state_file = self._state_path / "ui_state.json"
+                if state_file.exists():
+                    with open(state_file) as f:
+                        state = json.load(f)
+                    state["geometry"] = self._last_good_geometry
+                    with open(state_file, "w") as f:
+                        json.dump(state, f)
+            except Exception:
+                pass
 
     def _stop_cal_refresh(self) -> None:
         """Stop the calendar auto-refresh timer."""
@@ -757,6 +846,10 @@ class Dashboard:
         sticky_label = "\u2713 All Workspaces" if self._sticky else "All Workspaces"
         menu.add_command(label=sticky_label, command=self._toggle_all_workspaces)
 
+        # Auto Shade toggle
+        auto_shade_label = "\u2713 Auto Shade" if self._auto_shade else "Auto Shade"
+        menu.add_command(label=auto_shade_label, command=self._toggle_auto_shade)
+
         # Run on Startup toggle
         from personal_assistant.startup import get_run_on_startup
 
@@ -765,8 +858,11 @@ class Dashboard:
         menu.add_command(label=startup_label, command=self._toggle_run_on_startup)
 
         menu.add_separator()
-        menu.add_command(label="Restart", command=self._restart)
-        menu.add_command(label="Quit", command=self._on_quit)
+        menu.add_command(
+            label="Restart",
+            command=lambda: self._shutdown(restart=True),
+        )
+        menu.add_command(label="Quit", command=self._shutdown)
 
         self._context_menu = menu
 
@@ -776,6 +872,33 @@ class Dashboard:
             menu.grab_release()
 
         self._menu_timer = self._root.after(5000, self._dismiss_context_menu)
+
+    # --- Resize grip ---
+
+    def _on_resize_start(self, event: Any) -> None:
+        """Start manual resize from grip."""
+        if not self._window:
+            return
+        self._resize_start_x = event.x_root
+        self._resize_start_y = event.y_root
+        self._resize_start_w = self._window.winfo_width()
+        self._resize_start_h = self._window.winfo_height()
+
+    def _on_resize_drag(self, event: Any) -> None:
+        """Drag to resize window from grip."""
+        if not self._window:
+            return
+        dx = event.x_root - self._resize_start_x
+        dy = event.y_root - self._resize_start_y
+        new_w = max(self._resize_start_w + dx, 400)
+        new_h = max(self._resize_start_h + dy, 200)
+        x = self._window.winfo_x()
+        y = self._window.winfo_y()
+        geo = f"{new_w}x{new_h}+{x}+{y}"
+        self._window.geometry(geo)
+        self._last_good_geometry = geo
+
+    # --- Drag to move ---
 
     _DRAG_THRESHOLD = 5
 
@@ -794,9 +917,17 @@ class Dashboard:
         if dx > self._DRAG_THRESHOLD or dy > self._DRAG_THRESHOLD:
             self._dragged = True
         if self._dragged:
+            import re
+
             x = self._window.winfo_x() + event.x - self._drag_start_x
             y = self._window.winfo_y() + event.y - self._drag_start_y
             self._window.geometry(f"+{x}+{y}")
+            if self._shaded and self._unshaded_geometry:
+                m = re.match(r"(\d+)x(\d+)", self._unshaded_geometry)
+                if m:
+                    self._last_good_geometry = f"{m.group(1)}x{m.group(2)}+{x}+{y}"
+            else:
+                self._last_good_geometry = self._window.geometry()
 
     def _toggle_run_on_startup(self) -> None:
         """Toggle XDG autostart .desktop file."""
@@ -813,6 +944,39 @@ class Dashboard:
             return
         current = bool(self._window.attributes("-topmost"))
         self._window.attributes("-topmost", not current)
+
+    def _toggle_auto_shade(self) -> None:
+        """Toggle auto-shade on pointer leave."""
+        self._auto_shade = not self._auto_shade
+        if self._auto_shade:
+            self._start_auto_shade_poll()
+
+    def _start_auto_shade_poll(self) -> None:
+        """Start polling for pointer-outside-window to trigger shade."""
+        if not self._auto_shade or not self._window:
+            return
+        if hasattr(self, "_auto_shade_timer") and self._auto_shade_timer:
+            return  # already polling
+        self._auto_shade_poll()
+
+    def _auto_shade_poll(self) -> None:
+        """Check if pointer is outside the window; shade if so."""
+        if not self._auto_shade or not self._window:
+            self._auto_shade_timer = None
+            return
+        if not self._shaded:
+            try:
+                px = self._window.winfo_pointerx()
+                py = self._window.winfo_pointery()
+                wx = self._window.winfo_rootx()
+                wy = self._window.winfo_rooty()
+                ww = self._window.winfo_width()
+                wh = self._window.winfo_height()
+                if not (wx <= px < wx + ww and wy <= py < wy + wh):
+                    self._shade()
+            except tk.TclError:
+                pass
+        self._auto_shade_timer = self._root.after(2000, self._auto_shade_poll)
 
     def _toggle_all_workspaces(self) -> None:
         """Toggle sticky (all workspaces) via wmctrl on Linux."""
@@ -839,6 +1003,11 @@ class Dashboard:
 
     def _save_ui_state(self) -> None:
         """Save UI state to disk for restart continuity."""
+        logger.debug(
+            "SAVE: shaded=%s last_good=%r",
+            self._shaded,
+            self._last_good_geometry,
+        )
         state: dict[str, Any] = {
             "calendar_date": self._current_date.isoformat(),
         }
@@ -855,11 +1024,16 @@ class Dashboard:
         if self._window:
             state["topmost"] = bool(self._window.attributes("-topmost"))
             state["sticky"] = self._sticky
-            # Save unshaded geometry if currently shaded
-            if self._shaded and self._unshaded_geometry:
-                state["geometry"] = self._unshaded_geometry
-            else:
-                state["geometry"] = self._window.geometry()
+            state["auto_shade"] = self._auto_shade
+        # Save geometry
+        if self._last_good_geometry:
+            state["geometry"] = self._last_good_geometry
+        logger.debug("SAVE: final state geometry=%r", state.get("geometry", "MISSING"))
+        # Save active bells
+        if hasattr(self, "_notified_tabs"):
+            all_bells = self._notified_tabs | self._persistent_tabs
+            if all_bells:
+                state["bells"] = sorted(all_bells)
         state_file = self._state_path / "ui_state.json"
         try:
             with open(state_file, "w") as f:
@@ -914,22 +1088,48 @@ class Dashboard:
             self._sticky = True
             self._root.after(500, self._apply_sticky)
 
+        if state.get("auto_shade"):
+            self._auto_shade = True
+            self._start_auto_shade_poll()
+
+        # Restore bells
+        bells = state.get("bells", [])
+        for tab_name in bells:
+            self._notify_tab(tab_name)
+
         # Restore window geometry (position + size)
         geometry = state.get("geometry")
+        logger.debug("RESTORE: geometry from state=%r", geometry)
         if geometry and self._window:
             self._window.geometry(geometry)
+            self._last_good_geometry = geometry
+            logger.debug("RESTORE: applied geometry %s", geometry)
 
-    def _restart(self) -> None:
-        """Save state, re-exec the process to restart the application."""
-        import os
-        import sys
-
-        logger.info("Restarting application")
+    def _shutdown(self, *, restart: bool = False) -> None:
+        """Single exit path: save state once, stop timers, quit or re-exec."""
+        logger.info(
+            "SHUTDOWN: restart=%s shutting_down=%s last_good=%r",
+            restart,
+            getattr(self, "_shutting_down", False),
+            self._last_good_geometry,
+        )
+        if getattr(self, "_shutting_down", False):
+            logger.warning("SHUTDOWN: already shutting down, skipping")
+            return
+        self._shutting_down = True
         self._save_ui_state()
         self._stop_cal_refresh()
-        self._root.quit()
-        args = [sys.executable, "-m", "personal_assistant", "gui"]
-        os.execv(sys.executable, args)
+        if restart:
+            import os
+            import sys
+
+            logger.info("Restarting application")
+            self._root.quit()
+            # Preserve original CLI args (including --log-file)
+            args = sys.argv[:]
+            os.execv(sys.executable, [sys.executable] + args)
+        else:
+            self._on_quit_cb()
 
     def _check_scopes(self) -> None:
         """Check GWS scopes in background and update indicator."""
@@ -2055,14 +2255,17 @@ class Dashboard:
         else:
             self._clear_persistent_bell("Calendar")
 
-        # Log missed meetings to console
+        # Log missed meetings to console with clickable Meet link
         for evt in self._missed_meetings:
             summary = evt.get("summary", "Unknown meeting")
             start = evt.get("start", "")
             time_part = start[11:16] if len(start) > 16 else start
+            meet_link = evt.get("hangout_link", "")
             self.log_console(
-                f"Calendar: missed meeting — {time_part} {summary}",
+                f"[Calendar] missed meeting — {time_part} {summary}",
                 "error",
+                link=meet_link,
+                link_label="Join",
             )
 
     def _resolve_conflict_ids(self, day_events: list[dict[str, Any]]) -> set[str]:

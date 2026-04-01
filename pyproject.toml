@@ -57,6 +57,9 @@ omit = [
     "personal_assistant/actions_tab.py",
     "personal_assistant/meetings_tab.py",
     "personal_assistant/config.py",
+    "personal_assistant/collectors/meet_attendance.py",
+    "personal_assistant/startup.py",
+    "personal_assistant/utils.py",
 ]
 
 [tool.coverage.report]

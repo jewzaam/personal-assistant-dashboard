@@ -12,6 +12,8 @@ from typing import Any
 
 from personal_assistant.config import (
     BG_OUTPUT,
+    BG_WINDOW,
+    FG_DIM,
     FG_TEXT,
     FONT_BODY,
     PAD,
@@ -30,9 +32,18 @@ class ActionsTab:
         self._build()
 
     def _build(self) -> None:
-        # Control bar with reload button
-        controls = tk.Frame(self._parent, bg=BG_OUTPUT)
+        # Control bar with status + reload button
+        controls = tk.Frame(self._parent, bg=BG_WINDOW)
         controls.pack(fill=tk.X, padx=PAD, pady=(PAD, 0))
+
+        self._status_var = tk.StringVar(value="")
+        tk.Label(
+            controls,
+            textvariable=self._status_var,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=FONT_BODY,
+        ).pack(side=tk.LEFT)
 
         tk.Button(
             controls,
@@ -77,6 +88,10 @@ class ActionsTab:
                 "tkinterweb not installed. Run: pip install tkinterweb[recommended]",
             )
             fallback.configure(state=tk.DISABLED)
+
+    def set_status(self, text: str) -> None:
+        """Update the status label (called by AssistantTab)."""
+        self._status_var.set(text)
 
     def refresh(self) -> None:
         """Reload the HTML file."""
