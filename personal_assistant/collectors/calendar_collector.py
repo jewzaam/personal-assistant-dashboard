@@ -39,9 +39,11 @@ def collect_events(
         List of normalized event dicts.
     """
     now = datetime.now(timezone.utc)
-    # Start from beginning of today minus days_back
-    start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    time_min = (start_of_today - timedelta(days=days_back)).isoformat()
+    # Start from beginning of today in LOCAL time (not UTC) to
+    # include all events for the user's calendar day
+    local_now = datetime.now().astimezone()
+    start_of_local_today = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    time_min = (start_of_local_today - timedelta(days=days_back)).isoformat()
     time_max = (now + timedelta(days=days_ahead)).isoformat()
 
     raw_events = _fetch_events(calendar_id, time_min=time_min, time_max=time_max)

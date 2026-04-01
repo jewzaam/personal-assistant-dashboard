@@ -75,6 +75,9 @@ class MeetingsTab:
         self._console_log = console_log  # Callable[[str, str], None] or None
         self._update_countdown_cb: Any = None  # Set by dashboard
         self._set_run_now_state_cb: Any = None  # Set by dashboard
+        self._update_summarize_status_cb: Any = None  # Set by dashboard
+        self._summarize_total: int = 0
+        self._summarize_done: int = 0
         self._event_queue: SimpleQueue[tuple[str, Any]] = SimpleQueue()
         self._cc: Any = None  # ConcurrencyControl, lazy import
         self._running = False
@@ -146,15 +149,24 @@ class MeetingsTab:
             filter_frame, "Attended:", ["All", "Yes", "No"]
         )
         self._filter_concluded = _make_filter(
-            filter_frame, "Concluded:", ["Yes", "All", "No"]
+            filter_frame, "Concluded:", ["All", "Yes", "No"]
         )
         self._filter_summary = _make_filter(
-            filter_frame, "Summary:", ["Yes", "All", "No"]
+            filter_frame, "Summary:", ["All", "Yes", "No"]
         )
 
-        # Right side: Refresh button only
+        # Right side: count + Refresh
         btn_frame = tk.Frame(controls, bg=BG_WINDOW)
         btn_frame.pack(side=tk.RIGHT)
+
+        self._count_var = tk.StringVar(value="")
+        tk.Label(
+            btn_frame,
+            textvariable=self._count_var,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=FONT_BODY,
+        ).pack(side=tk.LEFT, padx=(0, PAD))
 
         tk.Button(
             btn_frame,
@@ -542,6 +554,13 @@ class MeetingsTab:
                 tags=(tag,),
             )
 
+        visible = len(self._tree.get_children())
+        total = len(self._all_folders)
+        if visible == total:
+            self._count_var.set(f"{total}")
+        else:
+            self._count_var.set(f"{visible} / {total}")
+
     # --- Context menu ---
 
     def _dismiss_context_menu(self) -> None:
@@ -709,7 +728,11 @@ class MeetingsTab:
         elif event_type == "summarize_event":
             event_tuple = data
             kind = event_tuple[0] if event_tuple else ""
-            if kind == "start":
+            if kind == "total":
+                self._summarize_total = event_tuple[1] if len(event_tuple) > 1 else 0
+                self._summarize_done = 0
+                self._update_summarize_status()
+            elif kind == "start":
                 folder = event_tuple[1] if len(event_tuple) > 1 else ""
                 self._log(f"Summarizing {folder}...", "progress")
                 self._update_tree_tag(folder, "active")
@@ -718,11 +741,15 @@ class MeetingsTab:
                 self._log(f"\u2713 {folder}", "success")
                 self._update_tree_tag(folder, "success")
                 self._update_tree_value(folder, "summarized", "\u2713")
+                self._summarize_done += 1
+                self._update_summarize_status()
             elif kind == "failure":
                 folder = event_tuple[1] if len(event_tuple) > 1 else ""
                 self._log(f"\u2717 {folder}", "error")
                 self._update_tree_tag(folder, "failed")
                 self._update_tree_value(folder, "summarized", "\u2717")
+                self._summarize_done += 1
+                self._update_summarize_status()
             elif kind == "cancelled":
                 folder = event_tuple[1] if len(event_tuple) > 1 else ""
                 self._log(f"Cancelled {folder}", "info")
@@ -740,9 +767,15 @@ class MeetingsTab:
                 )
             else:
                 self._log("Summarization: complete", "success")
+            self._summarize_total = 0
+            self._summarize_done = 0
+            self._update_summarize_status()
             self._set_idle()
             self.refresh()
         elif event_type == "pipeline_done":
+            self._summarize_total = 0
+            self._summarize_done = 0
+            self._update_summarize_status()
             self._set_idle()
             self.refresh()
 
@@ -767,6 +800,19 @@ class MeetingsTab:
             self._filter_concluded.set(state["concluded"])
         if "summary" in state:
             self._filter_summary.set(state["summary"])
+
+    def _update_summarize_status(self) -> None:
+        """Update the summarization count display in the Console tab."""
+        if self._update_summarize_status_cb is None:
+            return
+        if self._summarize_total > 0:
+            text = f"Summarizing: {self._summarize_done} / {self._summarize_total}"
+        else:
+            text = ""
+        try:
+            self._root.after(0, self._update_summarize_status_cb, text)
+        except Exception:
+            pass
 
     # --- Tree helpers ---
 
