@@ -98,6 +98,8 @@ class Dashboard:
         self._collected_start: date | None = None
         self._dismissed_conflicts: set[str] = set()
         self._notified_change_ids: set[str] = set()
+        self._first_cal_load = True
+        self._sticky = False  # all workspaces
         self._context_menu: tk.Menu | None = None
         self._menu_timer: str | None = None
         self._tooltip: tk.Toplevel | None = None
@@ -137,6 +139,19 @@ class Dashboard:
         self._window.configure(bg=BG_WINDOW)
         self._window.protocol("WM_DELETE_WINDOW", self._on_quit)
         self._window.minsize(width=600, height=400)
+
+        # Remove title bar — use dock type on Linux (Wayland compatible)
+        import platform
+
+        if platform.system() == "Linux":
+            self._window.wm_attributes("-type", "dock")
+        else:
+            self._window.overrideredirect(True)
+
+        # Drag support (no title bar = must drag from tab strip)
+        self._drag_start_x = 0
+        self._drag_start_y = 0
+        self._dragged = False
 
         main = tk.Frame(self._window, bg=BG_WINDOW)
         main.pack(fill=tk.BOTH, expand=True, padx=PAD, pady=PAD)
@@ -286,6 +301,9 @@ class Dashboard:
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         # Middle-click on notebook tab strip to toggle shade
         self._notebook.bind("<Button-2>", self._on_shade_toggle)
+        # Drag from tab strip
+        self._notebook.bind("<Button-1>", self._on_drag_start)
+        self._notebook.bind("<B1-Motion>", self._on_drag_motion)
 
         self._build_calendar_tab(cal_tab)
 
@@ -321,6 +339,10 @@ class Dashboard:
             font=FONT_BODY,
             anchor=tk.E,
         ).pack(side=tk.RIGHT)
+
+        # Resize grip at bottom-right (no title bar = no WM resize handles)
+        grip = ttk.Sizegrip(bottom)
+        grip.pack(side=tk.RIGHT, anchor=tk.SE)
 
         # Right-click on notebook for Restart
         self._notebook.bind("<Button-3>", self._on_notebook_right_click)
@@ -601,7 +623,16 @@ class Dashboard:
         self._shaded = False
         self._window.minsize(width=600, height=400)
         if self._unshaded_geometry:
-            self._window.geometry(self._unshaded_geometry)
+            import re
+
+            m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", self._unshaded_geometry)
+            if m:
+                w, h, _old_x, _old_y = m.groups()
+                # Use current position (user may have dragged while shaded)
+                cur = self._window.geometry()
+                cm = re.match(r"\d+x\d+\+(-?\d+)\+(-?\d+)", cur)
+                cx, cy = cm.groups() if cm else (_old_x, _old_y)
+                self._window.geometry(f"{w}x{h}+{cx}+{cy}")
         # Restore the tab that was active before shading
         if hasattr(self, "_pre_shade_tab") and self._pre_shade_tab:
             self._notebook.select(self._pre_shade_tab)  # type: ignore[union-attr]
@@ -651,7 +682,20 @@ class Dashboard:
             self._cal_refresh_timer = None
 
     def _on_notebook_right_click(self, event: Any) -> None:
-        """Show context menu with Restart option on notebook tab bar."""
+        """Show context menu with window controls."""
+        # Dismiss existing menu first
+        if self._context_menu:
+            try:
+                self._context_menu.unpost()
+                self._context_menu.destroy()
+            except tk.TclError:
+                pass
+            self._context_menu = None
+            if self._menu_timer:
+                self._root.after_cancel(self._menu_timer)
+                self._menu_timer = None
+        if not self._window:
+            return
         menu = tk.Menu(
             self._window,
             tearoff=0,
@@ -660,11 +704,95 @@ class Dashboard:
             activebackground="#444444",
             activeforeground="#ffffff",
         )
+
+        # Always on Top toggle
+        is_topmost = bool(self._window.attributes("-topmost"))
+        topmost_label = "\u2713 Always on Top" if is_topmost else "Always on Top"
+        menu.add_command(label=topmost_label, command=self._toggle_always_on_top)
+
+        # All Workspaces toggle (Linux only via wmctrl)
+        sticky_label = "\u2713 All Workspaces" if self._sticky else "All Workspaces"
+        menu.add_command(label=sticky_label, command=self._toggle_all_workspaces)
+
+        # Run on Startup toggle
+        from personal_assistant.startup import get_run_on_startup
+
+        is_autostart = get_run_on_startup()
+        startup_label = "\u2713 Run on Startup" if is_autostart else "Run on Startup"
+        menu.add_command(label=startup_label, command=self._toggle_run_on_startup)
+
+        menu.add_separator()
         menu.add_command(label="Restart", command=self._restart)
+        menu.add_command(label="Quit", command=self._on_quit)
+
+        self._context_menu = menu
+
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+        self._menu_timer = self._root.after(5000, self._dismiss_context_menu)
+
+    _DRAG_THRESHOLD = 5
+
+    def _on_drag_start(self, event: Any) -> None:
+        """Start drag from tab strip."""
+        self._drag_start_x = event.x
+        self._drag_start_y = event.y
+        self._dragged = False
+
+    def _on_drag_motion(self, event: Any) -> None:
+        """Drag the window by moving from tab strip."""
+        if not self._window:
+            return
+        dx = abs(event.x - self._drag_start_x)
+        dy = abs(event.y - self._drag_start_y)
+        if dx > self._DRAG_THRESHOLD or dy > self._DRAG_THRESHOLD:
+            self._dragged = True
+        if self._dragged:
+            x = self._window.winfo_x() + event.x - self._drag_start_x
+            y = self._window.winfo_y() + event.y - self._drag_start_y
+            self._window.geometry(f"+{x}+{y}")
+
+    def _toggle_run_on_startup(self) -> None:
+        """Toggle XDG autostart .desktop file."""
+        from personal_assistant.startup import (
+            get_run_on_startup,
+            set_run_on_startup,
+        )
+
+        set_run_on_startup(enabled=not get_run_on_startup())
+
+    def _toggle_always_on_top(self) -> None:
+        """Toggle the always-on-top window attribute."""
+        if not self._window:
+            return
+        current = bool(self._window.attributes("-topmost"))
+        self._window.attributes("-topmost", not current)
+
+    def _toggle_all_workspaces(self) -> None:
+        """Toggle sticky (all workspaces) via wmctrl on Linux."""
+        self._sticky = not self._sticky
+        self._apply_sticky()
+
+    def _apply_sticky(self) -> None:
+        """Apply or remove sticky (all workspaces) state."""
+        if not self._window:
+            return
+        try:
+            import subprocess
+
+            wid = hex(self._window.winfo_id())
+            action = "add" if self._sticky else "remove"
+            subprocess.run(
+                ["wmctrl", "-i", "-r", wid, "-b", f"{action},sticky"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        except FileNotFoundError:
+            logger.warning("wmctrl not found — install for All Workspaces support")
 
     def _save_ui_state(self) -> None:
         """Save UI state to disk for restart continuity."""
@@ -683,6 +811,7 @@ class Dashboard:
             state["transcript_filters"] = self._meetings_tab.get_filter_state()
         if self._window:
             state["topmost"] = bool(self._window.attributes("-topmost"))
+            state["sticky"] = self._sticky
             # Save unshaded geometry if currently shaded
             if self._shaded and self._unshaded_geometry:
                 state["geometry"] = self._unshaded_geometry
@@ -734,9 +863,13 @@ class Dashboard:
         if filters and hasattr(self, "_meetings_tab"):
             self._meetings_tab.set_filter_state(filters)
 
-        # Restore always-on-top
+        # Restore always-on-top and all-workspaces
         if state.get("topmost") and self._window:
             self._window.attributes("-topmost", True)
+
+        if state.get("sticky") and self._window:
+            self._sticky = True
+            self._root.after(500, self._apply_sticky)
 
         # Restore window geometry (position + size)
         geometry = state.get("geometry")
@@ -1756,7 +1889,11 @@ class Dashboard:
         unseen = new_change_keys - self._notified_change_ids
         if unseen:
             self._notified_change_ids.update(unseen)
-            self._notify_tab("Calendar")
+            # Don't bell on first load — everything looks "new"
+            if self._first_cal_load:
+                self._first_cal_load = False
+            else:
+                self._notify_tab("Calendar")
 
     def _resolve_conflict_ids(self, day_events: list[dict[str, Any]]) -> set[str]:
         """Resolve which event IDs should be marked as conflicts.

@@ -145,9 +145,6 @@ class MeetingsTab:
             menu.pack(side=tk.LEFT, padx=(0, PAD))
             return var
 
-        self._filter_attended = _make_filter(
-            filter_frame, "Attended:", ["All", "Yes", "No"]
-        )
         self._filter_concluded = _make_filter(
             filter_frame, "Concluded:", ["All", "Yes", "No"]
         )
@@ -477,7 +474,6 @@ class MeetingsTab:
         search = self._search_var.get().strip().lower()
 
         # Apply filters
-        att_filter = self._filter_attended.get()
         conc_filter = self._filter_concluded.get()
         sum_filter = self._filter_summary.get()
 
@@ -489,12 +485,6 @@ class MeetingsTab:
 
             # Search filter
             if search and search not in title.lower() and search not in folder.date:
-                continue
-
-            # Attendance filter
-            if att_filter == "Yes" and folder.attended is not True:
-                continue
-            if att_filter == "No" and folder.attended is True:
                 continue
 
             # Concluded filter
@@ -785,7 +775,6 @@ class MeetingsTab:
         """Return current filter values for state persistence."""
         return {
             "search": self._search_var.get(),
-            "attended": self._filter_attended.get(),
             "concluded": self._filter_concluded.get(),
             "summary": self._filter_summary.get(),
         }
@@ -794,8 +783,6 @@ class MeetingsTab:
         """Restore filter values from saved state."""
         if "search" in state:
             self._search_var.set(state["search"])
-        if "attended" in state:
-            self._filter_attended.set(state["attended"])
         if "concluded" in state:
             self._filter_concluded.set(state["concluded"])
         if "summary" in state:
