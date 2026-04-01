@@ -239,18 +239,18 @@ class AssistantTab:
             )
             if result.returncode != 0:
                 self._log(
-                    f"Refresh command failed: {result.stderr.strip()[:200]}",
+                    f"Assistant: refresh command failed: {result.stderr.strip()[:200]}",
                     "error",
                 )
 
             # Reload HTML on the main thread
             self._root.after(0, self._on_refresh_complete)
         except subprocess.TimeoutExpired:
-            self._log("Refresh command timed out", "error")
+            self._log("Assistant: refresh command timed out", "error")
             self._root.after(0, self._on_refresh_complete)
         except Exception as exc:
             logger.exception("Assistant refresh failed")
-            self._log(f"Refresh error: {exc}", "error")
+            self._log(f"Assistant: refresh error: {exc}", "error")
             self._root.after(0, self._on_refresh_complete)
 
     def _git_commit(self) -> None:
