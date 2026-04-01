@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
+import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from personal_assistant import state_repo, config_manager
 from personal_assistant.collectors import calendar_collector
@@ -233,6 +236,9 @@ def main() -> None:
 
     # --- gui ---
     gui_parser = subparsers.add_parser("gui", help="launch the dashboard")
+    gui_parser.add_argument(
+        "--log-file", type=str, default=None, help="write log output to file"
+    )
     _add_repo_path_arg(gui_parser)
     gui_parser.set_defaults(func=_cmd_gui)
 
@@ -240,11 +246,38 @@ def main() -> None:
     args = parser.parse_args()
 
     level = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        stream=sys.stderr,
-    )
+    log_fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    log_file = getattr(args, "log_file", None)
+    if log_file:
+        os.makedirs(os.path.dirname(os.path.abspath(log_file)), exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            log_file,
+            maxBytes=2 * 1024 * 1024,
+            backupCount=1,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter(log_fmt))
+        logging.basicConfig(level=level, handlers=[handler])
+    else:
+        logging.basicConfig(level=level, format=log_fmt, stream=sys.stderr)
+
+    # Route uncaught exceptions to log file
+    if log_file:
+        _logger = logging.getLogger("personal_assistant")
+
+        def _excepthook(
+            exc_type: type[BaseException],
+            exc_value: BaseException,
+            exc_tb: Any,
+        ) -> None:
+            if issubclass(exc_type, KeyboardInterrupt):
+                sys.__excepthook__(exc_type, exc_value, exc_tb)
+                return
+            _logger.critical(
+                "uncaught exception", exc_info=(exc_type, exc_value, exc_tb)
+            )
+
+        sys.excepthook = _excepthook
 
     if not hasattr(args, "func"):
         parser.print_help()

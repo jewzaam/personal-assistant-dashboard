@@ -97,6 +97,7 @@ class Dashboard:
         self._collected_until: date | None = None
         self._collected_start: date | None = None
         self._dismissed_conflicts: set[str] = set()
+        self._notified_change_ids: set[str] = set()
         self._context_menu: tk.Menu | None = None
         self._menu_timer: str | None = None
         self._tooltip: tk.Toplevel | None = None
@@ -106,6 +107,9 @@ class Dashboard:
         self._notebook: ttk.Notebook | None = None
         self._run_now_btn: tk.Button | None = None
         self._cal_refresh_timer: str | None = None
+        self._shaded = False
+        self._unshaded_geometry: str = ""
+        self._shade_in_progress = False
 
     def show(self) -> None:
         if self._window and self._window.winfo_exists():
@@ -163,6 +167,28 @@ class Dashboard:
         self._notebook = ttk.Notebook(main, style="Dark.TNotebook")
         self._notebook.pack(fill=tk.BOTH, expand=True)
 
+        # Assistant tab (default — first tab)
+        assistant_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(assistant_frame, text="Assistant")
+
+        # Actions tab (HTML — refreshed by Assistant)
+        actions_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(actions_frame, text="Actions")
+
+        from personal_assistant.actions_tab import ActionsTab
+
+        self._actions_tab = ActionsTab(actions_frame)
+
+        from personal_assistant.assistant_tab import AssistantTab
+
+        self._assistant_tab = AssistantTab(
+            assistant_frame,
+            self._root,
+            on_actions_refresh=self._actions_tab.refresh,
+            console_log=self.log_console,
+            notify_tab=self._notify_tab,
+        )
+
         # Calendar tab
         cal_tab = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(cal_tab, text="Calendar")
@@ -178,17 +204,7 @@ class Dashboard:
         )
         self._meetings_tab._update_countdown_cb = self.update_countdown
         self._meetings_tab._set_run_now_state_cb = self._set_run_now_enabled
-
-        # Actions tab
-        actions_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
-        self._notebook.add(actions_frame, text="Actions")
-
-        from personal_assistant.actions_tab import ActionsTab
-
-        self._actions_tab = ActionsTab(
-            actions_frame,
-            events_source=lambda: self._all_events,
-        )
+        self._meetings_tab._update_summarize_status_cb = self.update_summarize_status
         # Console tab — background activity log with timer controls
         console_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(console_frame, text="Console")
@@ -217,7 +233,17 @@ class Dashboard:
             activebackground="#5e5e5e",
             cursor="hand2",
             padx=8,
-        ).pack(side=tk.RIGHT)
+        )
+        self._run_now_btn.pack(side=tk.RIGHT)
+
+        self._summarize_status_var = tk.StringVar(value="")
+        tk.Label(
+            console_controls,
+            textvariable=self._summarize_status_var,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=FONT_BODY,
+        ).pack(side=tk.RIGHT, padx=(0, PAD))
 
         # Console text area
         self._console_text = tk.Text(
@@ -242,7 +268,24 @@ class Dashboard:
         self._console_text.configure(yscrollcommand=console_scroll.set)
         self._console_text.pack(fill=tk.BOTH, expand=True)
 
+        # About tab — dummy tab selected during shade so all real tabs
+        # can show notification dots
+        about_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(about_frame, text="\u2139")
+        tk.Label(
+            about_frame,
+            text="PA Dashboard\n\nPersonal assistant with calendar,\n"
+            "transcript management, and actions.",
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=FONT_HEADING,
+            justify=tk.CENTER,
+        ).pack(expand=True)
+        self._about_tab_id = str(about_frame)
+
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        # Middle-click on notebook tab strip to toggle shade
+        self._notebook.bind("<Button-2>", self._on_shade_toggle)
 
         self._build_calendar_tab(cal_tab)
 
@@ -287,12 +330,8 @@ class Dashboard:
         self._check_scopes()
         # Restore saved UI state (tab, date, filters)
         self._apply_ui_state()
-        # Start auto-refresh for whichever tab is active
-        if self._notebook:
-            tab_id = self._notebook.select()
-            tab_text = self._notebook.tab(tab_id, "text")
-            if tab_text == "Calendar":
-                self._start_cal_refresh()
+        # Always start calendar data refresh (bells need fresh data)
+        self._start_cal_refresh()
 
     def _build_calendar_tab(self, cal_tab: tk.Frame) -> None:
         """Build the calendar tab with nav, changes, canvas, and bindings."""
@@ -445,10 +484,61 @@ class Dashboard:
         self._save_dismissed_conflicts()
         self._render_current_day()
 
+    # --- Tab notification bell ---
+
+    def _init_notify(self) -> None:
+        """Initialize notification state."""
+        if hasattr(self, "_notified_tabs"):
+            return
+        self._notified_tabs: set[str] = set()
+        # Pumpkin orange background image sized to fill a tab
+        self._notify_bg = tk.PhotoImage(width=100, height=28)
+        for x in range(100):
+            for y in range(28):
+                self._notify_bg.put("#FF6B35", (x, y))
+
+    def _notify_tab(self, tab_name: str) -> None:
+        """Set pumpkin orange background on a tab. BOOM."""
+        if not self._notebook:
+            return
+        self._init_notify()
+        selected_id = self._notebook.select()
+        selected_text = self._notebook.tab(selected_id, "text")
+        if selected_text == tab_name:
+            return
+        if tab_name in self._notified_tabs:
+            return
+        self._notified_tabs.add(tab_name)
+        for tab_id in self._notebook.tabs():
+            if self._notebook.tab(tab_id, "text") == tab_name:
+                self._notebook.tab(
+                    tab_id,
+                    image=self._notify_bg,
+                    compound=tk.CENTER,
+                )
+                break
+
+    def _clear_tab_bell(self, tab_name: str) -> None:
+        """Remove notification from a tab."""
+        if not self._notebook:
+            return
+        if not hasattr(self, "_notified_tabs"):
+            return
+        self._notified_tabs.discard(tab_name)
+        for tab_id in self._notebook.tabs():
+            if self._notebook.tab(tab_id, "text") == tab_name:
+                self._notebook.tab(tab_id, image="", compound="text")
+                break
+
     def _force_pipeline(self) -> None:
         """Force the pipeline to run immediately."""
         if hasattr(self, "_meetings_tab"):
             self._meetings_tab.force_pipeline()
+
+    def update_summarize_status(self, text: str) -> None:
+        """Update the summarization status in the Console tab."""
+        if hasattr(self, "_summarize_status_var"):
+            self._summarize_status_var.set(text)
 
     def update_countdown(self, text: str) -> None:
         """Update the countdown display in the Console tab."""
@@ -456,7 +546,7 @@ class Dashboard:
             self._countdown_var.set(text)
 
     def log_console(self, message: str, tag: str = "info") -> None:
-        """Append a message to the Console tab."""
+        """Append a message to the Console tab. Bell on errors."""
         if not hasattr(self, "_console_text"):
             return
         if not self._console_text.winfo_exists():
@@ -468,26 +558,91 @@ class Dashboard:
         self._console_text.see(tk.END)
         self._console_text.configure(state=tk.DISABLED)
 
+        if tag == "error":
+            self._notify_tab("Console")
+
+    def _on_shade_toggle(self, _event: Any) -> None:
+        """Middle-click on notebook — toggle window shade."""
+        if not self._window:
+            return
+        if self._shaded:
+            self._unshade()
+        else:
+            self._shade()
+
+    def _shade(self) -> None:
+        """Collapse window to just the tab strip."""
+        if self._shaded or not self._window:
+            return
+        self._shaded = True
+        # geometry() returns "WxH+X+Y" in WM coordinates — consistent
+        # for round-tripping. winfo_x/y can differ by title bar height.
+        self._unshaded_geometry = self._window.geometry()
+        # Parse width and position from geometry string
+        import re
+
+        m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", self._unshaded_geometry)
+        if m:
+            w, _h, x, y = m.groups()
+            # Remember which tab was active before shading
+            self._pre_shade_tab = self._notebook.select()  # type: ignore[union-attr]
+            # Select the About tab so all real tabs show notification dots
+            # Unbind tab-changed to prevent immediate unshade
+            self._notebook.unbind("<<NotebookTabChanged>>")  # type: ignore[union-attr]
+            self._notebook.select(self._about_tab_id)  # type: ignore[union-attr]
+            self._root.after(100, self._rebind_tab_changed)
+            self._window.minsize(width=600, height=1)
+            self._window.geometry(f"{w}x52+{x}+{y}")
+
+    def _unshade(self) -> None:
+        """Restore window from shaded state."""
+        if not self._shaded or not self._window:
+            return
+        self._shaded = False
+        self._window.minsize(width=600, height=400)
+        if self._unshaded_geometry:
+            self._window.geometry(self._unshaded_geometry)
+        # Restore the tab that was active before shading
+        if hasattr(self, "_pre_shade_tab") and self._pre_shade_tab:
+            self._notebook.select(self._pre_shade_tab)  # type: ignore[union-attr]
+
+    def _rebind_tab_changed(self) -> None:
+        """Re-bind tab changed after shade completes."""
+        if self._notebook:
+            self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
     def _on_tab_changed(self, _event: Any) -> None:
         """Refresh tabs when they become visible."""
+        if self._shaded:
+            # User clicked a tab while shaded — unshade to that tab
+            clicked_tab = self._notebook.select() if self._notebook else ""
+            if clicked_tab != self._about_tab_id:
+                self._pre_shade_tab = clicked_tab
+            self._unshade()
         if not self._notebook:
             return
         tab_id = self._notebook.select()
         tab_text = self._notebook.tab(tab_id, "text")
+        self._clear_tab_bell(tab_text)
         if tab_text == "Calendar":
-            self._start_cal_refresh()
-        else:
-            self._stop_cal_refresh()
-        if tab_text == "Actions" and hasattr(self, "_actions_tab"):
-            self._actions_tab.refresh()
-        elif tab_text == "Transcripts" and hasattr(self, "_meetings_tab"):
+            self._render_current_day()
+        if tab_text == "Transcripts" and hasattr(self, "_meetings_tab"):
             self._meetings_tab.refresh()
 
     def _start_cal_refresh(self) -> None:
-        """Start auto-refreshing the calendar every 60 seconds."""
-        self._stop_cal_refresh()
+        """Start auto-refreshing calendar data every 60 seconds.
+
+        Runs regardless of which tab is active so bells can fire.
+        Only re-renders the canvas when the Calendar tab is visible.
+        """
+        if self._cal_refresh_timer is not None:
+            return  # Already running
+        self._do_cal_refresh_cycle()
+
+    def _do_cal_refresh_cycle(self) -> None:
+        """One refresh cycle: collect data, schedule next."""
         self.refresh()
-        self._cal_refresh_timer = self._root.after(60_000, self._start_cal_refresh)
+        self._cal_refresh_timer = self._root.after(60_000, self._do_cal_refresh_cycle)
 
     def _stop_cal_refresh(self) -> None:
         """Stop the calendar auto-refresh timer."""
@@ -518,9 +673,21 @@ class Dashboard:
         }
         if self._notebook:
             tab_id = self._notebook.select()
-            state["tab"] = self._notebook.tab(tab_id, "text")
+            tab_text = self._notebook.tab(tab_id, "text")
+            # Don't save About tab — save the pre-shade tab instead
+            if tab_text == "\u2139" and hasattr(self, "_pre_shade_tab"):
+                tab_id = self._pre_shade_tab
+                tab_text = self._notebook.tab(tab_id, "text")
+            state["tab"] = tab_text
         if hasattr(self, "_meetings_tab"):
             state["transcript_filters"] = self._meetings_tab.get_filter_state()
+        if self._window:
+            state["topmost"] = bool(self._window.attributes("-topmost"))
+            # Save unshaded geometry if currently shaded
+            if self._shaded and self._unshaded_geometry:
+                state["geometry"] = self._unshaded_geometry
+            else:
+                state["geometry"] = self._window.geometry()
         state_file = self._state_path / "ui_state.json"
         try:
             with open(state_file, "w") as f:
@@ -566,6 +733,15 @@ class Dashboard:
         filters = state.get("transcript_filters")
         if filters and hasattr(self, "_meetings_tab"):
             self._meetings_tab.set_filter_state(filters)
+
+        # Restore always-on-top
+        if state.get("topmost") and self._window:
+            self._window.attributes("-topmost", True)
+
+        # Restore window geometry (position + size)
+        geometry = state.get("geometry")
+        if geometry and self._window:
+            self._window.geometry(geometry)
 
     def _restart(self) -> None:
         """Save state, re-exec the process to restart the application."""
@@ -1500,15 +1676,24 @@ class Dashboard:
                 self._status_var.set,
                 f"Collecting from {len(calendar_ids)} calendar(s)...",
             )
+            today = date.today()
+            # Maintain the collected range — don't shrink it on refresh
+            days_back = 0
+            if self._collected_start and self._collected_start < today:
+                days_back = (today - self._collected_start).days
+            days_ahead = 14
+            if self._collected_until and self._collected_until > today:
+                days_ahead = max((self._collected_until - today).days, 14)
+
             collect_all_calendars(
                 calendar_ids,
-                days_ahead=14,
-                days_back=0,
+                days_ahead=days_ahead,
+                days_back=days_back,
                 repo_path=self._state_path,
             )
 
-            self._collected_start = date.today()
-            self._collected_until = date.today() + timedelta(days=14)
+            self._collected_start = today - timedelta(days=days_back)
+            self._collected_until = today + timedelta(days=days_ahead)
             self._root.after(0, self._status_var.set, "Analyzing...")
             analyses = analyze_all_calendars(repo_path=self._state_path)
 
@@ -1551,10 +1736,27 @@ class Dashboard:
         self._all_conflicts = conflicts
         self._all_changes = changes
         self._render_current_day()
-        if hasattr(self, "_actions_tab"):
-            self._actions_tab.refresh()
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._status_var.set(f"Updated at {timestamp}")
+
+        # Bell on Calendar if today has genuinely new changes
+        today_str = date.today().isoformat()
+        new_change_keys: set[str] = set()
+        for c in changes:
+            start = c.event.get("start", "")
+            touches_today = start.startswith(today_str)
+            # Also check previous event for time_changed (moved FROM today)
+            if c.change_type == "time_changed" and c.previous_event:
+                prev_start = c.previous_event.get("start", "")
+                touches_today = touches_today or prev_start.startswith(today_str)
+            if touches_today and c.change_type in ("new", "time_changed"):
+                # Include start time in key so moves generate new keys
+                key = f"{c.event.get('id', '')}:{start}"
+                new_change_keys.add(key)
+        unseen = new_change_keys - self._notified_change_ids
+        if unseen:
+            self._notified_change_ids.update(unseen)
+            self._notify_tab("Calendar")
 
     def _resolve_conflict_ids(self, day_events: list[dict[str, Any]]) -> set[str]:
         """Resolve which event IDs should be marked as conflicts.

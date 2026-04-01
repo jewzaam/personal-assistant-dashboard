@@ -10,6 +10,7 @@ description = "CLI-first personal task management with voice input, powered by C
 requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0",
+    "tkinterweb>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -43,7 +44,7 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["meet_enrich.*", "meet_summarize.*"]
+module = ["meet_enrich.*", "meet_summarize.*", "tkinterweb.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -52,6 +53,7 @@ testpaths = ["tests"]
 [tool.coverage.run]
 omit = [
     "personal_assistant/dashboard.py",
+    "personal_assistant/assistant_tab.py",
     "personal_assistant/actions_tab.py",
     "personal_assistant/meetings_tab.py",
     "personal_assistant/config.py",
