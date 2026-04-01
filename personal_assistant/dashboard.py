@@ -330,7 +330,11 @@ class Dashboard:
                 font=FONT_BODY,
             ).pack(side=tk.LEFT, padx=(0, 8))
 
-        # Status (right side)
+        # Resize grip (no title bar = no WM resize handles)
+        grip = ttk.Sizegrip(bottom)
+        grip.pack(side=tk.RIGHT, anchor=tk.SE)
+
+        # Status (right side, to the left of grip)
         tk.Label(
             bottom,
             textvariable=self._status_var,
@@ -339,10 +343,6 @@ class Dashboard:
             font=FONT_BODY,
             anchor=tk.E,
         ).pack(side=tk.RIGHT)
-
-        # Resize grip at bottom-right (no title bar = no WM resize handles)
-        grip = ttk.Sizegrip(bottom)
-        grip.pack(side=tk.RIGHT, anchor=tk.SE)
 
         # Right-click on notebook for Restart
         self._notebook.bind("<Button-3>", self._on_notebook_right_click)
@@ -512,7 +512,8 @@ class Dashboard:
         """Initialize notification state."""
         if hasattr(self, "_notified_tabs"):
             return
-        self._notified_tabs: set[str] = set()
+        self._notified_tabs: set[str] = set()  # transient bells
+        self._persistent_tabs: set[str] = set()  # persistent bells
         # Pumpkin orange background image sized to fill a tab
         self._notify_bg = tk.PhotoImage(width=100, height=28)
         for x in range(100):
@@ -520,7 +521,7 @@ class Dashboard:
                 self._notify_bg.put("#FF6B35", (x, y))
 
     def _notify_tab(self, tab_name: str) -> None:
-        """Set pumpkin orange background on a tab. BOOM."""
+        """Set transient bell — clears when user clicks the tab."""
         if not self._notebook:
             return
         self._init_notify()
@@ -528,9 +529,31 @@ class Dashboard:
         selected_text = self._notebook.tab(selected_id, "text")
         if selected_text == tab_name:
             return
-        if tab_name in self._notified_tabs:
+        if tab_name in self._notified_tabs or tab_name in self._persistent_tabs:
             return
         self._notified_tabs.add(tab_name)
+        self._show_bell(tab_name)
+
+    def _notify_tab_persistent(self, tab_name: str) -> None:
+        """Set persistent bell — stays until cleared by _clear_persistent_bell."""
+        if not self._notebook:
+            return
+        self._init_notify()
+        self._persistent_tabs.add(tab_name)
+        self._show_bell(tab_name)
+
+    def _clear_persistent_bell(self, tab_name: str) -> None:
+        """Remove persistent bell and hide if no transient bell either."""
+        if not hasattr(self, "_persistent_tabs"):
+            return
+        self._persistent_tabs.discard(tab_name)
+        if tab_name not in self._notified_tabs:
+            self._hide_bell(tab_name)
+
+    def _show_bell(self, tab_name: str) -> None:
+        """Show the orange bell on a tab."""
+        if not self._notebook:
+            return
         for tab_id in self._notebook.tabs():
             if self._notebook.tab(tab_id, "text") == tab_name:
                 self._notebook.tab(
@@ -540,17 +563,23 @@ class Dashboard:
                 )
                 break
 
-    def _clear_tab_bell(self, tab_name: str) -> None:
-        """Remove notification from a tab."""
+    def _hide_bell(self, tab_name: str) -> None:
+        """Remove the orange bell from a tab."""
         if not self._notebook:
             return
-        if not hasattr(self, "_notified_tabs"):
-            return
-        self._notified_tabs.discard(tab_name)
         for tab_id in self._notebook.tabs():
             if self._notebook.tab(tab_id, "text") == tab_name:
                 self._notebook.tab(tab_id, image="", compound="text")
                 break
+
+    def _clear_tab_bell(self, tab_name: str) -> None:
+        """Clear transient bell on tab click. Persistent bells remain."""
+        if not hasattr(self, "_notified_tabs"):
+            return
+        self._notified_tabs.discard(tab_name)
+        # Only hide visual if no persistent bell
+        if tab_name not in self._persistent_tabs:
+            self._hide_bell(tab_name)
 
     def _force_pipeline(self) -> None:
         """Force the pipeline to run immediately."""
@@ -1887,13 +1916,27 @@ class Dashboard:
                 key = f"{c.event.get('id', '')}:{start}"
                 new_change_keys.add(key)
         unseen = new_change_keys - self._notified_change_ids
+        is_first_load = self._first_cal_load
+        if is_first_load:
+            self._first_cal_load = False
         if unseen:
             self._notified_change_ids.update(unseen)
-            # Don't bell on first load — everything looks "new"
-            if self._first_cal_load:
-                self._first_cal_load = False
-            else:
+            # Don't bell for new/changed events on first load
+            if not is_first_load:
                 self._notify_tab("Calendar")
+
+        # Persistent bell: unaccepted events or unresolved conflicts for today
+        today_events = _filter_events_for_date(events, today_str)
+        has_unaccepted = any(
+            _user_response_status(e) == "needsAction"
+            for e in today_events
+            if e.get("attendees")  # skip user's own events with no attendees
+        )
+        today_conflict_ids = self._resolve_conflict_ids(today_events)
+        if has_unaccepted or today_conflict_ids:
+            self._notify_tab_persistent("Calendar")
+        else:
+            self._clear_persistent_bell("Calendar")
 
     def _resolve_conflict_ids(self, day_events: list[dict[str, Any]]) -> set[str]:
         """Resolve which event IDs should be marked as conflicts.

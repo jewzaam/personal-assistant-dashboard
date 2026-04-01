@@ -294,7 +294,7 @@ class MeetingsTab:
             self._root.after_cancel(self._countdown_id)
             self._countdown_id = None
         self._log_countdown("Meeting enrichment running...")
-        self._log("Starting meeting enrichment...", "progress")
+        self._log("Enrichment: starting meeting enrichment...", "progress")
         # Notify dashboard to disable Run Now
         if self._set_run_now_state_cb is not None:
             self._root.after(0, self._set_run_now_state_cb, False)
@@ -636,11 +636,11 @@ class MeetingsTab:
 
             content = get_summary(folder.path)
         except ImportError:
-            self._log("meet-summarize not installed", "error")
+            self._log("Summarization: meet-summarize not installed", "error")
             return
 
         if content is None:
-            self._log(f"No summary for {folder_key}", "info")
+            self._log(f"Summarization: no summary for {folder_key}", "info")
             return
 
         popup = tk.Toplevel(self._root)
@@ -724,25 +724,25 @@ class MeetingsTab:
                 self._update_summarize_status()
             elif kind == "start":
                 folder = event_tuple[1] if len(event_tuple) > 1 else ""
-                self._log(f"Summarizing {folder}...", "progress")
+                self._log(f"Summarization: summarizing {folder}...", "progress")
                 self._update_tree_tag(folder, "active")
             elif kind == "success":
                 folder = event_tuple[1] if len(event_tuple) > 1 else ""
-                self._log(f"\u2713 {folder}", "success")
+                self._log(f"Summarization: \u2713 {folder}", "success")
                 self._update_tree_tag(folder, "success")
                 self._update_tree_value(folder, "summarized", "\u2713")
                 self._summarize_done += 1
                 self._update_summarize_status()
             elif kind == "failure":
                 folder = event_tuple[1] if len(event_tuple) > 1 else ""
-                self._log(f"\u2717 {folder}", "error")
+                self._log(f"Summarization: \u2717 {folder}", "error")
                 self._update_tree_tag(folder, "failed")
                 self._update_tree_value(folder, "summarized", "\u2717")
                 self._summarize_done += 1
                 self._update_summarize_status()
             elif kind == "cancelled":
                 folder = event_tuple[1] if len(event_tuple) > 1 else ""
-                self._log(f"Cancelled {folder}", "info")
+                self._log(f"Summarization: cancelled {folder}", "info")
         elif event_type == "summarize_done":
             success, failure = data
             parts = []
