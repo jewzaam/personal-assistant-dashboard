@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 import tkinter as tk
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,37 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _pid_start_time(pid: int) -> float:
+    """Get the start time of a process from /proc, or fall back to now."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        # Field 22 (0-indexed: 21) is starttime in clock ticks since boot
+        starttime_ticks = int(stat.split(")")[1].split()[19])
+        clk_tck = os.sysconf("SC_CLK_TCK")
+        # Boot time from /proc/stat
+        for line in Path("/proc/stat").read_text().splitlines():
+            if line.startswith("btime "):
+                btime = int(line.split()[1])
+                return btime + starttime_ticks / clk_tck
+    except (OSError, ValueError, IndexError):
+        pass
+    return time.time()
+
+
+def _format_age(seconds: int) -> str:
+    """Format an age in seconds to a human-readable string."""
+    if seconds < 60:
+        return f"{seconds}s ago"
+    elif seconds < 3600:
+        return f"{seconds // 60}m ago"
+    elif seconds < 86400:
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        return f"{hours}h {minutes}m ago"
+    else:
+        return f"{seconds // 86400}d ago"
+
+
 class AssistantTab:
     """Assistant tab for the PA dashboard.
 
@@ -74,16 +106,19 @@ class AssistantTab:
         root: tk.Tk,
         *,
         on_actions_refresh: Any = None,
+        on_actions_status: Any = None,
         console_log: Any = None,
         notify_tab: Any = None,
     ) -> None:
         self._parent = parent
         self._root = root
         self._on_actions_refresh = on_actions_refresh
+        self._on_actions_status = on_actions_status
         self._console_log = console_log
         self._notify_tab = notify_tab
         self._running = False
         self._refresh_pid: int | None = None
+        self._refresh_started: float = 0.0
         self._age_timer: str | None = None
         self._last_assistant_mtime: float = 0.0
         self._last_actions_mtime: float = 0.0
@@ -215,10 +250,13 @@ class AssistantTab:
             pid = data.get("pid")
             if pid and _pid_alive(pid):
                 self._refresh_pid = pid
+                self._refresh_started = _pid_start_time(pid)
                 self._running = True
-                self._refresh_btn.configure(state="disabled")
+                self._refresh_btn.configure(state="disabled", text=f"PID: {pid}")
                 self._status_var.set("Refreshing...")
-                self._log("Assistant: recovered running refresh (PID %d)" % pid, "info")
+                self._log(
+                    "[Assistant] recovered running refresh (PID %d)" % pid, "info"
+                )
             else:
                 self._clear_pid()
         except (json.JSONDecodeError, OSError, TypeError):
@@ -236,8 +274,6 @@ class AssistantTab:
         Also detects file changes (auto-reload + bell) and monitors
         the refresh process PID.
         """
-        import time
-
         # Monitor refresh process
         if self._running and self._refresh_pid is not None:
             if not _pid_alive(self._refresh_pid):
@@ -245,30 +281,28 @@ class AssistantTab:
                 # We can't get exit code from a detached process, so just
                 # report completion. File-watch handles the HTML reload.
                 self._log(
-                    "Assistant: refresh process exited (PID %d)" % self._refresh_pid,
+                    "[Assistant] refresh process exited (PID %d)" % self._refresh_pid,
                     "info",
                 )
                 self._clear_pid()
                 self._running = False
-                self._refresh_btn.configure(state="normal")
+                self._refresh_btn.configure(state="normal", text="Refresh")
+            else:
+                # Update elapsed time
+                elapsed = int(time.time() - self._refresh_started)
+                if elapsed < 60:
+                    self._status_var.set(f"Refreshing... {elapsed}s")
+                else:
+                    self._status_var.set(
+                        f"Refreshing... {elapsed // 60}m {elapsed % 60}s"
+                    )
 
         # Check for assistant HTML changes
         if ASSISTANT_HTML.exists():
             mtime = ASSISTANT_HTML.stat().st_mtime
-            age_seconds = int(time.time() - mtime)
-            if age_seconds < 60:
-                age_text = f"{age_seconds}s ago"
-            elif age_seconds < 3600:
-                age_text = f"{age_seconds // 60}m ago"
-            elif age_seconds < 86400:
-                hours = age_seconds // 3600
-                minutes = (age_seconds % 3600) // 60
-                age_text = f"{hours}h {minutes}m ago"
-            else:
-                days = age_seconds // 86400
-                age_text = f"{days}d ago"
             if not self._running:
-                self._status_var.set(f"Updated {age_text}")
+                age_seconds = int(time.time() - mtime)
+                self._status_var.set(f"Updated {_format_age(age_seconds)}")
 
             if mtime != self._last_assistant_mtime:
                 if self._last_assistant_mtime != 0.0:
@@ -293,6 +327,30 @@ class AssistantTab:
                     if self._notify_tab is not None:
                         self._notify_tab("Actions")
                 self._last_actions_mtime = actions_mtime
+            # Update Actions tab status
+            if self._on_actions_status is not None:
+                if self._running:
+                    elapsed = int(time.time() - self._refresh_started)
+                    if elapsed < 60:
+                        self._on_actions_status(f"Refreshing... {elapsed}s")
+                    else:
+                        self._on_actions_status(
+                            f"Refreshing... {elapsed // 60}m {elapsed % 60}s"
+                        )
+                else:
+                    actions_age = int(time.time() - actions_mtime)
+                    self._on_actions_status(f"Updated {_format_age(actions_age)}")
+        elif self._on_actions_status is not None:
+            if self._running:
+                elapsed = int(time.time() - self._refresh_started)
+                if elapsed < 60:
+                    self._on_actions_status(f"Refreshing... {elapsed}s")
+                else:
+                    self._on_actions_status(
+                        f"Refreshing... {elapsed // 60}m {elapsed % 60}s"
+                    )
+            else:
+                self._on_actions_status("No actions page")
 
         self._age_timer = self._root.after(10_000, self._update_age)
 
@@ -303,6 +361,7 @@ class AssistantTab:
         if self._running:
             return
         self._running = True
+        self._refresh_started = time.time()
         self._refresh_btn.configure(state="disabled")
         self._status_var.set("Refreshing...")
 
@@ -322,12 +381,13 @@ class AssistantTab:
             )
             self._refresh_pid = proc.pid
             self._save_pid(proc.pid)
-            self._log("Assistant: refresh started (PID %d)" % proc.pid, "progress")
+            self._refresh_btn.configure(text=f"PID: {proc.pid}")
+            self._log("[Assistant] refresh started (PID %d)" % proc.pid, "progress")
         except Exception as exc:
             logger.exception("Failed to launch refresh process")
-            self._log(f"Assistant: refresh launch failed: {exc}", "error")
+            self._log(f"[Assistant] refresh launch failed: {exc}", "error")
             self._running = False
-            self._refresh_btn.configure(state="normal")
+            self._refresh_btn.configure(state="normal", text="Refresh")
 
     def _git_commit(self) -> None:
         """Stage and commit changes in the assistant directory."""
