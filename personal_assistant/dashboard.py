@@ -229,6 +229,19 @@ class Dashboard:
             notify_tab=self._notify_tab,
         )
 
+        # Chat tab
+        chat_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(chat_frame, text="Chat")
+
+        from personal_assistant.chat_tab import ChatTab
+
+        self._chat_tab = ChatTab(
+            chat_frame,
+            self._root,
+            console_log=self.log_console,
+            notify_tab=self._notify_tab,
+        )
+
         # Calendar tab
         cal_tab = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(cal_tab, text="Calendar")
@@ -758,6 +771,8 @@ class Dashboard:
             self._render_current_day()
         if tab_text == "Transcripts" and hasattr(self, "_meetings_tab"):
             self._meetings_tab.refresh()
+        if tab_text == "Chat" and hasattr(self, "_chat_tab"):
+            self._chat_tab.refresh()
 
     def _start_cal_refresh(self) -> None:
         """Start auto-refreshing calendar data every 60 seconds.
