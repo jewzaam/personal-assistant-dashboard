@@ -45,11 +45,14 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["meet_enrich.*", "meet_summarize.*", "tkinterweb.*"]
+module = ["meet_enrich.*", "meet_summarize.*", "tkinterweb.*", "claude_agent_sdk.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: tests that use real subprocess/filesystem/network operations",
+]
 
 [tool.coverage.run]
 omit = [

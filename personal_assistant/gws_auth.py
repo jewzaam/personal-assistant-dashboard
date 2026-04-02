@@ -8,9 +8,9 @@ import logging
 import subprocess
 from dataclasses import dataclass, field
 
-logger = logging.getLogger(__name__)
+from personal_assistant.config import GWS_BINARY
 
-GWS_BINARY = "gws"
+logger = logging.getLogger(__name__)
 
 # Scopes required by the PA, mapped to what they enable
 REQUIRED_SCOPES: dict[str, str] = {

@@ -17,6 +17,7 @@ from typing import Any
 from personal_assistant import state_repo, config_manager
 from personal_assistant.collectors import calendar_collector
 from personal_assistant.analyzers import calendar_analyzer
+from personal_assistant.config import SCOPE_CHECK_DELAY_MS
 
 
 def _add_repo_path_arg(parser: argparse.ArgumentParser) -> None:
@@ -137,7 +138,7 @@ def _cmd_gui(args: argparse.Namespace) -> None:
 
     # Auto-refresh and scope check on launch
     root.after(100, dashboard.refresh)
-    root.after(200, dashboard._check_scopes)
+    root.after(SCOPE_CHECK_DELAY_MS, dashboard._check_scopes)
 
     root.mainloop()
 

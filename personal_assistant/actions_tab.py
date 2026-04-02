@@ -11,16 +11,21 @@ import tkinter as tk
 from typing import Any
 
 from personal_assistant.config import (
+    ACTIONS_HTML,
     BG_OUTPUT,
     BG_WINDOW,
+    COLOR_BUTTON,
+    COLOR_BUTTON_ACTIVE,
+    COLOR_HTML_FALLBACK_BG,
+    COLOR_HTML_FALLBACK_FG,
     FG_DIM,
     FG_TEXT,
     FONT_BODY,
     PAD,
 )
 
-# Path to the actions HTML file
-from personal_assistant.assistant_tab import ACTIONS_HTML, SPACING_CSS
+# Import spacing CSS from assistant_tab
+from personal_assistant.assistant_tab import SPACING_CSS
 
 
 class ActionsTab:
@@ -49,11 +54,11 @@ class ActionsTab:
             controls,
             text="\U0001f504",
             command=self.refresh,
-            bg="#4e4e4e",
+            bg=COLOR_BUTTON,
             fg=FG_TEXT,
             font=FONT_BODY,
             relief=tk.FLAT,
-            activebackground="#5e5e5e",
+            activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=4,
         ).pack(side=tk.RIGHT)
@@ -103,9 +108,13 @@ class ActionsTab:
             self._html_frame.add_css(SPACING_CSS)
         else:
             self._html_frame.load_html(
-                f"<html><body style='background:#252525;color:#ccc;"
+                f"<html><body style='background:{COLOR_HTML_FALLBACK_BG};"
+                f"color:{COLOR_HTML_FALLBACK_FG};"
                 f"font-family:sans-serif;padding:20px'>"
                 f"<p>No actions page found at:</p>"
-                f"<code>{ACTIONS_HTML}</code>"
-                f"</body></html>"
+                f"<code>{ACTIONS_HTML}</code></body></html>"
             )
+
+    def on_destroy(self) -> None:
+        """Called during dashboard shutdown to clean up resources."""
+        pass

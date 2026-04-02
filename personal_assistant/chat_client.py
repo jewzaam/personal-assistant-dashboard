@@ -79,19 +79,21 @@ class ChatClient:
         self._client: ClaudeSDKClient | None = None
         self._running = False
         self._receiving = False
+        self._lock = threading.Lock()
 
     # -- lifecycle -----------------------------------------------------------
 
     def start(self) -> None:
         """Start the background asyncio loop and connect the SDK client."""
-        if self._running:
-            return
-        self._running = True
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(
-            target=self._run_loop, daemon=True, name="chat-client"
-        )
-        self._thread.start()
+        with self._lock:
+            if self._running:
+                return
+            self._running = True
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(
+                target=self._run_loop, daemon=True, name="chat-client"
+            )
+            self._thread.start()
         future = asyncio.run_coroutine_threadsafe(self._connect(), self._loop)
         future.result(timeout=30)
 
@@ -116,19 +118,32 @@ class ChatClient:
 
     def stop(self) -> None:
         """Disconnect and shut down the background loop."""
-        if not self._running:
-            return
-        self._running = False
-        if self._loop and self._client:
-            future = asyncio.run_coroutine_threadsafe(self._disconnect(), self._loop)
+        with self._lock:
+            if not self._running:
+                return
+            self._running = False
+            loop_ref = self._loop
+            thread_ref = self._thread
+
+        if loop_ref and self._client:
+            future = asyncio.run_coroutine_threadsafe(self._disconnect(), loop_ref)
             try:
                 future.result(timeout=5)
             except Exception:
                 logger.debug("disconnect timed out", exc_info=True)
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+
+        if loop_ref:
+            loop_ref.call_soon_threadsafe(loop_ref.stop)
+
+        if thread_ref:
+            thread_ref.join(timeout=10)
+
+        if loop_ref:
+            loop_ref.close()
+
+        with self._lock:
             self._loop = None
-        self._thread = None
+            self._thread = None
 
     async def _disconnect(self) -> None:
         if self._client:
@@ -200,11 +215,17 @@ class ChatClient:
 
     def clear(self) -> None:
         """Reset conversation by reconnecting."""
-        if not self._loop:
+        with self._lock:
+            loop_ref = self._loop
+        if not loop_ref:
             return
-        asyncio.run_coroutine_threadsafe(self._reconnect(), self._loop)
+        asyncio.run_coroutine_threadsafe(self._reconnect(), loop_ref)
 
     async def _reconnect(self) -> None:
         """Disconnect and reconnect to start fresh."""
-        await self._disconnect()
-        await self._connect()
+        try:
+            await self._disconnect()
+            await self._connect()
+        except Exception as exc:
+            logger.exception("reconnect failed")
+            self._on_error(f"Failed to reconnect: {exc}")

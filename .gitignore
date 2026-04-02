@@ -6,14 +6,29 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.eggs/
 
 # Testing
+.pytest_cache/
 .coverage
 htmlcov/
-.pytest_cache/
+
+# Mutation testing
+mutants/
+.mutmut-cache
+
+# Type checking
+.mypy_cache/
+
+# IDE
+.vscode/
+.idea/
 
 # Virtual environments
-.venv/
 venv/
+.venv/
+
+# Claude Code local settings
+.claude/settings.local.json
 
 *.log

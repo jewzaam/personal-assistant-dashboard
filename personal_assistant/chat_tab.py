@@ -7,11 +7,16 @@ import logging
 import tkinter as tk
 from typing import Any
 
+from personal_assistant.types import ConsoleLogCallback, NotifyTabCallback
 from personal_assistant.config import (
     BG_INPUT,
     BG_OUTPUT,
     BG_WINDOW,
     BORDER_COLOR,
+    COLOR_ASSISTANT,
+    COLOR_BUTTON,
+    COLOR_BUTTON_ACTIVE,
+    COLOR_ERROR,
     FG_ACCENT,
     FG_DIM,
     FG_TEXT,
@@ -22,10 +27,6 @@ from personal_assistant.config import (
 
 logger = logging.getLogger(__name__)
 
-COLOR_BTN = "#4e4e4e"
-COLOR_ASSISTANT = "#98c379"
-COLOR_ERROR = "#e06c75"
-
 
 class ChatTab:
     """Interactive chat tab backed by ClaudeSDKClient."""
@@ -35,8 +36,8 @@ class ChatTab:
         parent: tk.Frame,
         root: tk.Tk,
         *,
-        console_log: Any = None,
-        notify_tab: Any = None,
+        console_log: ConsoleLogCallback | None = None,
+        notify_tab: NotifyTabCallback | None = None,
     ) -> None:
         self._parent = parent
         self._root = root
@@ -120,11 +121,11 @@ class ChatTab:
             btn_frame,
             text="Send",
             command=self._send,
-            bg=COLOR_BTN,
+            bg=COLOR_BUTTON,
             fg=FG_TEXT,
             font=FONT_BODY,
             relief=tk.FLAT,
-            activebackground="#5e5e5e",
+            activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=8,
         )
@@ -134,11 +135,11 @@ class ChatTab:
             btn_frame,
             text="Clear",
             command=self._clear,
-            bg=COLOR_BTN,
+            bg=COLOR_BUTTON,
             fg=FG_TEXT,
             font=FONT_BODY,
             relief=tk.FLAT,
-            activebackground="#5e5e5e",
+            activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=8,
         ).pack(side=tk.TOP)
@@ -270,3 +271,8 @@ class ChatTab:
     def refresh(self) -> None:
         """Called when the tab is activated."""
         self._input.focus_set()
+
+    def on_destroy(self) -> None:
+        """Called during dashboard shutdown to clean up resources."""
+        if self._client:
+            self._client.stop()

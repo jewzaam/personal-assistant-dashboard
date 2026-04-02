@@ -6,6 +6,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # state_dir fixture provided by conftest.py
 
 
@@ -24,6 +26,7 @@ def _run_cli(*args: str) -> tuple[str, int]:
     return captured.getvalue(), exit_code
 
 
+@pytest.mark.integration
 def test_cli_state_init(tmp_path: Path) -> None:
     state_path = str(tmp_path / "test-state")
     output, code = _run_cli("state", "init", "--state-path", state_path)
@@ -56,6 +59,12 @@ def test_cli_track_add(state_dir: Path) -> None:
     )
     assert code == 0
     assert "TEST-123" in output
+    # Verify the config file was actually updated
+    from personal_assistant.config_manager import load_config
+
+    config = load_config(repo_path=state_dir)
+    jira_keys = [e["key"] for e in config.get("jira", [])]
+    assert "TEST-123" in jira_keys
 
 
 def test_cli_track_list(state_dir: Path) -> None:
@@ -76,6 +85,12 @@ def test_cli_track_repo(state_dir: Path) -> None:
     )
     assert code == 0
     assert "owner/repo" in output
+    # Verify the config file contains the repo
+    from personal_assistant.config_manager import load_config
+
+    config = load_config(repo_path=state_dir)
+    repos = config.get("github", {}).get("repos", [])
+    assert "owner/repo" in repos
 
 
 def test_cli_no_args_shows_help() -> None:

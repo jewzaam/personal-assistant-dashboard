@@ -21,7 +21,7 @@ check: format lint typecheck test coverage  ## Run format, lint, typecheck, test
 .DEFAULT_GOAL := check
 
 help:  ## Show available targets
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
+	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
 $(PYTHON):
 	python3 -m venv $(VENV_DIR)
@@ -66,6 +66,12 @@ test-verbose: install-dev  ## Run pytest with verbose output
 
 coverage: install-dev  ## Run pytest with coverage
 	$(PYTHON) -m pytest --cov=personal_assistant --cov-report=term
+
+mutation: install-dev  ## Run mutation testing
+	$(PYTHON) -m mutmut run --CI --paths-to-mutate "personal_assistant"
+
+mutation-report:  ## Show results of last mutation run
+	$(PYTHON) -m mutmut results
 
 run: install install-meetings  ## Run the personal assistant GUI
 	$(PYTHON) -m personal_assistant --debug gui --log-file pa-dashboard.log

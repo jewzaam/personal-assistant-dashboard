@@ -13,11 +13,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from personal_assistant.config import GWS_BINARY
 from personal_assistant.state_repo import DEFAULT_STATE_PATH
+from personal_assistant.types import CalendarEvent
+from personal_assistant.utils import atomic_write_json
 
 logger = logging.getLogger(__name__)
-
-GWS_BINARY = "gws"
 
 
 def collect_events(
@@ -26,7 +27,7 @@ def collect_events(
     days_ahead: int = 7,
     days_back: int = 0,
     repo_path: Path = DEFAULT_STATE_PATH,
-) -> list[dict[str, Any]]:
+) -> list[CalendarEvent]:
     """Pull events from a calendar and write to the state repo.
 
     Args:
@@ -50,9 +51,7 @@ def collect_events(
     normalized = [_normalize_event(e) for e in raw_events]
 
     output_file = _output_path(calendar_id, repo_path=repo_path)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_file, "w") as f:
-        json.dump(normalized, f, indent=2, sort_keys=False)
+    atomic_write_json(output_file, normalized, indent=2, sort_keys=False)
 
     logger.info(
         "Collected %d events from %s -> %s",
@@ -69,12 +68,12 @@ def collect_all_calendars(
     days_ahead: int = 7,
     days_back: int = 0,
     repo_path: Path = DEFAULT_STATE_PATH,
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, list[CalendarEvent]]:
     """Collect events from multiple calendars.
 
     Returns a dict mapping calendar_id to its event list.
     """
-    results: dict[str, list[dict[str, Any]]] = {}
+    results: dict[str, list[CalendarEvent]] = {}
     for cal_id in calendar_ids:
         try:
             results[cal_id] = collect_events(
@@ -204,7 +203,7 @@ def _fetch_events(
     return items
 
 
-def _normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
+def _normalize_event(raw: dict[str, Any]) -> CalendarEvent:
     """Normalize a raw Google Calendar event to a consistent schema."""
     start = raw.get("start", {})
     end = raw.get("end", {})
@@ -256,4 +255,5 @@ def _output_path(
         return repo_path / "calendar" / "events.json"
     # Shared calendars get their own file, sanitized name
     safe_name = calendar_id.replace("@", "_at_").replace(".", "_")
+    safe_name = Path(safe_name).name
     return repo_path / "calendar" / f"events-{safe_name}.json"

@@ -18,20 +18,27 @@ import tkinter as tk
 from pathlib import Path
 from typing import Any
 
+from personal_assistant.types import ConsoleLogCallback, NotifyTabCallback
 from personal_assistant.config import (
+    ACTIONS_HTML,
+    ASSISTANT_DIR,
+    ASSISTANT_HTML,
     BG_OUTPUT,
     BG_WINDOW,
+    COLOR_BUTTON,
+    COLOR_BUTTON_ACTIVE,
+    COLOR_HTML_FALLBACK_BG,
+    COLOR_HTML_FALLBACK_FG,
     FG_DIM,
     FG_TEXT,
+    FILE_WATCH_INTERVAL_MS,
     FONT_BODY,
     PAD,
+    REFRESH_COMMAND,
 )
 from personal_assistant.state_repo import DEFAULT_STATE_PATH
 
 logger = logging.getLogger(__name__)
-
-COLOR_BTN = "#4e4e4e"
-COLOR_ACTIVE = "#61afef"
 
 # CSS injected into HTML frames for spacing
 SPACING_CSS = (
@@ -44,11 +51,6 @@ SPACING_CSS = (
     " td, th { padding: 4px 8px; }"
 )
 
-# Paths — placeholder directory and files
-ASSISTANT_DIR = Path.home() / "Downloads" / "personal-assistant"
-ASSISTANT_HTML = ASSISTANT_DIR / "summary.html"
-ACTIONS_HTML = ASSISTANT_DIR / "actions.html"
-REFRESH_COMMAND = 'claude -p "/personal-assistant"'
 PID_FILE = DEFAULT_STATE_PATH / "assistant_refresh.pid"
 
 
@@ -107,8 +109,8 @@ class AssistantTab:
         *,
         on_actions_refresh: Any = None,
         on_actions_status: Any = None,
-        console_log: Any = None,
-        notify_tab: Any = None,
+        console_log: ConsoleLogCallback | None = None,
+        notify_tab: NotifyTabCallback | None = None,
     ) -> None:
         self._parent = parent
         self._root = root
@@ -144,11 +146,11 @@ class AssistantTab:
             controls,
             text="Refresh",
             command=self._on_refresh,
-            bg=COLOR_BTN,
+            bg=COLOR_BUTTON,
             fg=FG_TEXT,
             font=FONT_BODY,
             relief=tk.FLAT,
-            activebackground="#5e5e5e",
+            activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=8,
         )
@@ -158,11 +160,11 @@ class AssistantTab:
             controls,
             text="\U0001f504",
             command=self._load_html,
-            bg=COLOR_BTN,
+            bg=COLOR_BUTTON,
             fg=FG_TEXT,
             font=FONT_BODY,
             relief=tk.FLAT,
-            activebackground="#5e5e5e",
+            activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=4,
         ).pack(side=tk.RIGHT, padx=(0, 4))
@@ -218,11 +220,11 @@ class AssistantTab:
             self._html_frame.add_css(SPACING_CSS)
         else:
             body = (
-                "<html><body style='background:#252525;color:#ccc;"
+                f"<html><body style='background:{COLOR_HTML_FALLBACK_BG};"
+                f"color:{COLOR_HTML_FALLBACK_FG};"
                 "font-family:sans-serif;padding:20px'>"
                 "<p>No status page found at:</p>"
-                f"<code>{ASSISTANT_HTML}</code>"
-                "</body></html>"
+                f"<code>{ASSISTANT_HTML}</code></body></html>"
             )
             self._html_frame.load_html(body)
 
@@ -352,7 +354,7 @@ class AssistantTab:
             else:
                 self._on_actions_status("No actions page")
 
-        self._age_timer = self._root.after(10_000, self._update_age)
+        self._age_timer = self._root.after(FILE_WATCH_INTERVAL_MS, self._update_age)
 
     # --- Refresh ---
 
@@ -422,6 +424,12 @@ class AssistantTab:
         """Forward to dashboard console."""
         if self._console_log is not None:
             try:
-                self._root.after(0, self._console_log, message, tag)
+                self._root.after(0, self._console_log, message, tag, "", "")
             except Exception:
                 pass
+
+    def on_destroy(self) -> None:
+        """Called during dashboard shutdown to clean up resources."""
+        if self._age_timer is not None:
+            self._root.after_cancel(self._age_timer)
+            self._age_timer = None
