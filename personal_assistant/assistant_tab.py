@@ -18,7 +18,7 @@ import tkinter as tk
 from pathlib import Path
 from typing import Any
 
-from personal_assistant.types import ConsoleLogCallback, NotifyTabCallback
+from personal_assistant.models import ConsoleLogCallback, NotifyTabCallback
 from personal_assistant.config import (
     ACTIONS_HTML,
     ASSISTANT_DIR,

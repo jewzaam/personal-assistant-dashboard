@@ -16,7 +16,7 @@ from personal_assistant.state_repo import (
     DEFAULT_STATE_PATH,
     get_file_at_last_commit,
 )
-from personal_assistant.types import CalendarEvent
+from personal_assistant.models import CalendarEvent
 
 logger = logging.getLogger(__name__)
 
