@@ -11,12 +11,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
 
 from personal_assistant.state_repo import (
     DEFAULT_STATE_PATH,
     get_file_at_last_commit,
 )
+from personal_assistant.types import CalendarEvent
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,8 @@ class CalendarChange:
     """A single detected change in the calendar."""
 
     change_type: ChangeType
-    event: dict[str, Any]
-    previous_event: dict[str, Any] | None = None
+    event: CalendarEvent
+    previous_event: CalendarEvent | None = None
     detail: str = ""
 
 
@@ -42,8 +42,8 @@ class CalendarChange:
 class Conflict:
     """Two events that overlap in time."""
 
-    event_a: dict[str, Any]
-    event_b: dict[str, Any]
+    event_a: CalendarEvent
+    event_b: CalendarEvent
     overlap_description: str = ""
 
 
@@ -205,7 +205,7 @@ def _load_current_events(
     calendar_file: str,
     *,
     repo_path: Path,
-) -> list[dict[str, Any]]:
+) -> list[CalendarEvent]:
     """Load current events from the state repo on disk."""
     filepath = repo_path / calendar_file
     if not filepath.exists():
@@ -225,7 +225,7 @@ def _load_previous_events(
     calendar_file: str,
     *,
     repo_path: Path,
-) -> list[dict[str, Any]]:
+) -> list[CalendarEvent]:
     """Load events from the last committed version."""
     content = get_file_at_last_commit(calendar_file, repo_path=repo_path)
     if content is None:
@@ -254,7 +254,7 @@ def _parse_event_time(time_str: str) -> datetime | None:
         return None
 
 
-def _user_declined(event: dict[str, Any]) -> bool:
+def _user_declined(event: CalendarEvent) -> bool:
     """Check if the user declined this event."""
     user_attendee = next(
         (a for a in event.get("attendees", []) if a.get("self")),
@@ -265,7 +265,7 @@ def _user_declined(event: dict[str, Any]) -> bool:
     )
 
 
-def _detect_conflicts(events: list[dict[str, Any]]) -> list[Conflict]:
+def _detect_conflicts(events: list[CalendarEvent]) -> list[Conflict]:
     """Find overlapping timed events.
 
     Only checks events the user is attending (not declined).

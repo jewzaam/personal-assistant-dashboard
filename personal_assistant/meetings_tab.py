@@ -21,31 +21,32 @@ from tkinter import ttk
 from queue import Empty, SimpleQueue
 from typing import Any
 
+from personal_assistant.types import ConsoleLogCallback
 from personal_assistant.config import (
     BG_OUTPUT,
     BG_WINDOW,
+    COLOR_ACTIVE,
+    COLOR_BUTTON,
+    COLOR_BUTTON_ACTIVE,
+    COLOR_FAILED,
+    COLOR_MENU_ACTIVE_BG,
+    COLOR_MENU_ACTIVE_FG,
+    COLOR_MENU_BG,
+    COLOR_MENU_FG,
+    COLOR_PENDING,
+    COLOR_SUCCESS,
+    COLOR_TAB_BG,
     FG_DIM,
     FG_TEXT,
     FONT_BODY,
+    MAX_CONCURRENT_SUMMARIZATION,
+    MENU_TIMEOUT_MS,
     PAD,
+    PIPELINE_INTERVAL_MS,
+    POLL_INTERVAL_MS,
 )
 
 logger = logging.getLogger(__name__)
-
-COLOR_BTN = "#4e4e4e"
-COLOR_SUCCESS = "#98c379"
-COLOR_PENDING = "#e5c07b"
-COLOR_FAILED = "#B85450"
-COLOR_ACTIVE = "#61afef"
-
-# Poll interval for event queue (ms)
-POLL_INTERVAL = 200
-# Context menu auto-dismiss (ms) — Linux cannot dismiss on click-away
-MENU_TIMEOUT = 5000
-# Auto-run pipeline interval (ms) — 10 minutes
-PIPELINE_INTERVAL = 10 * 60 * 1000
-# Max concurrent summarization agents
-MAX_CONCURRENT = 5
 
 # Map artifact kind values from meet-enrich DB to display names
 ARTIFACT_DISPLAY_NAMES: dict[str, str] = {
@@ -68,11 +69,11 @@ class MeetingsTab:
         parent: tk.Frame,
         root: tk.Tk,
         *,
-        console_log: Any = None,
+        console_log: ConsoleLogCallback | None = None,
     ) -> None:
         self._parent = parent
         self._root = root
-        self._console_log = console_log  # Callable[[str, str], None] or None
+        self._console_log = console_log
         self._update_countdown_cb: Any = None  # Set by dashboard
         self._set_run_now_state_cb: Any = None  # Set by dashboard
         self._update_summarize_status_cb: Any = None  # Set by dashboard
@@ -135,10 +136,10 @@ class MeetingsTab:
                 command=lambda _: self._apply_filter(),
             )
             menu.configure(
-                bg=COLOR_BTN,
+                bg=COLOR_BUTTON,
                 fg=FG_TEXT,
                 font=FONT_BODY,
-                activebackground="#5e5e5e",
+                activebackground=COLOR_BUTTON_ACTIVE,
                 highlightthickness=0,
                 relief=tk.FLAT,
             )
@@ -169,11 +170,11 @@ class MeetingsTab:
             btn_frame,
             text="Refresh",
             command=self.refresh,
-            bg=COLOR_BTN,
+            bg=COLOR_BUTTON,
             fg=FG_TEXT,
             font=FONT_BODY,
             relief=tk.FLAT,
-            activebackground="#5e5e5e",
+            activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=8,
         ).pack(side=tk.LEFT, padx=2)
@@ -193,7 +194,7 @@ class MeetingsTab:
         )
         style.configure(
             "Meetings.Treeview.Heading",
-            background="#333333",
+            background=COLOR_TAB_BG,
             foreground=FG_TEXT,
             font=FONT_BODY,
         )
@@ -241,8 +242,8 @@ class MeetingsTab:
         """Schedule the next pipeline run and start countdown."""
         import time
 
-        self._next_run = time.time() + PIPELINE_INTERVAL / 1000
-        self._timer_id = self._root.after(PIPELINE_INTERVAL, self._auto_pipeline)
+        self._next_run = time.time() + PIPELINE_INTERVAL_MS / 1000
+        self._timer_id = self._root.after(PIPELINE_INTERVAL_MS, self._auto_pipeline)
         self._update_countdown()
 
     def _update_countdown(self) -> None:
@@ -375,13 +376,13 @@ class MeetingsTab:
                 )
             )
 
-            self._cc = ConcurrencyControl(MAX_CONCURRENT)
+            self._cc = ConcurrencyControl(MAX_CONCURRENT_SUMMARIZATION)
 
             def on_event(event: Any) -> None:
                 self._event_queue.put(("summarize_event", event))
 
             config = BatchConfig(
-                max_concurrent=MAX_CONCURRENT,
+                max_concurrent=MAX_CONCURRENT_SUMMARIZATION,
                 on_event=on_event,
                 concurrency_control=self._cc,
             )
@@ -590,10 +591,10 @@ class MeetingsTab:
         menu = tk.Menu(
             self._parent,
             tearoff=0,
-            bg="#2a2a2a",
-            fg="#ffffff",
-            activebackground="#444444",
-            activeforeground="#ffffff",
+            bg=COLOR_MENU_BG,
+            fg=COLOR_MENU_FG,
+            activebackground=COLOR_MENU_ACTIVE_BG,
+            activeforeground=COLOR_MENU_ACTIVE_FG,
         )
         self._context_menu = menu
 
@@ -616,7 +617,7 @@ class MeetingsTab:
         finally:
             menu.grab_release()
 
-        self._menu_timer = self._root.after(MENU_TIMEOUT, self._dismiss_context_menu)
+        self._menu_timer = self._root.after(MENU_TIMEOUT_MS, self._dismiss_context_menu)
 
     def _open_meeting_folder(self, folder_key: str) -> None:
         """Open the meeting folder in the file manager."""
@@ -707,7 +708,7 @@ class MeetingsTab:
             or self._summarize_running
             or had_events
         ):
-            self._poll_id = self._root.after(POLL_INTERVAL, self._poll_events)
+            self._poll_id = self._root.after(POLL_INTERVAL_MS, self._poll_events)
         else:
             self._poll_id = None
 
@@ -828,6 +829,21 @@ class MeetingsTab:
         """Forward message to the dashboard Console tab."""
         if self._console_log is not None:
             try:
-                self._root.after(0, self._console_log, message, tag)
+                self._root.after(0, self._console_log, message, tag, "", "")
             except Exception:
                 pass
+
+    def on_destroy(self) -> None:
+        """Called during dashboard shutdown to clean up resources."""
+        if self._poll_id is not None:
+            self._root.after_cancel(self._poll_id)
+            self._poll_id = None
+        if self._timer_id is not None:
+            self._root.after_cancel(self._timer_id)
+            self._timer_id = None
+        if self._countdown_id is not None:
+            self._root.after_cancel(self._countdown_id)
+            self._countdown_id = None
+        if self._menu_timer is not None:
+            self._root.after_cancel(self._menu_timer)
+            self._menu_timer = None

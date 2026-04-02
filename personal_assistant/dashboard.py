@@ -17,39 +17,67 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+from personal_assistant.types import CalendarEvent
 from personal_assistant.config import (
+    AUTO_SHADE_POLL_MS,
     BG_OUTPUT,
     BG_WINDOW,
     BORDER_COLOR,
+    CANVAS_EXTRA_HEIGHT,
+    CANVAS_MIN_HEIGHT,
+    CANVAS_MIN_WIDTH,
+    COLOR_ACCEPTED,
+    COLOR_ALERT,
+    COLOR_BORDER_TENTATIVE,
+    COLOR_BUTTON,
+    COLOR_BUTTON_ACTIVE,
+    COLOR_CONFLICT,
+    COLOR_ERROR,
+    COLOR_EVENT_TEXT,
+    COLOR_GRID_LINE,
+    COLOR_GRID_LINE_HALF,
+    COLOR_HOUR_TEXT,
+    COLOR_LINK,
+    COLOR_MENU_ACTIVE_BG,
+    COLOR_MENU_ACTIVE_FG,
+    COLOR_MENU_BG,
+    COLOR_MENU_FG,
+    COLOR_NORMAL,
+    COLOR_NOTIFICATION_BELL,
+    COLOR_NOW_LINE,
+    COLOR_ONEONE,
+    COLOR_PROGRESS,
+    COLOR_SECTION_HEADER,
+    COLOR_SUCCESS,
+    COLOR_TAB_BG,
+    COLOR_TENTATIVE,
+    COLOR_TOOLTIP_BG,
+    COLOR_TOOLTIP_FG,
+    COLOR_WARNING,
+    COLOR_WHITE,
+    COLOR_WINDOW_BORDER,
+    DEBOUNCE_RESIZE_MS,
     FG_ACCENT,
     FG_DIM,
     FG_TEXT,
     FONT_BODY,
     FONT_HEADING,
+    GEOMETRY_CAPTURE_DELAY_MS,
+    MENU_TIMEOUT_MS,
+    MIN_RESIZE_HEIGHT,
+    MIN_RESIZE_WIDTH,
+    MIN_WINDOW_HEIGHT,
+    MIN_WINDOW_HEIGHT_SHADED,
+    MIN_WINDOW_WIDTH,
     PAD,
+    REFRESH_INTERVAL_MS,
+    SHADED_HEIGHT,
+    TOOLTIP_DELAY_MS,
 )
 from personal_assistant.state_repo import DEFAULT_STATE_PATH
-from personal_assistant.utils import format_event_time
+from personal_assistant.utils import atomic_write_json, format_event_time
 
 logger = logging.getLogger(__name__)
-
-# Colors — research-backed palette (WCAG compliant, colorblind-safe)
-# See ~/source/cited-research/research/dark-theme-calendar-ui/
-COLOR_CONFLICT = "#B85450"  # muted red — conflict category
-COLOR_NORMAL = "#357E63"  # teal green — regular meetings
-COLOR_ONEONE = "#4272A4"  # steel blue — 1:1s
-COLOR_EVENT_TEXT = "#FFFFFF"  # white text on event blocks
-COLOR_EVENT_TEXT_SECONDARY = "#C0C0C0"  # secondary text (legend, etc.)
-COLOR_CHANGE_NEW = "#98c379"
-COLOR_CHANGE_CANCELLED = "#e5c07b"
-COLOR_CHANGE_MOVED = "#61afef"
-COLOR_SECTION_HEADER = "#c678dd"
-COLOR_GRID_LINE = "#5A5A5A"  # hour lines — subtle orientation aid
-COLOR_GRID_LINE_HALF = "#3F3F3F"  # half-hour lines
-COLOR_HOUR_TEXT = "#B0B0B0"  # hour labels — AAA compliant
-COLOR_NOW_LINE = "#FF3B30"  # current time indicator
-COLOR_NAV_BTN = "#4e4e4e"
-COLOR_BORDER_TENTATIVE = "#FFFFFF"  # white border for tentative
 
 # Layout
 HOUR_HEIGHT = 60
@@ -90,11 +118,11 @@ class Dashboard:
         self._status_var = tk.StringVar(value="Starting...")
         self._date_var = tk.StringVar()
         self._current_date: date = date.today()
-        self._all_events: list[dict[str, Any]] = []
-        self._canvas_event_map: dict[str, dict[str, Any]] = {}
+        self._all_events: list[CalendarEvent] = []
+        self._canvas_event_map: dict[str, CalendarEvent] = {}
         self._all_conflicts: list[Any] = []
         self._all_changes: list[Any] = []
-        self._missed_meetings: list[dict[str, Any]] = []
+        self._missed_meetings: list[CalendarEvent] = []
         self._collected_until: date | None = None
         self._collected_start: date | None = None
         self._dismissed_conflicts: set[str] = set()
@@ -142,7 +170,7 @@ class Dashboard:
         self._window.geometry("900x820")
         self._window.configure(bg=BG_WINDOW)
         self._window.protocol("WM_DELETE_WINDOW", self._shutdown)
-        self._window.minsize(width=600, height=400)
+        self._window.minsize(width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT)
 
         # Remove title bar — use dock type on Linux (Wayland compatible)
         import platform
@@ -158,7 +186,7 @@ class Dashboard:
         self._dragged = False
 
         # Off-white border around the window (no WM decorations)
-        self._window.configure(bg="#555555")
+        self._window.configure(bg=COLOR_WINDOW_BORDER)
         main = tk.Frame(self._window, bg=BG_WINDOW)
         main.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 
@@ -173,7 +201,9 @@ class Dashboard:
         )
         # Draw diagonal lines like a classic resize grip
         for offset in (3, 7, 11):
-            grip_canvas.create_line(offset, 13, 13, offset, fill="#666666", width=1)
+            grip_canvas.create_line(
+                offset, 13, 13, offset, fill=COLOR_WINDOW_BORDER, width=1
+            )
         grip_canvas.place(relx=1.0, rely=1.0, anchor=tk.SE, x=-2, y=-2)
         # place() renders above pack()ed widgets — no explicit raise needed
         grip = grip_canvas
@@ -191,7 +221,7 @@ class Dashboard:
         )
         self._style.configure(
             "Dark.TNotebook.Tab",
-            background="#333333",
+            background=COLOR_TAB_BG,
             foreground=FG_DIM,
             padding=(16, 3),
             font=FONT_BODY,
@@ -225,19 +255,6 @@ class Dashboard:
             self._root,
             on_actions_refresh=self._actions_tab.refresh,
             on_actions_status=self._actions_tab.set_status,
-            console_log=self.log_console,
-            notify_tab=self._notify_tab,
-        )
-
-        # Chat tab
-        chat_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
-        self._notebook.add(chat_frame, text="Chat")
-
-        from personal_assistant.chat_tab import ChatTab
-
-        self._chat_tab = ChatTab(
-            chat_frame,
-            self._root,
             console_log=self.log_console,
             notify_tab=self._notify_tab,
         )
@@ -279,11 +296,11 @@ class Dashboard:
             console_controls,
             text="Run Now",
             command=self._force_pipeline,
-            bg=COLOR_NAV_BTN,
+            bg=COLOR_BUTTON,
             fg=FG_TEXT,
             font=FONT_BODY,
             relief=tk.FLAT,
-            activebackground="#5e5e5e",
+            activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=8,
         )
@@ -312,10 +329,10 @@ class Dashboard:
             borderwidth=0,
         )
         self._console_text.tag_configure("info", foreground=FG_TEXT)
-        self._console_text.tag_configure("success", foreground="#98c379")
-        self._console_text.tag_configure("warning", foreground="#e5c07b")
-        self._console_text.tag_configure("error", foreground="#B85450")
-        self._console_text.tag_configure("progress", foreground="#61afef")
+        self._console_text.tag_configure("success", foreground=COLOR_SUCCESS)
+        self._console_text.tag_configure("warning", foreground=COLOR_WARNING)
+        self._console_text.tag_configure("error", foreground=COLOR_ERROR)
+        self._console_text.tag_configure("progress", foreground=COLOR_PROGRESS)
         console_scroll = tk.Scrollbar(console_frame, command=self._console_text.yview)
         console_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self._console_text.configure(yscrollcommand=console_scroll.set)
@@ -387,7 +404,7 @@ class Dashboard:
         # Restore saved UI state (tab, date, filters)
         self._apply_ui_state()
         # Capture initial geometry after restore
-        self._root.after(500, self._capture_geometry)
+        self._root.after(GEOMETRY_CAPTURE_DELAY_MS, self._capture_geometry)
         # Always start calendar data refresh (bells need fresh data)
         self._start_cal_refresh()
 
@@ -406,11 +423,11 @@ class Dashboard:
             nav,
             text="\u25c0",
             command=self._prev_day,
-            bg=COLOR_NAV_BTN,
+            bg=COLOR_BUTTON,
             fg=FG_TEXT,
             font=FONT_BODY,
             relief=tk.FLAT,
-            activebackground="#5e5e5e",
+            activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=8,
         ).pack(side=tk.LEFT)
@@ -431,11 +448,11 @@ class Dashboard:
             nav,
             text="\u25b6",
             command=self._next_day,
-            bg=COLOR_NAV_BTN,
+            bg=COLOR_BUTTON,
             fg=FG_TEXT,
             font=FONT_BODY,
             relief=tk.FLAT,
-            activebackground="#5e5e5e",
+            activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=8,
         ).pack(side=tk.LEFT)
@@ -445,10 +462,10 @@ class Dashboard:
             text="Today",
             command=self._go_today,
             bg=FG_ACCENT,
-            fg="#ffffff",
+            fg=COLOR_WHITE,
             font=FONT_BODY,
             relief=tk.FLAT,
-            activebackground="#5e5e5e",
+            activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=8,
         ).pack(side=tk.LEFT, padx=(8, 0))
@@ -457,11 +474,11 @@ class Dashboard:
             nav,
             text="\U0001f504",
             command=self._start_cal_refresh,
-            bg=COLOR_NAV_BTN,
+            bg=COLOR_BUTTON,
             fg=FG_TEXT,
             font=FONT_BODY,
             relief=tk.FLAT,
-            activebackground="#5e5e5e",
+            activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=4,
         ).pack(side=tk.LEFT, padx=(4, 0))
@@ -539,8 +556,7 @@ class Dashboard:
         """Save dismissed conflict event IDs to disk."""
         path = self._state_path / "dismissed_conflicts.json"
         try:
-            with open(path, "w") as f:
-                json.dump(sorted(self._dismissed_conflicts), f)
+            atomic_write_json(path, sorted(self._dismissed_conflicts))
         except OSError:
             pass
 
@@ -565,7 +581,7 @@ class Dashboard:
         self._notify_bg = tk.PhotoImage(width=100, height=28)
         for x in range(100):
             for y in range(28):
-                self._notify_bg.put("#FF6B35", (x, y))
+                self._notify_bg.put(COLOR_NOTIFICATION_BELL, (x, y))
 
     def _notify_tab(self, tab_name: str) -> None:
         """Set transient bell — clears when user clicks the tab."""
@@ -668,7 +684,7 @@ class Dashboard:
             self._console_text.insert(tk.END, " ")
             self._console_text.insert(tk.END, label, link_tag)
             self._console_text.tag_configure(
-                link_tag, foreground="#61afef", underline=True
+                link_tag, foreground=COLOR_LINK, underline=True
             )
             self._console_text.tag_bind(
                 link_tag,
@@ -725,15 +741,17 @@ class Dashboard:
             self._notebook.unbind("<<NotebookTabChanged>>")  # type: ignore[union-attr]
             self._notebook.select(self._about_tab_id)  # type: ignore[union-attr]
             self._root.after(100, self._rebind_tab_changed)
-            self._window.minsize(width=600, height=1)
-            self._window.geometry(f"{w}x36+{x}+{y}")
+            self._window.minsize(
+                width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT_SHADED
+            )
+            self._window.geometry(f"{w}x{SHADED_HEIGHT}+{x}+{y}")
 
     def _unshade(self) -> None:
         """Restore window from shaded state."""
         if not self._shaded or not self._window:
             return
         self._shaded = False
-        self._window.minsize(width=600, height=400)
+        self._window.minsize(width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT)
         if self._unshaded_geometry:
             import re
 
@@ -771,8 +789,6 @@ class Dashboard:
             self._render_current_day()
         if tab_text == "Transcripts" and hasattr(self, "_meetings_tab"):
             self._meetings_tab.refresh()
-        if tab_text == "Chat" and hasattr(self, "_chat_tab"):
-            self._chat_tab.refresh()
 
     def _start_cal_refresh(self) -> None:
         """Start auto-refreshing calendar data every 60 seconds.
@@ -788,7 +804,9 @@ class Dashboard:
         """One refresh cycle: collect data, capture geometry, schedule next."""
         self.refresh()
         self._capture_geometry()
-        self._cal_refresh_timer = self._root.after(60_000, self._do_cal_refresh_cycle)
+        self._cal_refresh_timer = self._root.after(
+            REFRESH_INTERVAL_MS, self._do_cal_refresh_cycle
+        )
 
     def _capture_geometry(self) -> None:
         """Snapshot current window geometry and persist to disk."""
@@ -817,8 +835,7 @@ class Dashboard:
                     with open(state_file) as f:
                         state = json.load(f)
                     state["geometry"] = self._last_good_geometry
-                    with open(state_file, "w") as f:
-                        json.dump(state, f)
+                    atomic_write_json(state_file, state)
             except Exception:
                 pass
 
@@ -846,10 +863,10 @@ class Dashboard:
         menu = tk.Menu(
             self._window,
             tearoff=0,
-            bg="#2a2a2a",
-            fg="#ffffff",
-            activebackground="#444444",
-            activeforeground="#ffffff",
+            bg=COLOR_MENU_BG,
+            fg=COLOR_MENU_FG,
+            activebackground=COLOR_MENU_ACTIVE_BG,
+            activeforeground=COLOR_MENU_ACTIVE_FG,
         )
 
         # Always on Top toggle
@@ -886,7 +903,7 @@ class Dashboard:
         finally:
             menu.grab_release()
 
-        self._menu_timer = self._root.after(5000, self._dismiss_context_menu)
+        self._menu_timer = self._root.after(MENU_TIMEOUT_MS, self._dismiss_context_menu)
 
     # --- Resize grip ---
 
@@ -905,8 +922,8 @@ class Dashboard:
             return
         dx = event.x_root - self._resize_start_x
         dy = event.y_root - self._resize_start_y
-        new_w = max(self._resize_start_w + dx, 400)
-        new_h = max(self._resize_start_h + dy, 200)
+        new_w = max(self._resize_start_w + dx, MIN_RESIZE_WIDTH)
+        new_h = max(self._resize_start_h + dy, MIN_RESIZE_HEIGHT)
         x = self._window.winfo_x()
         y = self._window.winfo_y()
         geo = f"{new_w}x{new_h}+{x}+{y}"
@@ -991,7 +1008,9 @@ class Dashboard:
                     self._shade()
             except tk.TclError:
                 pass
-        self._auto_shade_timer = self._root.after(2000, self._auto_shade_poll)
+        self._auto_shade_timer = self._root.after(
+            AUTO_SHADE_POLL_MS, self._auto_shade_poll
+        )
 
     def _toggle_all_workspaces(self) -> None:
         """Toggle sticky (all workspaces) via wmctrl on Linux."""
@@ -1051,8 +1070,7 @@ class Dashboard:
                 state["bells"] = sorted(all_bells)
         state_file = self._state_path / "ui_state.json"
         try:
-            with open(state_file, "w") as f:
-                json.dump(state, f)
+            atomic_write_json(state_file, state)
         except OSError:
             pass
 
@@ -1134,6 +1152,13 @@ class Dashboard:
         self._shutting_down = True
         self._save_ui_state()
         self._stop_cal_refresh()
+        # Clean up tab resources
+        if hasattr(self, "_assistant_tab"):
+            self._assistant_tab.on_destroy()
+        if hasattr(self, "_actions_tab"):
+            self._actions_tab.on_destroy()
+        if hasattr(self, "_meetings_tab"):
+            self._meetings_tab.on_destroy()
         if restart:
             import os
             import sys
@@ -1160,7 +1185,7 @@ class Dashboard:
 
         status = check_scopes()
         if status.all_required_met:
-            color = "#98c379"  # green
+            color = COLOR_SUCCESS  # green
         else:
             color = COLOR_CONFLICT  # red
 
@@ -1237,7 +1262,9 @@ class Dashboard:
         """Debounced redraw on canvas resize."""
         if self._resize_timer:
             self._root.after_cancel(self._resize_timer)
-        self._resize_timer = self._root.after(150, self._render_current_day)
+        self._resize_timer = self._root.after(
+            DEBOUNCE_RESIZE_MS, self._render_current_day
+        )
 
     def _on_scroll(self, event: Any) -> None:
         if not self._canvas:
@@ -1285,7 +1312,9 @@ class Dashboard:
             event.x_root + 12,
             event.y_root + 12,
         )
-        self._tooltip_timer = self._root.after(800, self._show_tooltip, evt_tag)
+        self._tooltip_timer = self._root.after(
+            TOOLTIP_DELAY_MS, self._show_tooltip, evt_tag
+        )
 
     def _show_tooltip(self, evt_tag: str) -> None:
         """Actually create the tooltip after the delay."""
@@ -1308,8 +1337,8 @@ class Dashboard:
         tk.Label(
             tip,
             text=tip_text,
-            bg="#333333",
-            fg="#ffffff",
+            bg=COLOR_TOOLTIP_BG,
+            fg=COLOR_TOOLTIP_FG,
             font=FONT_BODY,
             padx=6,
             pady=3,
@@ -1369,10 +1398,10 @@ class Dashboard:
         menu = tk.Menu(
             self._window,
             tearoff=0,
-            bg="#2a2a2a",
-            fg="#ffffff",
-            activebackground="#444444",
-            activeforeground="#ffffff",
+            bg=COLOR_MENU_BG,
+            fg=COLOR_MENU_FG,
+            activebackground=COLOR_MENU_ACTIVE_BG,
+            activeforeground=COLOR_MENU_ACTIVE_FG,
         )
         self._context_menu = menu
 
@@ -1460,7 +1489,7 @@ class Dashboard:
             menu.grab_release()
 
         # Auto-dismiss after 5 seconds
-        self._menu_timer = self._root.after(5000, self._dismiss_context_menu)
+        self._menu_timer = self._root.after(MENU_TIMEOUT_MS, self._dismiss_context_menu)
 
     def _get_meeting_summary(
         self, hangout_link: str, event_date: str = ""
@@ -1519,7 +1548,7 @@ class Dashboard:
 
     def _make_response_cmd(
         self,
-        cal_event: dict[str, Any],
+        cal_event: CalendarEvent,
         status_val: str,
         popup: tk.Toplevel,
     ) -> Callable[[], None]:
@@ -1551,7 +1580,7 @@ class Dashboard:
         cal_event = self._canvas_event_map[evt_tag]
         self._show_event_details(cal_event)
 
-    def _show_event_details(self, cal_event: dict[str, Any]) -> None:
+    def _show_event_details(self, cal_event: CalendarEvent) -> None:
         """Show event details in a modal popup."""
         import webbrowser
 
@@ -1609,14 +1638,14 @@ class Dashboard:
             buttons.append(("DELETE \U0001f4a5", "delete", COLOR_CONFLICT))
         else:
             buttons.append(("Decline", "declined", COLOR_CONFLICT))
-        buttons.append(("Maybe", "tentative", "#e5c07b"))
-        buttons.append(("Accept", "accepted", "#98c379"))
+        buttons.append(("Maybe", "tentative", COLOR_TENTATIVE))
+        buttons.append(("Accept", "accepted", COLOR_ACCEPTED))
 
         for label, status_val, color in buttons:
             if status_val == "delete":
 
                 def _del_cmd(
-                    evt: dict[str, Any] = cal_event,
+                    evt: CalendarEvent = cal_event,
                     p: tk.Toplevel = popup,
                 ) -> None:
                     self._delete_event(evt)
@@ -1626,7 +1655,7 @@ class Dashboard:
                     sub,
                     text=label,
                     bg=color,
-                    fg="#ffffff",
+                    fg=COLOR_WHITE,
                     font=FONT_BODY,
                     relief=tk.FLAT,
                     padx=6,
@@ -1639,7 +1668,7 @@ class Dashboard:
                     sub,
                     text=label,
                     bg=color if response != status_val else "#3a3a3a",
-                    fg="#ffffff" if response != status_val else "#666666",
+                    fg="#ffffff" if response != status_val else COLOR_WINDOW_BORDER,
                     font=FONT_BODY,
                     relief=tk.FLAT,
                     padx=6,
@@ -1673,7 +1702,7 @@ class Dashboard:
 
         # Configure tags
         text.tag_configure("section", foreground=COLOR_SECTION_HEADER)
-        text.tag_configure("link", foreground="#61afef", underline=True)
+        text.tag_configure("link", foreground=COLOR_LINK, underline=True)
         text.tag_configure("accepted_att", foreground="#98c379")
         text.tag_configure("tentative_att", foreground="#e5c07b")
         text.tag_configure("declined_att", foreground=COLOR_CONFLICT)
@@ -1688,7 +1717,7 @@ class Dashboard:
                 webbrowser.open(u)
 
             text.tag_bind(tag_name, "<Button-1>", open_url)
-            text.tag_configure(tag_name, foreground="#61afef", underline=True)
+            text.tag_configure(tag_name, foreground=COLOR_LINK, underline=True)
 
         # Links first
         links_added = False
@@ -1757,7 +1786,7 @@ class Dashboard:
 
         text.configure(state=tk.DISABLED)
 
-    def _delete_event(self, cal_event: dict[str, Any]) -> None:
+    def _delete_event(self, cal_event: CalendarEvent) -> None:
         """Delete an event via GWS CLI (organizer only), then refresh."""
         self._status_var.set(f"Deleting {cal_event.get('summary', '')}...")
         thread = threading.Thread(
@@ -1807,7 +1836,7 @@ class Dashboard:
         # Re-collect and refresh
         self._do_refresh()
 
-    def _update_response(self, cal_event: dict[str, Any], new_status: str) -> None:
+    def _update_response(self, cal_event: CalendarEvent, new_status: str) -> None:
         """Update event response status via GWS CLI, then refresh."""
         self._status_var.set(f"Updating {cal_event.get('summary', '')}...")
         thread = threading.Thread(
@@ -1962,7 +1991,7 @@ class Dashboard:
             header,
             text="\u25b6",
             command=_next_month,
-            bg=COLOR_NAV_BTN,
+            bg=COLOR_BUTTON,
             fg=FG_TEXT,
             font=FONT_BODY,
             relief=tk.FLAT,
@@ -1972,7 +2001,7 @@ class Dashboard:
             header,
             text="\u25c0",
             command=_prev_month,
-            bg=COLOR_NAV_BTN,
+            bg=COLOR_BUTTON,
             fg=FG_TEXT,
             font=FONT_BODY,
             relief=tk.FLAT,
@@ -2022,10 +2051,10 @@ class Dashboard:
                     # Colors
                     if d == today_date:
                         bg = FG_ACCENT  # matches calendar tab date label
-                        fg = "#ffffff"
+                        fg = COLOR_WHITE
                     elif d == selected_date and d != today_date:
                         bg = COLOR_NORMAL  # teal for viewing day
-                        fg = "#ffffff"
+                        fg = COLOR_WHITE
                     elif d.month == viewing_month:
                         bg = BG_WINDOW
                         fg = FG_TEXT
@@ -2044,7 +2073,7 @@ class Dashboard:
                         font=FONT_BODY,
                         relief=tk.FLAT,
                         width=2,
-                        activebackground="#5e5e5e",
+                        activebackground=COLOR_BUTTON_ACTIVE,
                         command=_make_pick,
                     )
                     btn.pack(side=tk.LEFT, expand=True)
@@ -2093,7 +2122,7 @@ class Dashboard:
             # Reload events
             import json
 
-            all_events: list[dict[str, Any]] = []
+            all_events: list[CalendarEvent] = []
             abs_path = self._state_path / "calendar" / "events.json"
             if abs_path.exists():
                 with open(abs_path) as f:
@@ -2104,7 +2133,7 @@ class Dashboard:
             logger.exception("Extend range failed")
             self._root.after(0, self._status_var.set, f"Error: {exc}")
 
-    def _on_extended_data(self, events: list[dict[str, Any]]) -> None:
+    def _on_extended_data(self, events: list[CalendarEvent]) -> None:
         self._all_events = events
         self._render_current_day()
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -2174,7 +2203,7 @@ class Dashboard:
             analyses = analyze_all_calendars(repo_path=self._state_path)
 
             # Load all events from state files
-            all_events: list[dict[str, Any]] = []
+            all_events: list[CalendarEvent] = []
             for analysis in analyses:
                 abs_path = self._state_path / analysis.calendar_file
                 if abs_path.exists():
@@ -2191,7 +2220,7 @@ class Dashboard:
                 all_changes.extend(analysis.changes)
 
             # Check for active accepted meetings user hasn't joined
-            missed_meetings: list[dict[str, Any]] = []
+            missed_meetings: list[CalendarEvent] = []
             try:
                 from personal_assistant.collectors.meet_attendance import (
                     check_missed_meetings,
@@ -2220,10 +2249,10 @@ class Dashboard:
 
     def _on_data_loaded(
         self,
-        events: list[dict[str, Any]],
+        events: list[CalendarEvent],
         conflicts: list[Any],
         changes: list[Any],
-        missed_meetings: list[dict[str, Any]] | None = None,
+        missed_meetings: list[CalendarEvent] | None = None,
     ) -> None:
         self._all_events = events
         self._all_conflicts = conflicts
@@ -2275,7 +2304,7 @@ class Dashboard:
             summary = evt.get("summary", "Unknown meeting")
             start = evt.get("start", "")
             time_part = start[11:16] if len(start) > 16 else start
-            meet_link = evt.get("hangout_link", "")
+            meet_link = evt.get("hangout_link") or ""
             self.log_console(
                 f"[Calendar] missed meeting — {time_part} {summary}",
                 "error",
@@ -2283,7 +2312,7 @@ class Dashboard:
                 link_label="Join",
             )
 
-    def _resolve_conflict_ids(self, day_events: list[dict[str, Any]]) -> set[str]:
+    def _resolve_conflict_ids(self, day_events: list[CalendarEvent]) -> set[str]:
         """Resolve which event IDs should be marked as conflicts.
 
         An event gets conflict color if:
@@ -2413,10 +2442,12 @@ class Dashboard:
         # Time range
         earliest, latest = _day_time_range(day_events)
         total_hours = latest - earliest
-        canvas_height = max(total_hours * HOUR_HEIGHT + 20, 200)
+        canvas_height = max(
+            total_hours * HOUR_HEIGHT + CANVAS_EXTRA_HEIGHT, CANVAS_MIN_HEIGHT
+        )
 
         self._canvas.update_idletasks()
-        canvas_width = max(self._canvas.winfo_width(), 800)
+        canvas_width = max(self._canvas.winfo_width(), CANVAS_MIN_WIDTH)
 
         self._canvas.configure(scrollregion=(0, 0, canvas_width, canvas_height))
 
@@ -2525,7 +2556,7 @@ class Dashboard:
                     text_x,
                     y1 + text_pad,
                     text="\u26a0",
-                    fill="#e06c75",
+                    fill=COLOR_ALERT,
                     font=FONT_BODY,
                     anchor=tk.NW,
                     tags=tag,
@@ -2536,7 +2567,7 @@ class Dashboard:
                     text_x,
                     y1 + text_pad,
                     text="\u26a0",
-                    fill="#e5c07b",
+                    fill=COLOR_WARNING,
                     font=FONT_BODY,
                     anchor=tk.NW,
                     tags=tag,
@@ -2652,7 +2683,7 @@ def _attendee_count(event: dict[str, Any]) -> str:
     return f"({accepted}/{total})"
 
 
-def _user_response_status(event: dict[str, Any]) -> str:
+def _user_response_status(event: CalendarEvent) -> str:
     """Get the user's response status for this event."""
     user_att = next(
         (a for a in event.get("attendees", []) if a.get("self")),
@@ -2682,7 +2713,7 @@ def _parse_hour(time_str: str) -> float:
 
 
 def _day_time_range(
-    events: list[dict[str, Any]],
+    events: list[CalendarEvent],
 ) -> tuple[int, int]:
     """Fixed time range anchored to WORK_DAY_START-END.
 
@@ -2703,7 +2734,7 @@ def _day_time_range(
 
 
 def _layout_events(
-    events: list[dict[str, Any]],
+    events: list[CalendarEvent],
     earliest_hour: int,
 ) -> list[dict[str, Any]]:
     timed = [
@@ -2717,8 +2748,8 @@ def _layout_events(
         return []
 
     # Group overlapping events into clusters
-    clusters: list[list[dict[str, Any]]] = []
-    current_cluster: list[dict[str, Any]] = []
+    clusters: list[list[CalendarEvent]] = []
+    current_cluster: list[CalendarEvent] = []
     cluster_end = 0.0
 
     for event in timed:
@@ -2759,9 +2790,9 @@ def _layout_events(
 
 
 def _filter_events_for_date(
-    all_events: list[dict[str, Any]],
+    all_events: list[CalendarEvent],
     date_str: str,
-) -> list[dict[str, Any]]:
+) -> list[CalendarEvent]:
     """Filter events for a specific date, excluding declined and work location."""
     day_events = []
     for event in all_events:

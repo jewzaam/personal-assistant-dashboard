@@ -14,9 +14,10 @@ import subprocess
 from datetime import datetime, timezone
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from personal_assistant.config import GWS_BINARY
+from personal_assistant.types import CalendarEvent, ConferenceRecord
 
-GWS_BINARY = "gws"
+logger = logging.getLogger(__name__)
 
 
 def _extract_meeting_code(hangout_link: str) -> str | None:
@@ -26,7 +27,9 @@ def _extract_meeting_code(hangout_link: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _run_gws(args: list[str], timeout: int = 15) -> dict[str, Any] | None:
+def _run_gws(
+    args: list[str], timeout: int = 15
+) -> dict[str, Any] | None:  # noqa: ARG001
     """Run a gws command and return parsed JSON, or None on failure."""
     try:
         result = subprocess.run(
@@ -68,7 +71,7 @@ def _get_user_id() -> str | None:
     return None
 
 
-def _find_conference_record(meeting_code: str) -> dict[str, Any] | None:
+def _find_conference_record(meeting_code: str) -> ConferenceRecord | None:
     """Find the conference record for a meeting code."""
     data = _run_gws(
         [
@@ -87,7 +90,7 @@ def _find_conference_record(meeting_code: str) -> dict[str, Any] | None:
     )
     if not data:
         return None
-    records: list[dict[str, Any]] = data.get("conferenceRecords", [])
+    records: list[ConferenceRecord] = data.get("conferenceRecords", [])
     if not records:
         return None
     # Return the most recent (first) record
@@ -117,8 +120,8 @@ def _user_in_participants(conference_name: str, user_id: str) -> bool:
 
 
 def check_missed_meetings(
-    today_events: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    today_events: list[CalendarEvent],
+) -> list[CalendarEvent]:
     """Check for active accepted meetings the user has not joined.
 
     Returns a list of event dicts for meetings that are:
@@ -128,7 +131,7 @@ def check_missed_meetings(
     - User has NOT joined according to Meet API participants
     """
     now = datetime.now(timezone.utc)
-    candidates: list[dict[str, Any]] = []
+    candidates: list[CalendarEvent] = []
 
     for event in today_events:
         # Must have a Meet link
@@ -172,9 +175,12 @@ def check_missed_meetings(
         logger.warning("Could not resolve user ID for Meet attendance check")
         return []
 
-    missed: list[dict[str, Any]] = []
+    missed: list[CalendarEvent] = []
     for event in candidates:
-        meeting_code = _extract_meeting_code(event["hangout_link"])
+        hangout_link = event.get("hangout_link")
+        if not hangout_link:
+            continue
+        meeting_code = _extract_meeting_code(hangout_link)
         if not meeting_code:
             continue
 

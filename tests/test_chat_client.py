@@ -238,6 +238,22 @@ def test_clear_without_loop_is_noop():
     client.clear()  # should not raise
 
 
+# -- lifecycle guards ----------------------------------------------------------
+
+
+def test_start_when_already_started_is_noop():
+    client = _make_client()
+    client._running = True
+    client._loop = MagicMock()
+    client.start()  # should not raise or create duplicate thread
+    assert client._running is True
+
+
+def test_stop_when_not_started_is_noop():
+    client = _make_client()
+    client.stop()  # should not raise
+
+
 # -- system prompt ------------------------------------------------------------
 
 

@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 
 from personal_assistant.state_repo import DEFAULT_STATE_PATH
+from personal_assistant.utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +60,8 @@ def save_config(
 ) -> None:
     """Write tracking config to the state repo."""
     config_file = _config_path(repo_path)
-    config_file.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(config_file, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    content = yaml.dump(config, default_flow_style=False, sort_keys=False)
+    atomic_write_text(config_file, content)
 
     logger.info("Saved tracking config to %s", config_file)
 

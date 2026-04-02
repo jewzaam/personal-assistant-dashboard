@@ -2,6 +2,7 @@
 """Configuration constants for the personal assistant GUI."""
 
 import platform as _plat
+from pathlib import Path
 
 # Fonts — negative sizes = pixels (DPI-independent)
 if _plat.system() == "Windows":
@@ -13,7 +14,7 @@ FONT_BODY = (FONT_FAMILY, -13)
 FONT_HEADING = (FONT_FAMILY, -15, "bold")
 FONT_INPUT = (FONT_FAMILY, -14)
 
-# Colors — dark theme
+# Colors — dark theme base
 BG_WINDOW = "#1e1e1e"
 BG_INPUT = "#2d2d2d"
 BG_OUTPUT = "#252525"
@@ -22,7 +23,93 @@ FG_DIM = "#888888"
 FG_ACCENT = "#569cd6"
 BORDER_COLOR = "#3c3c3c"
 
+# Colors — buttons
+COLOR_BUTTON = "#4e4e4e"
+COLOR_BUTTON_ACTIVE = "#5e5e5e"
+
+# Colors — semantic (calendar, meetings, events)
+COLOR_CONFLICT = "#B85450"  # muted red — conflict category
+COLOR_NORMAL = "#357E63"  # teal green — regular meetings
+COLOR_ONEONE = "#4272A4"  # steel blue — 1:1s
+COLOR_EVENT_TEXT = "#FFFFFF"  # white text on event blocks
+COLOR_EVENT_TEXT_SECONDARY = "#C0C0C0"  # secondary text
+COLOR_CHANGE_NEW = "#98c379"
+COLOR_CHANGE_CANCELLED = "#e5c07b"
+COLOR_CHANGE_MOVED = "#61afef"
+COLOR_SECTION_HEADER = "#c678dd"
+COLOR_GRID_LINE = "#5A5A5A"  # hour lines — subtle orientation aid
+COLOR_GRID_LINE_HALF = "#3F3F3F"  # half-hour lines
+COLOR_HOUR_TEXT = "#B0B0B0"  # hour labels — AAA compliant
+COLOR_NOW_LINE = "#FF3B30"  # current time indicator
+COLOR_BORDER_TENTATIVE = "#FFFFFF"  # white border for tentative
+COLOR_SUCCESS = "#98c379"
+COLOR_PENDING = "#e5c07b"
+COLOR_FAILED = "#B85450"
+COLOR_ACTIVE = "#61afef"
+COLOR_ASSISTANT = "#98c379"
+COLOR_ERROR = "#e06c75"
+COLOR_WARNING = "#e5c07b"
+COLOR_PROGRESS = "#61afef"
+COLOR_NOTIFICATION_BELL = "#FF6B35"  # pumpkin orange
+
+# Colors — UI elements
+COLOR_MENU_BG = "#2a2a2a"
+COLOR_MENU_FG = "#ffffff"
+COLOR_MENU_ACTIVE_BG = "#444444"
+COLOR_MENU_ACTIVE_FG = "#ffffff"
+COLOR_TOOLTIP_BG = "#333333"
+COLOR_TOOLTIP_FG = "#ffffff"
+COLOR_WINDOW_BORDER = "#555555"
+COLOR_GRIP = "#666666"
+COLOR_TAB_BG = "#333333"
+COLOR_LINK = "#61afef"
+COLOR_ACCEPTED = "#98c379"
+COLOR_TENTATIVE = "#e5c07b"
+COLOR_DECLINED = "#B85450"
+COLOR_NO_RESPONSE = "#B0B0B0"
+COLOR_DISABLED_BG = "#3a3a3a"
+COLOR_DISABLED_FG = "#666666"
+COLOR_ALERT = "#e06c75"
+COLOR_WHITE = "#ffffff"
+COLOR_HTML_FALLBACK_BG = "#252525"
+COLOR_HTML_FALLBACK_FG = "#ccc"
+
 # Layout
 WINDOW_WIDTH = 700
 WINDOW_HEIGHT = 500
 PAD = 8
+
+# Timing intervals (milliseconds)
+TOOLTIP_DELAY_MS = 800
+REFRESH_INTERVAL_MS = 60_000  # calendar auto-refresh
+FILE_WATCH_INTERVAL_MS = 10_000  # assistant HTML file polling
+MENU_TIMEOUT_MS = 5000  # context menu auto-dismiss
+POLL_INTERVAL_MS = 200  # event queue polling
+PIPELINE_INTERVAL_MS = 10 * 60 * 1000  # meeting enrichment (10 minutes)
+AUTO_SHADE_POLL_MS = 2000  # auto-shade pointer check
+SCOPE_CHECK_DELAY_MS = 200  # delayed scope check on startup
+DEBOUNCE_RESIZE_MS = 150  # canvas resize debounce
+GEOMETRY_CAPTURE_DELAY_MS = 500  # delay before capturing initial window geometry
+
+# Size limits
+MIN_WINDOW_WIDTH = 600
+MIN_WINDOW_HEIGHT = 400
+MIN_WINDOW_HEIGHT_SHADED = 1
+SHADED_HEIGHT = 36
+MIN_RESIZE_WIDTH = 400
+MIN_RESIZE_HEIGHT = 200
+CANVAS_MIN_HEIGHT = 200
+CANVAS_MIN_WIDTH = 800
+CANVAS_EXTRA_HEIGHT = 20
+
+# Paths — assistant directory and files
+ASSISTANT_DIR = Path.home() / "Downloads" / "personal-assistant"
+ASSISTANT_HTML = ASSISTANT_DIR / "summary.html"
+ACTIONS_HTML = ASSISTANT_DIR / "actions.html"
+
+# Commands
+REFRESH_COMMAND = 'claude -p "/personal-assistant"'
+GWS_BINARY = "gws"
+
+# Meeting pipeline
+MAX_CONCURRENT_SUMMARIZATION = 5

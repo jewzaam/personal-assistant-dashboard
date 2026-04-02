@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -13,9 +14,34 @@ from personal_assistant.state_repo import init_repo
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _block_subprocess(request: pytest.FixtureRequest) -> object:
+    """Block subprocess globally unless marked as integration test."""
+    # Allow subprocess for integration tests or when state_dir fixture is used
+    if "integration" in request.keywords or "state_dir" in request.fixturenames:
+        yield
+        return
+
+    def _blocked(*args: object, **kwargs: object) -> object:
+        cmd = args[0] if args else kwargs.get("args", "?")
+        raise RuntimeError(f"subprocess blocked by conftest: {cmd!r}. Mock it instead.")
+
+    with (
+        patch.object(subprocess, "run", side_effect=_blocked),
+        patch.object(subprocess, "Popen", side_effect=_blocked),
+        patch.object(subprocess, "call", side_effect=_blocked),
+        patch.object(subprocess, "check_call", side_effect=_blocked),
+        patch.object(subprocess, "check_output", side_effect=_blocked),
+    ):
+        yield
+
+
 @pytest.fixture()
 def state_dir(tmp_path: Path) -> Path:
-    """Create and initialize a state repo in a temp directory."""
+    """Create and initialize a state repo in a temp directory.
+
+    Tests using this fixture will allow subprocess calls for git operations.
+    """
     repo = tmp_path / "pa-state"
     init_repo(path=repo)
     return repo

@@ -3,7 +3,12 @@
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 
 def format_event_time(time_str: str) -> str:
@@ -17,3 +22,46 @@ def format_event_time(time_str: str) -> str:
         return datetime.fromisoformat(time_str).strftime("%H:%M")
     except ValueError:
         return time_str[:5]
+
+
+def atomic_write_json(path: Path, data: Any, **json_kwargs: Any) -> None:
+    """Write JSON data atomically using a temp file + os.replace().
+
+    Prevents file corruption if the process is killed mid-write.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, **json_kwargs)
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    """Write text atomically using a temp file + os.replace()."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
