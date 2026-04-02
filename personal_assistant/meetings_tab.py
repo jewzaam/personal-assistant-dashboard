@@ -21,7 +21,7 @@ from tkinter import ttk
 from queue import Empty, SimpleQueue
 from typing import Any
 
-from personal_assistant.types import ConsoleLogCallback
+from personal_assistant.models import ConsoleLogCallback
 from personal_assistant.config import (
     BG_OUTPUT,
     BG_WINDOW,

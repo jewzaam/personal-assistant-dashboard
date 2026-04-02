@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from personal_assistant.config import GWS_BINARY
-from personal_assistant.types import CalendarEvent, ConferenceRecord
+from personal_assistant.models import CalendarEvent, ConferenceRecord
 
 logger = logging.getLogger(__name__)
 

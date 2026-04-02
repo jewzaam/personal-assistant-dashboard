@@ -7,7 +7,7 @@ import logging
 import tkinter as tk
 from typing import Any
 
-from personal_assistant.types import ConsoleLogCallback, NotifyTabCallback
+from personal_assistant.models import ConsoleLogCallback, NotifyTabCallback
 from personal_assistant.config import (
     BG_INPUT,
     BG_OUTPUT,
@@ -97,23 +97,18 @@ class ChatTab:
         input_bar = tk.Frame(self._parent, bg=BG_WINDOW)
         input_bar.pack(fill=tk.X, padx=PAD, pady=PAD)
 
-        self._input = tk.Text(
+        self._input_var = tk.StringVar()
+        self._input = tk.Entry(
             input_bar,
+            textvariable=self._input_var,
             bg=BG_INPUT,
             fg=FG_TEXT,
             font=FONT_INPUT,
-            wrap=tk.WORD,
-            height=3,
-            borderwidth=1,
-            highlightthickness=0,
-            relief=tk.FLAT,
             insertbackground=FG_TEXT,
-            padx=PAD,
-            pady=PAD,
+            relief=tk.FLAT,
         )
-        self._input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, PAD))
         self._input.bind("<Return>", self._on_enter)
-        self._input.bind("<Shift-Return>", self._on_shift_enter)
 
         btn_frame = tk.Frame(input_bar, bg=BG_WINDOW)
         btn_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(PAD, 0))
@@ -152,14 +147,11 @@ class ChatTab:
         self._send()
         return "break"
 
-    def _on_shift_enter(self, event: tk.Event) -> None:  # type: ignore[type-arg]
-        """Shift+Enter inserts a newline (default behavior)."""
-
     # -- send / receive ------------------------------------------------------
 
     def _send(self) -> None:
         """Send the current input text to Claude."""
-        text = self._input.get("1.0", tk.END).strip()
+        text = self._input_var.get().strip()
         if not text or self._streaming:
             return
 
@@ -169,7 +161,7 @@ class ChatTab:
         self._assistant_active = False
 
         self._append_user(text)
-        self._input.delete("1.0", tk.END)
+        self._input_var.set("")
 
         assert self._client is not None
         self._client.send(text)

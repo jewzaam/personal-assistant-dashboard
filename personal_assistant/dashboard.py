@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from personal_assistant.types import CalendarEvent
+from personal_assistant.models import CalendarEvent
 from personal_assistant.config import (
     AUTO_SHADE_POLL_MS,
     BG_OUTPUT,
@@ -172,11 +172,11 @@ class Dashboard:
         self._window.protocol("WM_DELETE_WINDOW", self._shutdown)
         self._window.minsize(width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT)
 
-        # Remove title bar — use dock type on Linux (Wayland compatible)
+        # Remove title bar decorations
         import platform
 
         if platform.system() == "Linux":
-            self._window.wm_attributes("-type", "dock")
+            self._remove_decorations_linux(self._window)
         else:
             self._window.overrideredirect(True)
 
@@ -919,6 +919,46 @@ class Dashboard:
             menu.grab_release()
 
         self._menu_timer = self._root.after(MENU_TIMEOUT_MS, self._dismiss_context_menu)
+
+    # --- Window decoration ---
+
+    @staticmethod
+    def _remove_decorations_linux(window: tk.Toplevel) -> None:
+        """Remove WM decorations on Linux while keeping keyboard focus.
+
+        Sets Motif WM hints on the outer WM frame window to request zero
+        decorations.  The window stays as the default normal type so
+        Wayland compositors grant keyboard focus and clipboard access.
+
+        -type dock: breaks keyboard focus (compositor treats as panel)
+        -type splash: breaks clipboard (wl-clipboard interception)
+        Motif hints: no decorations, full focus, full clipboard
+        """
+        window.update_idletasks()
+        frame_id = window.wm_frame()
+        try:
+            subprocess.run(
+                [
+                    "xprop",
+                    "-id",
+                    str(frame_id),
+                    "-f",
+                    "_MOTIF_WM_HINTS",
+                    "32c",
+                    "-set",
+                    "_MOTIF_WM_HINTS",
+                    "2, 0, 0, 0, 0",
+                ],
+                check=True,
+                capture_output=True,
+                timeout=2,
+            )
+        except (
+            FileNotFoundError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ):
+            window.overrideredirect(True)
 
     # --- Resize grip ---
 
