@@ -50,13 +50,14 @@ def _make_client(**overrides: object) -> ChatClient:
     return ChatClient(**defaults)  # type: ignore[arg-type]
 
 
-def test_handle_assistant_message_text_block():
+def test_handle_assistant_message_text_block_skipped():
+    """Text in AssistantMessage is skipped — displayed via StreamEvent instead."""
     from claude_agent_sdk import AssistantMessage, TextBlock
 
     client = _make_client()
     msg = AssistantMessage(content=[TextBlock(text="hello")], model=_MODEL)
     client._handle_message(msg)
-    client._on_text.assert_called_once_with("hello")
+    client._on_text.assert_not_called()
 
 
 def test_handle_assistant_message_tool_use_block():
@@ -72,6 +73,7 @@ def test_handle_assistant_message_tool_use_block():
 
 
 def test_handle_assistant_message_mixed_blocks():
+    """Only ToolUseBlock is handled — TextBlock is skipped (dedup with StreamEvent)."""
     from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock
 
     client = _make_client()
@@ -84,7 +86,7 @@ def test_handle_assistant_message_mixed_blocks():
         model=_MODEL,
     )
     client._handle_message(msg)
-    assert client._on_text.call_count == 2
+    client._on_text.assert_not_called()
     client._on_tool_use.assert_called_once_with("Grep")
 
 

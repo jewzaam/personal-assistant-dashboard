@@ -64,8 +64,6 @@ from personal_assistant.config import (
     FONT_HEADING,
     GEOMETRY_CAPTURE_DELAY_MS,
     MENU_TIMEOUT_MS,
-    MIN_RESIZE_HEIGHT,
-    MIN_RESIZE_WIDTH,
     MIN_WINDOW_HEIGHT,
     MIN_WINDOW_HEIGHT_SHADED,
     MIN_WINDOW_WIDTH,
@@ -189,26 +187,6 @@ class Dashboard:
         self._window.configure(bg=COLOR_WINDOW_BORDER)
         main = tk.Frame(self._window, bg=BG_WINDOW)
         main.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
-
-        # Floating resize grip — always on top, bottom-right corner
-        grip_canvas = tk.Canvas(
-            self._window,
-            width=14,
-            height=14,
-            bg=BG_WINDOW,
-            highlightthickness=0,
-            cursor="bottom_right_corner",
-        )
-        # Draw diagonal lines like a classic resize grip
-        for offset in (3, 7, 11):
-            grip_canvas.create_line(
-                offset, 13, 13, offset, fill=COLOR_WINDOW_BORDER, width=1
-            )
-        grip_canvas.place(relx=1.0, rely=1.0, anchor=tk.SE, x=-2, y=-2)
-        # place() renders above pack()ed widgets — no explicit raise needed
-        grip = grip_canvas
-        grip.bind("<Button-1>", self._on_resize_start)
-        grip.bind("<B1-Motion>", self._on_resize_drag)
 
         # Notebook (tabs)
         self._style = ttk.Style()
@@ -884,15 +862,6 @@ class Dashboard:
             activeforeground=COLOR_MENU_ACTIVE_FG,
         )
 
-        # Always on Top toggle
-        is_topmost = bool(self._window.attributes("-topmost"))
-        topmost_label = "\u2713 Always on Top" if is_topmost else "Always on Top"
-        menu.add_command(label=topmost_label, command=self._toggle_always_on_top)
-
-        # All Workspaces toggle (Linux only via wmctrl)
-        sticky_label = "\u2713 All Workspaces" if self._sticky else "All Workspaces"
-        menu.add_command(label=sticky_label, command=self._toggle_all_workspaces)
-
         # Auto Shade toggle
         auto_shade_label = "\u2713 Auto Shade" if self._auto_shade else "Auto Shade"
         menu.add_command(label=auto_shade_label, command=self._toggle_auto_shade)
@@ -960,31 +929,6 @@ class Dashboard:
         ):
             window.overrideredirect(True)
 
-    # --- Resize grip ---
-
-    def _on_resize_start(self, event: Any) -> None:
-        """Start manual resize from grip."""
-        if not self._window:
-            return
-        self._resize_start_x = event.x_root
-        self._resize_start_y = event.y_root
-        self._resize_start_w = self._window.winfo_width()
-        self._resize_start_h = self._window.winfo_height()
-
-    def _on_resize_drag(self, event: Any) -> None:
-        """Drag to resize window from grip."""
-        if not self._window:
-            return
-        dx = event.x_root - self._resize_start_x
-        dy = event.y_root - self._resize_start_y
-        new_w = max(self._resize_start_w + dx, MIN_RESIZE_WIDTH)
-        new_h = max(self._resize_start_h + dy, MIN_RESIZE_HEIGHT)
-        x = self._window.winfo_x()
-        y = self._window.winfo_y()
-        geo = f"{new_w}x{new_h}+{x}+{y}"
-        self._window.geometry(geo)
-        self._last_good_geometry = geo
-
     # --- Drag to move ---
 
     _DRAG_THRESHOLD = 5
@@ -1025,13 +969,6 @@ class Dashboard:
 
         set_run_on_startup(enabled=not get_run_on_startup())
 
-    def _toggle_always_on_top(self) -> None:
-        """Toggle the always-on-top window attribute."""
-        if not self._window:
-            return
-        current = bool(self._window.attributes("-topmost"))
-        self._window.attributes("-topmost", not current)
-
     def _toggle_auto_shade(self) -> None:
         """Toggle auto-shade on pointer leave."""
         self._auto_shade = not self._auto_shade
@@ -1066,11 +1003,6 @@ class Dashboard:
         self._auto_shade_timer = self._root.after(
             AUTO_SHADE_POLL_MS, self._auto_shade_poll
         )
-
-    def _toggle_all_workspaces(self) -> None:
-        """Toggle sticky (all workspaces) via wmctrl on Linux."""
-        self._sticky = not self._sticky
-        self._apply_sticky()
 
     def _apply_sticky(self) -> None:
         """Apply or remove sticky (all workspaces) state."""
@@ -1190,6 +1122,20 @@ class Dashboard:
         logger.debug("RESTORE: geometry from state=%r", geometry)
         if geometry and self._window:
             self._window.geometry(geometry)
+            self._window.update_idletasks()
+            # Compensate for WM title bar: winfo_rooty() includes the bar,
+            # winfo_y() is the content area.  The difference is the bar height
+            # that causes drift on each restart.
+            bar_height = self._window.winfo_rooty() - self._window.winfo_y()
+            if bar_height > 0:
+                import re
+
+                m = re.match(r"(\d+x\d+)\+(\d+)\+(\d+)", geometry)
+                if m:
+                    adjusted_y = max(0, int(m.group(3)) - bar_height)
+                    adjusted = f"{m.group(1)}+{m.group(2)}+{adjusted_y}"
+                    self._window.geometry(adjusted)
+                    geometry = adjusted
             self._last_good_geometry = geometry
             logger.debug("RESTORE: applied geometry %s", geometry)
 

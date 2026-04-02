@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from pathlib import Path
 from typing import Any, Callable
 
 from claude_agent_sdk import (
@@ -17,25 +18,45 @@ from claude_agent_sdk import (
     ResultMessage,
     StreamEvent,
     SystemMessage,
-    TextBlock,
     ToolPermissionContext,
     ToolUseBlock,
 )
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-5-20250514"
+MODEL = "claude-sonnet-4@20250514"
 
 SYSTEM_PROMPT = """\
-You are a personal assistant embedded in a desktop dashboard.
-You have access to tools including Jira, Confluence, and other configured MCP \
-servers.
+You are a personal assistant embedded in a desktop dashboard. Your user tracks \
+a portfolio of Nexus GA features (ANSTRAT project in JIRA).
 
-Be direct and concise. Use markdown formatting when helpful.
+You have access to tools including JIRA, Confluence, Google Calendar, and other \
+configured MCP servers. Use them when the user asks about their work.
 
-If you cannot do something — whether because you lack the tool, the permission, \
-or the capability — say so clearly and suggest an alternative if one exists.
-Do not guess or fabricate information.\
+## Local context
+
+The personal-assistant directory at ~/Downloads/personal-assistant/ contains \
+refreshable data about the user's portfolio:
+
+- summary.md — portfolio summary with per-feature status updates
+- actions.md — action items grouped by due date
+- todo.md — user's personal todo list (do not modify)
+- sources.md — tracked inputs: JIRA features, GitHub repos, Google Docs/Drive, \
+  meeting summaries (do not modify)
+- fetch/jira/ — per-feature JIRA state snapshots
+- fetch/ — all fetched data from last refresh
+
+You can Read these files to answer questions about the user's work, priorities, \
+action items, and feature status without needing to call JIRA directly.
+
+## Behavior
+
+- Be direct and concise
+- If you cannot do something, say so clearly and suggest an alternative
+- Do not guess or fabricate information
+- When answering about features or work items, check the local files first \
+  before making external tool calls
+- The user's priorities are tagged P1/P2 in sources.md\
 """
 
 
@@ -105,12 +126,12 @@ class ChatClient:
 
     async def _connect(self) -> None:
         """Create and connect the SDK client."""
+        pa_dir = Path.home() / "Downloads" / "personal-assistant"
         options = ClaudeAgentOptions(
             system_prompt=SYSTEM_PROMPT,
-            model=MODEL,
             can_use_tool=_deny_unapproved,
-            setting_sources=["user"],
             include_partial_messages=True,
+            cwd=pa_dir,
         )
         self._client = ClaudeSDKClient(options=options)
         await self._client.connect()
@@ -188,10 +209,10 @@ class ChatClient:
     def _handle_message(self, msg: Any) -> None:
         """Route an SDK message to the appropriate UI callback."""
         if isinstance(msg, AssistantMessage):
+            # Text is already displayed via StreamEvent deltas — only
+            # handle non-text blocks here to avoid duplication.
             for block in msg.content:
-                if isinstance(block, TextBlock):
-                    self._on_text(block.text)
-                elif isinstance(block, ToolUseBlock):
+                if isinstance(block, ToolUseBlock):
                     self._on_tool_use(block.name)
         elif isinstance(msg, StreamEvent):
             event = msg.event
@@ -212,6 +233,13 @@ class ChatClient:
             logger.debug("system message: %s", msg)
 
     # -- clear ---------------------------------------------------------------
+
+    def interrupt(self) -> None:
+        """Interrupt the current response (thread-safe)."""
+        with self._lock:
+            loop_ref = self._loop
+        if self._client and loop_ref:
+            asyncio.run_coroutine_threadsafe(self._client.interrupt(), loop_ref)
 
     def clear(self) -> None:
         """Reset conversation by reconnecting."""

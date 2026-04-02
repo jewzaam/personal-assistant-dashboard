@@ -32,3 +32,4 @@ venv/
 .claude/settings.local.json
 
 *.log
+*.log.1
