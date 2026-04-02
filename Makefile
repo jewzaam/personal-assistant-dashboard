@@ -73,5 +73,5 @@ mutation: install-dev  ## Run mutation testing
 mutation-report:  ## Show results of last mutation run
 	$(PYTHON) -m mutmut results
 
-run: install install-meetings  ## Run the personal assistant GUI
+run: install-dev install-meetings  ## Run the personal assistant GUI
 	$(PYTHON) -m personal_assistant --debug gui --log-file pa-dashboard.log

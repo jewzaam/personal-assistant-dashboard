@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import tkinter as tk
 from typing import Any
 
@@ -47,6 +48,10 @@ class ChatTab:
         self._streaming = False
         self._started = False
         self._assistant_active = False
+        self._thinking_shown = False
+        self._send_time = 0.0
+        self._status_text = ""
+        self._status_timer: str | None = None
         self._build()
 
     # -- UI ------------------------------------------------------------------
@@ -80,12 +85,12 @@ class ChatTab:
         self._messages.tag_configure("user_name", foreground=FG_ACCENT, justify=tk.LEFT)
         self._messages.tag_configure("user_msg", foreground=FG_TEXT, justify=tk.LEFT)
         self._messages.tag_configure(
-            "assistant_name", foreground=COLOR_ASSISTANT, justify=tk.RIGHT
+            "assistant_name", foreground=COLOR_ASSISTANT, justify=tk.LEFT
         )
         self._messages.tag_configure(
-            "assistant_msg", foreground=FG_TEXT, justify=tk.RIGHT
+            "assistant_msg", foreground=FG_TEXT, justify=tk.LEFT
         )
-        self._messages.tag_configure("tool_msg", foreground=FG_DIM, justify=tk.RIGHT)
+        self._messages.tag_configure("thinking_msg", foreground=FG_DIM, justify=tk.LEFT)
         self._messages.tag_configure(
             "error_msg", foreground=COLOR_ERROR, justify=tk.LEFT
         )
@@ -93,22 +98,40 @@ class ChatTab:
             "separator", foreground=BORDER_COLOR, justify=tk.CENTER
         )
 
+        # Status label
+        self._status_var = tk.StringVar(value="")
+        self._status_label = tk.Label(
+            self._parent,
+            textvariable=self._status_var,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=FONT_BODY,
+            anchor=tk.W,
+        )
+        self._status_label.pack(fill=tk.X, padx=PAD, pady=(0, 0))
+
         # Input bar
         input_bar = tk.Frame(self._parent, bg=BG_WINDOW)
-        input_bar.pack(fill=tk.X, padx=PAD, pady=PAD)
+        input_bar.pack(fill=tk.X, padx=PAD, pady=(0, PAD))
 
-        self._input_var = tk.StringVar()
-        self._input = tk.Entry(
+        self._input = tk.Text(
             input_bar,
-            textvariable=self._input_var,
             bg=BG_INPUT,
             fg=FG_TEXT,
             font=FONT_INPUT,
+            wrap=tk.WORD,
+            height=3,
             insertbackground=FG_TEXT,
             relief=tk.FLAT,
+            borderwidth=0,
+            highlightthickness=0,
+            padx=PAD,
+            pady=PAD,
         )
         self._input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, PAD))
         self._input.bind("<Return>", self._on_enter)
+        self._input.bind("<Shift-Return>", lambda e: None)
+        self._input.bind("<Control-BackSpace>", self._on_ctrl_backspace)
 
         btn_frame = tk.Frame(input_bar, bg=BG_WINDOW)
         btn_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(PAD, 0))
@@ -142,26 +165,48 @@ class ChatTab:
 
     # -- key bindings --------------------------------------------------------
 
+    def _stop(self) -> None:
+        """Interrupt the current response."""
+        if self._client and self._streaming:
+            self._client.interrupt()
+
     def _on_enter(self, event: tk.Event) -> str:  # type: ignore[type-arg]
         """Enter sends the message."""
         self._send()
+        return "break"
+
+    def _on_ctrl_backspace(self, event: tk.Event) -> str:  # type: ignore[type-arg]
+        """Delete the word before the cursor."""
+        # tk.Text has built-in wordstart support
+        self._input.delete("insert -1c wordstart", tk.INSERT)
         return "break"
 
     # -- send / receive ------------------------------------------------------
 
     def _send(self) -> None:
         """Send the current input text to Claude."""
-        text = self._input_var.get().strip()
+        text = self._input.get("1.0", tk.END).strip()
         if not text or self._streaming:
             return
 
-        self._ensure_client()
-        self._streaming = True
-        self._send_btn.config(state=tk.DISABLED)
-        self._assistant_active = False
-
+        # Clear input and show user message immediately
+        self._input.delete("1.0", tk.END)
         self._append_user(text)
-        self._input_var.set("")
+        self._streaming = True
+        self._send_btn.config(
+            text="Stop", command=self._stop, bg="#6b3a3a", activebackground="#7a4444"
+        )
+        self._assistant_active = False
+        self._thinking_shown = False
+
+        # Connect lazily — may take a few seconds on first use
+        self._send_time = time.monotonic()
+        self._status_text = (
+            "Connecting" if self._client is None else "Waiting for response"
+        )
+        self._start_status_timer()
+        self._ensure_client()
+        self._status_text = "Waiting for response"
 
         assert self._client is not None
         self._client.send(text)
@@ -181,6 +226,24 @@ class ChatTab:
         )
         self._client.start()
 
+    def _start_status_timer(self) -> None:
+        """Start a 1-second timer to update the status with elapsed time."""
+        self._tick_status()
+
+    def _stop_status_timer(self) -> None:
+        """Cancel the status timer."""
+        if self._status_timer is not None:
+            self._root.after_cancel(self._status_timer)
+            self._status_timer = None
+
+    def _tick_status(self) -> None:
+        """Update status bar with current elapsed time."""
+        if not self._streaming:
+            return
+        elapsed = self._format_duration(time.monotonic() - self._send_time)
+        self._status_var.set(f"{self._status_text} ({elapsed})")
+        self._status_timer = self._root.after(1000, self._tick_status)
+
     def _schedule(self, fn: Any, *args: Any) -> None:
         """Schedule a callback on the TkInter main thread."""
         if self._root.winfo_exists():
@@ -190,6 +253,7 @@ class ChatTab:
 
     def _on_text(self, delta: str) -> None:
         """Append streaming text delta from Claude."""
+        self._status_text = "Streaming"
         if not self._assistant_active:
             self._start_assistant()
         self._messages.config(state=tk.NORMAL)
@@ -198,23 +262,30 @@ class ChatTab:
         self._messages.see(tk.END)
 
     def _on_tool_use(self, tool_name: str) -> None:
-        """Show tool call indicator in chat."""
-        self._messages.config(state=tk.NORMAL)
-        if self._assistant_active:
-            self._messages.insert(tk.END, "\n")
-        self._messages.insert(tk.END, f"[using {tool_name}]\n", "tool_msg")
-        self._messages.config(state=tk.DISABLED)
-        self._messages.see(tk.END)
+        """Log tool call to console only — no chat indicator."""
+        self._status_text = f"Using {tool_name}"
+        if not self._assistant_active:
+            self._start_assistant()
         if self._console_log:
-            self._console_log(f"Chat: tool call → {tool_name}", "info", "", "")
+            self._console_log(f"Chat: tool call -> {tool_name}", "info", "", "")
 
     def _on_done(self) -> None:
         """Response complete."""
         self._streaming = False
         self._assistant_active = False
-        self._send_btn.config(state=tk.NORMAL)
+        self._thinking_shown = False
+        self._send_btn.config(
+            text="Send",
+            command=self._send,
+            bg=COLOR_BUTTON,
+            activebackground=COLOR_BUTTON_ACTIVE,
+        )
+        self._stop_status_timer()
+        elapsed = time.monotonic() - self._send_time
+        duration = self._format_duration(elapsed)
+        self._status_var.set("Ready")
         self._messages.config(state=tk.NORMAL)
-        self._messages.insert(tk.END, "\n\n")
+        self._messages.insert(tk.END, f"\n[success] {duration}\n\n", "thinking_msg")
         self._messages.config(state=tk.DISABLED)
         self._messages.see(tk.END)
         self._input.focus_set()
@@ -225,14 +296,36 @@ class ChatTab:
         """Display error inline and re-enable input."""
         self._streaming = False
         self._assistant_active = False
-        self._send_btn.config(state=tk.NORMAL)
+        self._thinking_shown = False
+        self._send_btn.config(
+            text="Send",
+            command=self._send,
+            bg=COLOR_BUTTON,
+            activebackground=COLOR_BUTTON_ACTIVE,
+        )
+        self._stop_status_timer()
+        elapsed = time.monotonic() - self._send_time
+        duration = self._format_duration(elapsed)
+        self._status_var.set("Error")
         self._messages.config(state=tk.NORMAL)
-        self._messages.insert(tk.END, f"\n[error] {error}\n\n", "error_msg")
+        self._messages.insert(
+            tk.END, f"\n[failure] {error} ({duration})\n\n", "error_msg"
+        )
         self._messages.config(state=tk.DISABLED)
         self._messages.see(tk.END)
         self._input.focus_set()
         if self._console_log:
             self._console_log(f"Chat error: {error}", "error", "", "")
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """Format elapsed seconds as a human-readable duration."""
+        total = int(seconds)
+        if total < 60:
+            return f"{total}s"
+        minutes = total // 60
+        secs = total % 60
+        return f"{minutes}m {secs}s"
 
     # -- message formatting --------------------------------------------------
 
@@ -245,11 +338,15 @@ class ChatTab:
         self._messages.see(tk.END)
 
     def _start_assistant(self) -> None:
-        """Insert the Claude label before streaming text."""
+        """Insert the Claude label and thinking indicator."""
         self._assistant_active = True
         self._messages.config(state=tk.NORMAL)
         self._messages.insert(tk.END, "Claude\n", "assistant_name")
+        if not self._thinking_shown:
+            self._thinking_shown = True
+            self._messages.insert(tk.END, "thinking...\n", "thinking_msg")
         self._messages.config(state=tk.DISABLED)
+        self._messages.see(tk.END)
 
     # -- clear / refresh -----------------------------------------------------
 
