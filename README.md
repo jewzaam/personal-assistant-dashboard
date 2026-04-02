@@ -2,6 +2,8 @@
 
 # personal-assistant
 
+[![Test](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/test.yml/badge.svg)](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/test.yml) [![Coverage](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/coverage.yml/badge.svg)](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/coverage.yml) [![Lint](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/lint.yml/badge.svg)](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/lint.yml) [![Type Check](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/typecheck.yml/badge.svg)](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/typecheck.yml)
+
 CLI-first personal task management with voice input, powered by Claude.
 
 ## Overview

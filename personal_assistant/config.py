@@ -26,6 +26,8 @@ BORDER_COLOR = "#3c3c3c"
 # Colors — buttons
 COLOR_BUTTON = "#4e4e4e"
 COLOR_BUTTON_ACTIVE = "#5e5e5e"
+COLOR_STOP_BUTTON = "#6b3a3a"
+COLOR_STOP_BUTTON_ACTIVE = "#7a4444"
 
 # Colors — semantic (calendar, meetings, events)
 COLOR_CONFLICT = "#B85450"  # muted red — conflict category
@@ -90,6 +92,16 @@ AUTO_SHADE_POLL_MS = 2000  # auto-shade pointer check
 SCOPE_CHECK_DELAY_MS = 200  # delayed scope check on startup
 DEBOUNCE_RESIZE_MS = 150  # canvas resize debounce
 GEOMETRY_CAPTURE_DELAY_MS = 500  # delay before capturing initial window geometry
+
+# Subprocess/connection timeouts (seconds)
+TIMEOUT_SDK_CONNECT_S = 30  # SDK client initial connection
+TIMEOUT_SDK_DISCONNECT_S = 5  # SDK client disconnect grace period
+TIMEOUT_THREAD_JOIN_S = 10  # background thread join
+TIMEOUT_SUBPROCESS_S = 300  # claude -p (large context, slow)
+TIMEOUT_GWS_S = 30  # GWS calendar list (paged API)
+TIMEOUT_GWS_SHORT_S = 15  # GWS meet attendance, single calls
+TIMEOUT_GIT_S = 10  # local git operations
+TIMEOUT_GWS_AUTH_S = 10  # GWS auth status check
 
 # Size limits
 MIN_WINDOW_WIDTH = 600

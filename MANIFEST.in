@@ -1,0 +1,4 @@
+include LICENSE
+include README.md
+include TEST_PLAN.md
+recursive-include personal_assistant *.py

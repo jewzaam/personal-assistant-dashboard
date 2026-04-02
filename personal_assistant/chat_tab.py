@@ -6,10 +6,13 @@ from __future__ import annotations
 import logging
 import time
 import tkinter as tk
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from personal_assistant.models import ConsoleLogCallback, NotifyTabCallback
 from personal_assistant.config import (
+    ASSISTANT_DIR,
     BG_INPUT,
     BG_OUTPUT,
     BG_WINDOW,
@@ -18,6 +21,8 @@ from personal_assistant.config import (
     COLOR_BUTTON,
     COLOR_BUTTON_ACTIVE,
     COLOR_ERROR,
+    COLOR_STOP_BUTTON,
+    COLOR_STOP_BUTTON_ACTIVE,
     FG_ACCENT,
     FG_DIM,
     FG_TEXT,
@@ -27,6 +32,8 @@ from personal_assistant.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+CHAT_LOG_DIR = ASSISTANT_DIR / "scratch" / "chat-log"
 
 
 class ChatTab:
@@ -48,10 +55,14 @@ class ChatTab:
         self._streaming = False
         self._started = False
         self._assistant_active = False
-        self._thinking_shown = False
         self._send_time = 0.0
         self._status_text = ""
         self._status_timer: str | None = None
+        self._pending_messages: list[str] = []
+        self._chat_log_path: Path | None = None
+        self._current_response: list[str] = []
+        self._destroying = False
+        self._last_text_time = 0.0
         self._build()
 
     # -- UI ------------------------------------------------------------------
@@ -177,29 +188,38 @@ class ChatTab:
 
     def _on_ctrl_backspace(self, event: tk.Event) -> str:  # type: ignore[type-arg]
         """Delete the word before the cursor."""
-        # tk.Text has built-in wordstart support
         self._input.delete("insert -1c wordstart", tk.INSERT)
         return "break"
 
     # -- send / receive ------------------------------------------------------
 
     def _send(self) -> None:
-        """Send the current input text to Claude."""
+        """Send the current input text to Claude, or queue if busy."""
         text = self._input.get("1.0", tk.END).strip()
-        if not text or self._streaming:
+        if not text:
             return
 
-        # Clear input and show user message immediately
         self._input.delete("1.0", tk.END)
         self._append_user(text)
+
+        if self._streaming:
+            self._pending_messages.append(text)
+            self._status_text = f"Queued ({len(self._pending_messages)})"
+            return
+
+        self._send_now(text)
+
+    def _send_now(self, text: str) -> None:
+        """Send a message immediately."""
         self._streaming = True
         self._send_btn.config(
-            text="Stop", command=self._stop, bg="#6b3a3a", activebackground="#7a4444"
+            text="Stop",
+            command=self._stop,
+            bg=COLOR_STOP_BUTTON,
+            activebackground=COLOR_STOP_BUTTON_ACTIVE,
         )
         self._assistant_active = False
-        self._thinking_shown = False
 
-        # Connect lazily — may take a few seconds on first use
         self._send_time = time.monotonic()
         self._status_text = (
             "Connecting" if self._client is None else "Waiting for response"
@@ -208,7 +228,9 @@ class ChatTab:
         self._ensure_client()
         self._status_text = "Waiting for response"
 
-        assert self._client is not None
+        if self._client is None:
+            self._on_error("Failed to initialize chat client")
+            return
         self._client.send(text)
 
     def _ensure_client(self) -> None:
@@ -238,7 +260,7 @@ class ChatTab:
 
     def _tick_status(self) -> None:
         """Update status bar with current elapsed time."""
-        if not self._streaming:
+        if not self._streaming or self._destroying:
             return
         elapsed = self._format_duration(time.monotonic() - self._send_time)
         self._status_var.set(f"{self._status_text} ({elapsed})")
@@ -246,7 +268,7 @@ class ChatTab:
 
     def _schedule(self, fn: Any, *args: Any) -> None:
         """Schedule a callback on the TkInter main thread."""
-        if self._root.winfo_exists():
+        if not self._destroying and self._root.winfo_exists():
             self._root.after(0, fn, *args)
 
     # -- UI callbacks (main thread only) -------------------------------------
@@ -256,24 +278,30 @@ class ChatTab:
         self._status_text = "Streaming"
         if not self._assistant_active:
             self._start_assistant()
-        self._messages.config(state=tk.NORMAL)
-        self._messages.insert(tk.END, delta, "assistant_msg")
-        self._messages.config(state=tk.DISABLED)
-        self._messages.see(tk.END)
+        now = time.monotonic()
+        gap = now - self._last_text_time if self._last_text_time else 0
+        self._last_text_time = now
+        try:
+            self._messages.config(state=tk.NORMAL)
+            if gap > 2.0 and self._current_response:
+                self._messages.insert(tk.END, "\n", "assistant_msg")
+            self._messages.insert(tk.END, delta, "assistant_msg")
+            self._messages.config(state=tk.DISABLED)
+            self._messages.see(tk.END)
+        except tk.TclError:
+            pass
+        self._current_response.append(delta)
 
     def _on_tool_use(self, tool_name: str) -> None:
-        """Log tool call to console only — no chat indicator."""
+        """Update status bar with tool name."""
         self._status_text = f"Using {tool_name}"
         if not self._assistant_active:
             self._start_assistant()
-        if self._console_log:
-            self._console_log(f"Chat: tool call -> {tool_name}", "info", "", "")
 
     def _on_done(self) -> None:
         """Response complete."""
         self._streaming = False
         self._assistant_active = False
-        self._thinking_shown = False
         self._send_btn.config(
             text="Send",
             command=self._send,
@@ -281,22 +309,32 @@ class ChatTab:
             activebackground=COLOR_BUTTON_ACTIVE,
         )
         self._stop_status_timer()
+        if self._current_response:
+            self._log_assistant("".join(self._current_response))
+            self._current_response.clear()
         elapsed = time.monotonic() - self._send_time
         duration = self._format_duration(elapsed)
         self._status_var.set("Ready")
-        self._messages.config(state=tk.NORMAL)
-        self._messages.insert(tk.END, f"\n[success] {duration}\n\n", "thinking_msg")
-        self._messages.config(state=tk.DISABLED)
-        self._messages.see(tk.END)
+        try:
+            self._messages.config(state=tk.NORMAL)
+            self._messages.insert(tk.END, f"\n[success] {duration}\n\n", "thinking_msg")
+            self._messages.config(state=tk.DISABLED)
+            self._messages.see(tk.END)
+        except tk.TclError:
+            pass
         self._input.focus_set()
         if self._notify_tab:
             self._notify_tab("Chat")
+
+        if self._pending_messages:
+            next_msg = self._pending_messages.pop(0)
+            self._send_now(next_msg)
 
     def _on_error(self, error: str) -> None:
         """Display error inline and re-enable input."""
         self._streaming = False
         self._assistant_active = False
-        self._thinking_shown = False
+        self._current_response.clear()
         self._send_btn.config(
             text="Send",
             command=self._send,
@@ -307,13 +345,17 @@ class ChatTab:
         elapsed = time.monotonic() - self._send_time
         duration = self._format_duration(elapsed)
         self._status_var.set("Error")
-        self._messages.config(state=tk.NORMAL)
-        self._messages.insert(
-            tk.END, f"\n[failure] {error} ({duration})\n\n", "error_msg"
-        )
-        self._messages.config(state=tk.DISABLED)
-        self._messages.see(tk.END)
+        try:
+            self._messages.config(state=tk.NORMAL)
+            self._messages.insert(
+                tk.END, f"\n[failure] {error} ({duration})\n\n", "error_msg"
+            )
+            self._messages.config(state=tk.DISABLED)
+            self._messages.see(tk.END)
+        except tk.TclError:
+            pass
         self._input.focus_set()
+        self._pending_messages.clear()
         if self._console_log:
             self._console_log(f"Chat error: {error}", "error", "", "")
 
@@ -331,30 +373,70 @@ class ChatTab:
 
     def _append_user(self, text: str) -> None:
         """Insert a user message into the display."""
-        self._messages.config(state=tk.NORMAL)
-        self._messages.insert(tk.END, "You\n", "user_name")
-        self._messages.insert(tk.END, text + "\n\n", "user_msg")
-        self._messages.config(state=tk.DISABLED)
-        self._messages.see(tk.END)
+        try:
+            self._messages.config(state=tk.NORMAL)
+            self._messages.insert(tk.END, "You\n", "user_name")
+            self._messages.insert(tk.END, text + "\n\n", "user_msg")
+            self._messages.config(state=tk.DISABLED)
+            self._messages.see(tk.END)
+        except tk.TclError:
+            pass
+        self._log_user(text)
 
     def _start_assistant(self) -> None:
-        """Insert the Claude label and thinking indicator."""
+        """Insert the Claude label before streaming text."""
         self._assistant_active = True
-        self._messages.config(state=tk.NORMAL)
-        self._messages.insert(tk.END, "Claude\n", "assistant_name")
-        if not self._thinking_shown:
-            self._thinking_shown = True
-            self._messages.insert(tk.END, "thinking...\n", "thinking_msg")
-        self._messages.config(state=tk.DISABLED)
-        self._messages.see(tk.END)
+        try:
+            self._messages.config(state=tk.NORMAL)
+            self._messages.insert(tk.END, "Claude\n", "assistant_name")
+            self._messages.config(state=tk.DISABLED)
+            self._messages.see(tk.END)
+        except tk.TclError:
+            pass
+
+    # -- chat logging ----------------------------------------------------------
+
+    def _ensure_chat_log(self) -> None:
+        """Create a chat log file for this session if one doesn't exist."""
+        if self._chat_log_path is not None:
+            return
+        CHAT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        self._chat_log_path = CHAT_LOG_DIR / f"{timestamp}.md"
+
+    def _log_user(self, text: str) -> None:
+        """Append a user message to the chat log."""
+        self._ensure_chat_log()
+        if not self._chat_log_path:
+            return
+        try:
+            with open(self._chat_log_path, "a") as f:
+                f.write(f"## You\n{text}\n\n")
+        except OSError as exc:
+            logger.warning("failed to write chat log: %s", exc)
+
+    def _log_assistant(self, text: str) -> None:
+        """Append an assistant response to the chat log."""
+        if not self._chat_log_path:
+            return
+        try:
+            with open(self._chat_log_path, "a") as f:
+                f.write(f"## Claude\n{text}\n\n")
+        except OSError as exc:
+            logger.warning("failed to write chat log: %s", exc)
 
     # -- clear / refresh -----------------------------------------------------
 
     def _clear(self) -> None:
         """Clear conversation history and display."""
-        self._messages.config(state=tk.NORMAL)
-        self._messages.delete("1.0", tk.END)
-        self._messages.config(state=tk.DISABLED)
+        self._pending_messages.clear()
+        self._chat_log_path = None
+        try:
+            self._messages.config(state=tk.NORMAL)
+            self._messages.delete("1.0", tk.END)
+            self._messages.config(state=tk.DISABLED)
+        except tk.TclError:
+            pass
         if self._client:
             self._client.clear()
 
@@ -364,5 +446,7 @@ class ChatTab:
 
     def on_destroy(self) -> None:
         """Called during dashboard shutdown to clean up resources."""
+        self._destroying = True
+        self._stop_status_timer()
         if self._client:
             self._client.stop()
