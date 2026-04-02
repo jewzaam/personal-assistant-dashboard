@@ -68,6 +68,7 @@ class ChatTab:
             state=tk.DISABLED,
             borderwidth=0,
             highlightthickness=0,
+            takefocus=0,
             padx=PAD,
             pady=PAD,
             yscrollcommand=scrollbar.set,
