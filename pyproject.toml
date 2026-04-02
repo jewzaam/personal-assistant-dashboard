@@ -9,6 +9,7 @@ version = "0.1.0"
 description = "CLI-first personal task management with voice input, powered by Claude"
 requires-python = ">=3.11"
 dependencies = [
+    "claude-agent-sdk>=0.1.50",
     "pyyaml>=6.0",
     "tkinterweb>=3.0",
 ]
@@ -57,6 +58,8 @@ omit = [
     "personal_assistant/actions_tab.py",
     "personal_assistant/meetings_tab.py",
     "personal_assistant/config.py",
+    "personal_assistant/chat_client.py",
+    "personal_assistant/chat_tab.py",
     "personal_assistant/collectors/meet_attendance.py",
     "personal_assistant/startup.py",
     "personal_assistant/utils.py",
