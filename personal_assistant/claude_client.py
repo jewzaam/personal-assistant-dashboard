@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import logging
 import shutil
+
+from personal_assistant.config import TIMEOUT_SUBPROCESS_S
 import subprocess
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,7 @@ def send_prompt(prompt: str, *, continue_conversation: bool = False) -> str:
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=TIMEOUT_SUBPROCESS_S,
         )
         if result.returncode != 0:
             stderr = result.stderr.strip()

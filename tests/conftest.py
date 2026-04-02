@@ -36,6 +36,31 @@ def _block_subprocess(request: pytest.FixtureRequest) -> object:
         yield
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def _block_real_filesystem(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent tests from writing outside tmp_path."""
+
+    def _is_allowed(path: Path) -> bool:
+        resolved = path.resolve()
+        return str(resolved).startswith(str(tmp_path)) or str(resolved).startswith(
+            str(_PROJECT_ROOT / ".venv")
+        )
+
+    def _guard(original):  # type: ignore[no-untyped-def]
+        def guarded(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if not _is_allowed(self):
+                raise PermissionError(f"Test tried to write outside tmp_path: {self}")
+            return original(self, *args, **kwargs)
+
+        return guarded
+
+    for method in ("write_text", "write_bytes", "rename", "unlink", "rmdir"):
+        monkeypatch.setattr(Path, method, _guard(getattr(Path, method)))
+
+
 @pytest.fixture()
 def state_dir(tmp_path: Path) -> Path:
     """Create and initialize a state repo in a temp directory.

@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from pathlib import Path
 from typing import Any, Callable
 
 from claude_agent_sdk import (
@@ -24,8 +23,6 @@ from claude_agent_sdk import (
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4@20250514"
-
 SYSTEM_PROMPT = """\
 You are a personal assistant embedded in a desktop dashboard. Your user tracks \
 a portfolio of Nexus GA features (ANSTRAT project in JIRA).
@@ -33,30 +30,62 @@ a portfolio of Nexus GA features (ANSTRAT project in JIRA).
 You have access to tools including JIRA, Confluence, Google Calendar, and other \
 configured MCP servers. Use them when the user asks about their work.
 
-## Local context
+## Local data (search ALL before reporting "not found")
 
-The personal-assistant directory at ~/Downloads/personal-assistant/ contains \
-refreshable data about the user's portfolio:
+Search these sources in priority order. All are local — no API calls needed:
 
+1. Meeting transcripts: scratch/calendar/*_transcript_* (richest — captures \
+things that don't make it into notes)
+2. Meeting notes: scratch/calendar/*_notes-* (summarized decisions, action items)
+3. JIRA feature descriptions: fetch/jira/ANSTRAT-*.md
+4. JIRA comments: fetch/jira/*-comments.md (WARNING: summaries may be \
+hallucinated by the fetch agent — treat as unverified, cross-reference \
+with actual JIRA via API when precision matters)
+5. Handbook SDPs/proposals: fetch/handbook/
+6. Architecture discussion notes: scratch/calendar/*architecture-discussion*
+7. Senior staff leads notes: scratch/calendar/*senior-technical-staff*
+8. Email: fetch/email/ (if present)
+
+Other local files:
 - summary.md — portfolio summary with per-feature status updates
 - actions.md — action items grouped by due date
-- todo.md — user's personal todo list (do not modify)
-- sources.md — tracked inputs: JIRA features, GitHub repos, Google Docs/Drive, \
-  meeting summaries (do not modify)
-- fetch/jira/ — per-feature JIRA state snapshots
-- fetch/ — all fetched data from last refresh
+- actions-completed.md — append-only log of completed actions
+- todo.md — user's personal todo list
+- sources.md — tracked inputs with P1/P2 priorities
 
-You can Read these files to answer questions about the user's work, priorities, \
-action items, and feature status without needing to call JIRA directly.
+## File permissions
+
+- actions.md — can modify at user request. After edits, run: md2html actions.md
+- actions-completed.md — append-only. Check before re-raising completed work
+- summary.md — read-only in chat (only the refresh skill writes this)
+- sources.md — read-only always
+- todo.md — read-only always
+
+## Research behavior
+
+- Check meeting transcripts proactively when answering questions about \
+requirements, decisions, or gaps — do not wait to be asked
+- Search broadly: check JIRA, transcripts, handbook, and email before \
+reporting something is unaddressed
+- Distinguish "not discussed" from "not answered" — these are different \
+situations. Be precise about whether a topic was raised but unresolved \
+vs. never raised at all
+
+## Action item filtering
+
+Actions in actions.md are things the user needs to do — not tracking other \
+people's work. Filter before reporting:
+1. Is the user the actor? Only surface items where they have a personal \
+action (review, provide input, make a decision, attend)
+2. Is it already done? Check actions-completed.md, [x] marks, JIRA status
+3. Can it be verified? If it references a source we cannot check, say so
 
 ## Behavior
 
 - Be direct and concise
 - If you cannot do something, say so clearly and suggest an alternative
 - Do not guess or fabricate information
-- When answering about features or work items, check the local files first \
-  before making external tool calls
-- The user's priorities are tagged P1/P2 in sources.md\
+- Check local files first before making external tool calls\
 """
 
 
@@ -116,17 +145,22 @@ class ChatClient:
             )
             self._thread.start()
         future = asyncio.run_coroutine_threadsafe(self._connect(), self._loop)
-        future.result(timeout=30)
+        from personal_assistant.config import TIMEOUT_SDK_CONNECT_S
+
+        future.result(timeout=TIMEOUT_SDK_CONNECT_S)
 
     def _run_loop(self) -> None:
         """Entry point for the background thread."""
-        assert self._loop is not None
+        if self._loop is None:
+            raise RuntimeError("event loop not initialized")
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
     async def _connect(self) -> None:
         """Create and connect the SDK client."""
-        pa_dir = Path.home() / "Downloads" / "personal-assistant"
+        from personal_assistant.config import ASSISTANT_DIR
+
+        pa_dir = ASSISTANT_DIR
         options = ClaudeAgentOptions(
             system_prompt=SYSTEM_PROMPT,
             can_use_tool=_deny_unapproved,
@@ -149,7 +183,9 @@ class ChatClient:
         if loop_ref and self._client:
             future = asyncio.run_coroutine_threadsafe(self._disconnect(), loop_ref)
             try:
-                future.result(timeout=5)
+                from personal_assistant.config import TIMEOUT_SDK_DISCONNECT_S
+
+                future.result(timeout=TIMEOUT_SDK_DISCONNECT_S)
             except Exception:
                 logger.debug("disconnect timed out", exc_info=True)
 
@@ -157,7 +193,9 @@ class ChatClient:
             loop_ref.call_soon_threadsafe(loop_ref.stop)
 
         if thread_ref:
-            thread_ref.join(timeout=10)
+            from personal_assistant.config import TIMEOUT_THREAD_JOIN_S
+
+            thread_ref.join(timeout=TIMEOUT_THREAD_JOIN_S)
 
         if loop_ref:
             loop_ref.close()
@@ -175,14 +213,19 @@ class ChatClient:
 
     def send(self, text: str) -> None:
         """Send a user message (thread-safe, called from TkInter thread)."""
-        if not self._loop or not self._client:
+        with self._lock:
+            loop_ref = self._loop
+            client_ref = self._client
+        if not loop_ref or not client_ref:
             self._on_error("Chat client not connected")
             return
-        asyncio.run_coroutine_threadsafe(self._send(text), self._loop)
+        asyncio.run_coroutine_threadsafe(self._send(text), loop_ref)
 
     async def _send(self, text: str) -> None:
         """Send the message and start receiving responses."""
-        assert self._client is not None
+        if self._client is None:
+            self._on_error("Chat client not connected")
+            return
         try:
             await self._client.query(text)
             if not self._receiving:
@@ -194,7 +237,8 @@ class ChatClient:
 
     async def _receive_loop(self) -> None:
         """Consume messages from the SDK client and dispatch to UI."""
-        assert self._client is not None
+        if self._client is None:
+            return
         try:
             async for msg in self._client.receive_messages():
                 if not self._running:
