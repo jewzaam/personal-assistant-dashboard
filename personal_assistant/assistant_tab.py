@@ -32,7 +32,7 @@ from personal_assistant.config import (
     FG_DIM,
     FG_TEXT,
     FILE_WATCH_INTERVAL_MS,
-    FONT_BODY,
+    FONT_NAME_BODY,
     PAD,
 )
 from personal_assistant.state_repo import DEFAULT_STATE_PATH
@@ -140,7 +140,7 @@ class AssistantTab:
             textvariable=self._status_var,
             bg=BG_WINDOW,
             fg=FG_DIM,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
         ).pack(side=tk.LEFT)
 
         self._refresh_btn = tk.Button(
@@ -149,7 +149,7 @@ class AssistantTab:
             command=self._on_refresh,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
@@ -163,7 +163,7 @@ class AssistantTab:
             command=self._load_html,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
@@ -198,7 +198,7 @@ class AssistantTab:
                 self._parent,
                 bg=BG_OUTPUT,
                 fg=FG_TEXT,
-                font=FONT_BODY,
+                font=FONT_NAME_BODY,
                 wrap=tk.WORD,
                 state=tk.DISABLED,
                 highlightthickness=0,
@@ -211,6 +211,12 @@ class AssistantTab:
             )
             fallback.configure(state=tk.DISABLED)
 
+    def set_font_scale(self, scale: float) -> None:
+        """Apply font scaling to the HTML frame via CSS."""
+        self._font_scale_css = f"body {{ font-size: {scale * 100:.0f}%; }}"
+        if self._html_frame is not None:
+            self._html_frame.add_css(self._font_scale_css)
+
     def _load_html(self) -> None:
         """Load the HTML file into the display."""
         if self._html_frame is None:
@@ -219,6 +225,8 @@ class AssistantTab:
             content = ASSISTANT_HTML.read_text(encoding="utf-8")
             self._html_frame.load_html(content)
             self._html_frame.add_css(SPACING_CSS)
+            if hasattr(self, "_font_scale_css"):
+                self._html_frame.add_css(self._font_scale_css)
         else:
             body = (
                 f"<html><body style='background:{COLOR_HTML_FALLBACK_BG};"

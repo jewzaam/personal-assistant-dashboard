@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from personal_assistant.models import CalendarEvent
 
 
 def format_event_time(time_str: str) -> str:
@@ -65,3 +68,39 @@ def atomic_write_text(path: Path, content: str) -> None:
         except OSError:
             pass
         raise
+
+
+_MEETING_URL_PATTERN = re.compile(
+    r"https?://(?:meet\.google\.com/[a-z-]+"
+    r"|teams\.microsoft\.com/l/meetup-join/[^\s\"]+"
+    r"|[\w.]*zoom\.us/j/\d+[^\s\"]*)",
+    re.IGNORECASE,
+)
+
+
+def get_meeting_url(event: CalendarEvent) -> str | None:
+    """Extract a video conference URL from a calendar event.
+
+    Checks hangout_link first, then falls back to regex-matching
+    Meet/Teams/Zoom URLs in location and description fields.
+    """
+    hangout = event.get("hangout_link")
+    if hangout:
+        return hangout
+    for field in ("location", "description"):
+        text = event.get(field, "")
+        if isinstance(text, str) and text:
+            match = _MEETING_URL_PATTERN.search(text)
+            if match:
+                return match.group(0)
+    return None
+
+
+def filter_dismissed_missed_meetings(
+    missed_meetings: list[CalendarEvent],
+    dismissed_ids: set[str],
+) -> list[CalendarEvent]:
+    """Remove dismissed-conflict events from a missed-meetings list."""
+    if not dismissed_ids or not missed_meetings:
+        return missed_meetings
+    return [e for e in missed_meetings if e.get("id", "") not in dismissed_ids]

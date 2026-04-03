@@ -57,11 +57,17 @@ from personal_assistant.config import (
     COLOR_WHITE,
     COLOR_WINDOW_BORDER,
     DEBOUNCE_RESIZE_MS,
+    BG_INPUT,
     FG_ACCENT,
     FG_DIM,
     FG_TEXT,
-    FONT_BODY,
-    FONT_HEADING,
+    FONT_FAMILY,
+    FONT_NAME_BODY,
+    FONT_NAME_HEADING,
+    FONT_NAME_INPUT,
+    FONT_SIZE_BODY,
+    FONT_SIZE_HEADING,
+    FONT_SIZE_INPUT,
     GEOMETRY_CAPTURE_DELAY_MS,
     MENU_TIMEOUT_MS,
     MIN_WINDOW_HEIGHT,
@@ -188,6 +194,24 @@ class Dashboard:
         main = tk.Frame(self._window, bg=BG_WINDOW)
         main.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 
+        # Named fonts — created once, auto-propagate size changes to all widgets
+        import tkinter.font as tkFont
+
+        self._font_body = tkFont.Font(
+            name=FONT_NAME_BODY, family=FONT_FAMILY, size=FONT_SIZE_BODY, exists=False
+        )
+        self._font_heading = tkFont.Font(
+            name=FONT_NAME_HEADING,
+            family=FONT_FAMILY,
+            size=FONT_SIZE_HEADING,
+            weight="bold",
+            exists=False,
+        )
+        self._font_input = tkFont.Font(
+            name=FONT_NAME_INPUT, family=FONT_FAMILY, size=FONT_SIZE_INPUT, exists=False
+        )
+        self._font_scale = 1.0
+
         # Notebook (tabs)
         self._style = ttk.Style()
         self._style.theme_use("clam")
@@ -202,7 +226,7 @@ class Dashboard:
             background=COLOR_TAB_BG,
             foreground=FG_DIM,
             padding=(16, 3),
-            font=FONT_BODY,
+            font=self._font_body,
             borderwidth=0,
         )
         self._style.map(
@@ -281,7 +305,7 @@ class Dashboard:
             textvariable=self._countdown_var,
             bg=BG_WINDOW,
             fg=FG_DIM,
-            font=FONT_BODY,
+            font=self._font_body,
         ).pack(side=tk.LEFT)
 
         self._run_now_btn = tk.Button(
@@ -290,7 +314,7 @@ class Dashboard:
             command=self._force_pipeline,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=self._font_body,
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
@@ -304,7 +328,7 @@ class Dashboard:
             textvariable=self._summarize_status_var,
             bg=BG_WINDOW,
             fg=FG_DIM,
-            font=FONT_BODY,
+            font=self._font_body,
         ).pack(side=tk.RIGHT, padx=(0, PAD))
 
         # Console text area
@@ -312,7 +336,7 @@ class Dashboard:
             console_frame,
             bg=BG_OUTPUT,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=self._font_body,
             wrap=tk.WORD,
             padx=PAD,
             pady=PAD,
@@ -354,7 +378,7 @@ class Dashboard:
             "transcript management, and actions.",
             bg=BG_WINDOW,
             fg=FG_DIM,
-            font=FONT_HEADING,
+            font=self._font_heading,
             justify=tk.CENTER,
         ).pack(expand=True)
         self._about_tab_id = str(about_frame)
@@ -368,12 +392,78 @@ class Dashboard:
 
         self._build_calendar_tab(cal_tab)
 
+        # Persistent chat input — visible on all tabs
+        self._quick_chat_frame = tk.Frame(main, bg=BG_WINDOW)
+        self._quick_chat_frame.pack(fill=tk.X, padx=PAD, pady=(4, 0))
+
+        self._quick_chat_input = tk.Text(
+            self._quick_chat_frame,
+            bg=BG_INPUT,
+            fg=FG_TEXT,
+            insertbackground=FG_TEXT,
+            font=self._font_input,
+            height=3,
+            wrap=tk.WORD,
+            padx=PAD,
+            pady=4,
+            highlightthickness=1,
+            highlightbackground=BORDER_COLOR,
+            highlightcolor=FG_ACCENT,
+            borderwidth=0,
+        )
+        self._quick_chat_input.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._quick_chat_input.bind("<Return>", self._on_quick_chat_send)
+        self._quick_chat_input.bind("<Shift-Return>", lambda e: None)  # allow newline
+
+        btn_frame = tk.Frame(self._quick_chat_frame, bg=BG_WINDOW)
+        btn_frame.pack(side=tk.RIGHT, padx=(4, 0))
+
+        self._quick_send_btn = tk.Button(
+            btn_frame,
+            text="Send",
+            command=self._on_quick_chat_send,
+            bg=COLOR_BUTTON,
+            fg=FG_TEXT,
+            font=self._font_body,
+            relief=tk.FLAT,
+            activebackground=COLOR_BUTTON_ACTIVE,
+            cursor="hand2",
+            padx=8,
+        )
+        self._quick_send_btn.pack(side=tk.TOP, pady=(0, 2))
+
+        tk.Button(
+            btn_frame,
+            text="Clear",
+            command=self._on_quick_chat_clear,
+            bg=COLOR_BUTTON,
+            fg=FG_TEXT,
+            font=self._font_body,
+            relief=tk.FLAT,
+            activebackground=COLOR_BUTTON_ACTIVE,
+            cursor="hand2",
+            padx=8,
+        ).pack(side=tk.TOP)
+
+        # Wire the Send button to ChatTab for Send/Stop toggling
+        self._chat_tab.set_send_button(self._quick_send_btn)
+        self._chat_tab._on_external_send = self._on_quick_chat_send
+
+        # Ctrl+` focuses the persistent chat input
+        self._window.bind("<Control-grave>", self._focus_quick_chat)
+
+        # Font scaling: Ctrl+/Ctrl- to zoom, Ctrl+0 to reset
+        self._window.bind("<Control-plus>", lambda e: self._scale_fonts(0.1))
+        self._window.bind("<Control-equal>", lambda e: self._scale_fonts(0.1))
+        self._window.bind("<Control-minus>", lambda e: self._scale_fonts(-0.1))
+        self._window.bind("<Control-0>", lambda e: self._scale_fonts(0.0, reset=True))
+
         # Bottom bar: legend + status
-        bottom = tk.Frame(main, bg=BG_WINDOW)
-        bottom.pack(fill=tk.X, pady=(2, 0))
+        self._bottom_bar = tk.Frame(main, bg=BG_WINDOW)
+        self._bottom_bar.pack(fill=tk.X, pady=(2, 0))
 
         # Legend (left side)
-        legend = tk.Frame(bottom, bg=BG_WINDOW)
+        legend = tk.Frame(self._bottom_bar, bg=BG_WINDOW)
         legend.pack(side=tk.LEFT)
         for label_text, color in [
             ("meeting", COLOR_NORMAL),
@@ -388,16 +478,16 @@ class Dashboard:
                 text=label_text,
                 bg=BG_WINDOW,
                 fg=FG_DIM,
-                font=FONT_BODY,
+                font=self._font_body,
             ).pack(side=tk.LEFT, padx=(0, 8))
 
         # Status (right side)
         tk.Label(
-            bottom,
+            self._bottom_bar,
             textvariable=self._status_var,
             bg=BG_WINDOW,
             fg=FG_DIM,
-            font=FONT_BODY,
+            font=self._font_body,
             anchor=tk.E,
         ).pack(side=tk.RIGHT)
 
@@ -431,7 +521,7 @@ class Dashboard:
             command=self._prev_day,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=self._font_body,
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
@@ -443,7 +533,7 @@ class Dashboard:
             textvariable=self._date_var,
             bg=BG_WINDOW,
             fg=FG_ACCENT,
-            font=FONT_HEADING,
+            font=self._font_heading,
             width=30,
             anchor=tk.W,
         )
@@ -456,7 +546,7 @@ class Dashboard:
             command=self._next_day,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=self._font_body,
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
@@ -469,7 +559,7 @@ class Dashboard:
             command=self._go_today,
             bg=FG_ACCENT,
             fg=COLOR_WHITE,
-            font=FONT_BODY,
+            font=self._font_body,
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
@@ -482,7 +572,7 @@ class Dashboard:
             command=self._start_cal_refresh,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=self._font_body,
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
@@ -495,7 +585,7 @@ class Dashboard:
             text="\u25cf",
             bg=BG_WINDOW,
             fg=FG_DIM,
-            font=FONT_BODY,
+            font=self._font_body,
             cursor="hand2",
         )
         self._scope_indicator.pack(side=tk.RIGHT, padx=(0, 8))
@@ -751,6 +841,8 @@ class Dashboard:
                 width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT_SHADED
             )
             self._window.geometry(f"{w}x{SHADED_HEIGHT}+{x}+{y}")
+        if hasattr(self, "_quick_chat_frame"):
+            self._quick_chat_frame.pack_forget()
 
     def _unshade(self) -> None:
         """Restore window from shaded state."""
@@ -769,6 +861,11 @@ class Dashboard:
                 cm = re.match(r"\d+x\d+\+(-?\d+)\+(-?\d+)", cur)
                 cx, cy = cm.groups() if cm else (_old_x, _old_y)
                 self._window.geometry(f"{w}x{h}+{cx}+{cy}")
+        # Restore the persistent chat input (before the bottom bar)
+        if hasattr(self, "_quick_chat_frame") and hasattr(self, "_bottom_bar"):
+            self._quick_chat_frame.pack(
+                fill=tk.X, padx=PAD, pady=(4, 0), before=self._bottom_bar
+            )
         # Restore the tab that was active before shading
         if hasattr(self, "_pre_shade_tab") and self._pre_shade_tab:
             self._notebook.select(self._pre_shade_tab)  # type: ignore[union-attr]
@@ -777,6 +874,59 @@ class Dashboard:
         """Re-bind tab changed after shade completes."""
         if self._notebook:
             self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+    # --- Font scaling ---
+
+    def _scale_fonts(self, delta: float, *, reset: bool = False) -> None:
+        """Adjust font scale factor and update all named fonts."""
+        if reset:
+            self._font_scale = 1.0
+        else:
+            self._font_scale = max(0.5, min(2.0, self._font_scale + delta))
+        scale = self._font_scale
+        self._font_body.configure(size=int(FONT_SIZE_BODY * scale))
+        self._font_heading.configure(size=int(FONT_SIZE_HEADING * scale))
+        self._font_input.configure(size=int(FONT_SIZE_INPUT * scale))
+        # Update ttk style (doesn't auto-propagate from named fonts)
+        self._style.configure("Dark.TNotebook.Tab", font=self._font_body)
+        # Scale HTML content in Assistant and Actions tabs
+        if hasattr(self, "_assistant_tab"):
+            self._assistant_tab.set_font_scale(scale)
+        if hasattr(self, "_actions_tab"):
+            self._actions_tab.set_font_scale(scale)
+        # Re-render calendar canvas (uses font in create_text calls)
+        if self._canvas:
+            self._render_current_day()
+
+    # --- Persistent chat input ---
+
+    def _focus_quick_chat(self, _event: Any = None) -> None:
+        """Focus the persistent chat input field."""
+        if hasattr(self, "_quick_chat_input"):
+            self._quick_chat_input.focus_set()
+
+    def _on_quick_chat_send(self, _event: Any = None) -> str | None:
+        """Send text from the persistent chat input and switch to Chat tab."""
+        if not hasattr(self, "_quick_chat_input"):
+            return "break"
+        text = self._quick_chat_input.get("1.0", tk.END).strip()
+        if not text:
+            return "break"
+        self._quick_chat_input.delete("1.0", tk.END)
+        # Switch to Chat tab
+        if self._notebook:
+            for tab_id in self._notebook.tabs():
+                if self._notebook.tab(tab_id, "text") == "Chat":
+                    self._notebook.select(tab_id)
+                    break
+        if hasattr(self, "_chat_tab"):
+            self._chat_tab.send_message(text)
+        return "break"
+
+    def _on_quick_chat_clear(self) -> None:
+        """Clear the chat conversation."""
+        if hasattr(self, "_chat_tab"):
+            self._chat_tab._clear()
 
     def _on_tab_changed(self, _event: Any) -> None:
         """Refresh tabs when they become visible."""
@@ -1044,9 +1194,7 @@ class Dashboard:
             self._shaded,
             self._last_good_geometry,
         )
-        state: dict[str, Any] = {
-            "calendar_date": self._current_date.isoformat(),
-        }
+        state: dict[str, Any] = {}
         if self._notebook:
             tab_id = self._notebook.select()
             tab_text = self._notebook.tab(tab_id, "text")
@@ -1061,6 +1209,9 @@ class Dashboard:
             state["topmost"] = bool(self._window.attributes("-topmost"))
             state["sticky"] = self._sticky
             state["auto_shade"] = self._auto_shade
+        # Save font scale
+        if hasattr(self, "_font_scale") and self._font_scale != 1.0:
+            state["font_scale"] = round(self._font_scale, 2)
         # Save geometry
         if self._last_good_geometry:
             state["geometry"] = self._last_good_geometry
@@ -1093,15 +1244,6 @@ class Dashboard:
         if not state:
             return
 
-        # Restore calendar date
-        cal_date = state.get("calendar_date")
-        if cal_date:
-            try:
-                self._current_date = date.fromisoformat(cal_date)
-                self._update_date_label()
-            except ValueError:
-                pass
-
         # Restore selected tab
         tab_name = state.get("tab")
         if tab_name and self._notebook:
@@ -1126,6 +1268,12 @@ class Dashboard:
         if state.get("auto_shade"):
             self._auto_shade = True
             self._start_auto_shade_poll()
+
+        # Restore font scale
+        font_scale = state.get("font_scale")
+        if font_scale and isinstance(font_scale, (int, float)):
+            self._font_scale = float(font_scale)
+            self._scale_fonts(0.0)  # apply without changing the scale factor
 
         # Restore bells
         bells = state.get("bells", [])
@@ -1265,7 +1413,7 @@ class Dashboard:
             frame,
             bg=BG_OUTPUT,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=self._font_body,
             wrap=tk.WORD,
             padx=8,
             pady=8,
@@ -1359,7 +1507,7 @@ class Dashboard:
             text=tip_text,
             bg=COLOR_TOOLTIP_BG,
             fg=COLOR_TOOLTIP_FG,
-            font=FONT_BODY,
+            font=self._font_body,
             padx=6,
             pady=3,
             wraplength=400,
@@ -1453,6 +1601,19 @@ class Dashboard:
                 menu.add_command(label="View Summary", state=tk.DISABLED)
             menu.add_separator()
 
+        # Join Meeting — available when event has a video conference link
+        meeting_url = self._get_meeting_url(cal_event)
+        if meeting_url:
+
+            def _join_meeting(url: str = meeting_url or "") -> None:
+                self._dismiss_context_menu()
+                import webbrowser
+
+                webbrowser.open(url)
+
+            menu.add_command(label="Join Meeting", command=_join_meeting)
+            menu.add_separator()
+
         def menu_action(status: str) -> None:
             self._dismiss_context_menu()
             self._update_response(cal_event, status)
@@ -1540,6 +1701,12 @@ class Dashboard:
             pass
         return None
 
+    def _get_meeting_url(self, event: CalendarEvent) -> str | None:
+        """Extract a video conference URL from the event."""
+        from personal_assistant.utils import get_meeting_url
+
+        return get_meeting_url(event)
+
     def _show_summary_popup(self, title: str, content: str) -> None:
         """Show summary content in a popup window."""
         popup = tk.Toplevel(self._root)
@@ -1551,7 +1718,7 @@ class Dashboard:
             popup,
             bg=BG_OUTPUT,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=self._font_body,
             wrap=tk.WORD,
             padx=PAD,
             pady=PAD,
@@ -1634,7 +1801,7 @@ class Dashboard:
             text=summary,
             bg=BG_WINDOW,
             fg=FG_ACCENT,
-            font=FONT_HEADING,
+            font=self._font_heading,
             anchor=tk.W,
         ).pack(fill=tk.X, padx=8, pady=(8, 2))
 
@@ -1647,7 +1814,7 @@ class Dashboard:
             text=f"{start} - {end}    {response}",
             bg=BG_WINDOW,
             fg=COLOR_HOUR_TEXT,
-            font=FONT_BODY,
+            font=self._font_body,
             anchor=tk.W,
         ).pack(side=tk.LEFT)
 
@@ -1676,7 +1843,7 @@ class Dashboard:
                     text=label,
                     bg=color,
                     fg=COLOR_WHITE,
-                    font=FONT_BODY,
+                    font=self._font_body,
                     relief=tk.FLAT,
                     padx=6,
                     pady=1,
@@ -1689,7 +1856,7 @@ class Dashboard:
                     text=label,
                     bg=color if response != status_val else "#3a3a3a",
                     fg="#ffffff" if response != status_val else COLOR_WINDOW_BORDER,
-                    font=FONT_BODY,
+                    font=self._font_body,
                     relief=tk.FLAT,
                     padx=6,
                     pady=1,
@@ -1708,7 +1875,7 @@ class Dashboard:
             content_frame,
             bg=BG_OUTPUT,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=self._font_body,
             wrap=tk.WORD,
             padx=8,
             pady=8,
@@ -1988,7 +2155,9 @@ class Dashboard:
         header = tk.Frame(popup, bg=BG_WINDOW)
         header.pack(fill=tk.X, padx=PAD, pady=(PAD, 4))
 
-        month_label = tk.Label(header, bg=BG_WINDOW, fg=FG_TEXT, font=FONT_HEADING)
+        month_label = tk.Label(
+            header, bg=BG_WINDOW, fg=FG_TEXT, font=self._font_heading
+        )
         month_label.pack(side=tk.LEFT, expand=True)
 
         def _prev_month() -> None:
@@ -2013,7 +2182,7 @@ class Dashboard:
             command=_next_month,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=self._font_body,
             relief=tk.FLAT,
             padx=4,
         ).pack(side=tk.RIGHT)
@@ -2023,7 +2192,7 @@ class Dashboard:
             command=_prev_month,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=self._font_body,
             relief=tk.FLAT,
             padx=4,
         ).pack(side=tk.RIGHT)
@@ -2037,7 +2206,7 @@ class Dashboard:
                 text=day_name,
                 bg=BG_WINDOW,
                 fg=FG_DIM,
-                font=FONT_BODY,
+                font=self._font_body,
                 width=2,
                 anchor=tk.CENTER,
             ).pack(side=tk.LEFT, expand=True)
@@ -2090,7 +2259,7 @@ class Dashboard:
                         text=str(d.day),
                         bg=bg,
                         fg=fg,
-                        font=FONT_BODY,
+                        font=self._font_body,
                         relief=tk.FLAT,
                         width=2,
                         activebackground=COLOR_BUTTON_ACTIVE,
@@ -2277,7 +2446,11 @@ class Dashboard:
         self._all_events = events
         self._all_conflicts = conflicts
         self._all_changes = changes
-        self._missed_meetings = missed_meetings or []
+        from personal_assistant.utils import filter_dismissed_missed_meetings
+
+        self._missed_meetings = filter_dismissed_missed_meetings(
+            missed_meetings or [], self._dismissed_conflicts
+        )
         self._render_current_day()
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._status_var.set(f"Updated at {timestamp}")
@@ -2405,7 +2578,7 @@ class Dashboard:
                 y + 2,
                 text=f"{hour:02d}:00",
                 fill=COLOR_HOUR_TEXT,
-                font=FONT_BODY,
+                font=self._font_body,
                 anchor=tk.NE,
             )
 
@@ -2440,7 +2613,7 @@ class Dashboard:
                     now_y,
                     text=now_text,
                     fill=COLOR_NOW_LINE,
-                    font=FONT_BODY,
+                    font=self._font_body,
                     anchor=tk.NE,
                 )
 
@@ -2577,7 +2750,7 @@ class Dashboard:
                     y1 + text_pad,
                     text="\u26a0",
                     fill=COLOR_ALERT,
-                    font=FONT_BODY,
+                    font=self._font_body,
                     anchor=tk.NW,
                     tags=tag,
                 )
@@ -2588,7 +2761,7 @@ class Dashboard:
                     y1 + text_pad,
                     text="\u26a0",
                     fill=COLOR_WARNING,
-                    font=FONT_BODY,
+                    font=self._font_body,
                     anchor=tk.NW,
                     tags=tag,
                 )
@@ -2599,7 +2772,7 @@ class Dashboard:
                 y1 + text_pad,
                 text=label,
                 fill=event_text_color,
-                font=FONT_BODY,
+                font=self._font_body,
                 anchor=tk.NW,
                 tags=tag,
             )
@@ -2610,7 +2783,7 @@ class Dashboard:
                     x2 - 4,
                     y1 + text_pad,
                     text="\U0001f44c",
-                    font=FONT_BODY,
+                    font=self._font_body,
                     anchor=tk.NE,
                     tags=tag,
                 )
@@ -2622,7 +2795,7 @@ class Dashboard:
                 100,
                 text="No events",
                 fill=FG_DIM,
-                font=FONT_HEADING,
+                font=self._font_heading,
                 anchor=tk.CENTER,
             )
 

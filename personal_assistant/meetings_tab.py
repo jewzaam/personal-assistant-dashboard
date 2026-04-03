@@ -38,7 +38,7 @@ from personal_assistant.config import (
     COLOR_TAB_BG,
     FG_DIM,
     FG_TEXT,
-    FONT_BODY,
+    FONT_NAME_BODY,
     MAX_CONCURRENT_SUMMARIZATION,
     MENU_TIMEOUT_MS,
     PAD,
@@ -112,7 +112,7 @@ class MeetingsTab:
             textvariable=self._search_var,
             bg=BG_OUTPUT,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
             insertbackground=FG_TEXT,
             width=20,
         )
@@ -125,9 +125,9 @@ class MeetingsTab:
         def _make_filter(
             parent: tk.Frame, label: str, values: list[str]
         ) -> tk.StringVar:
-            tk.Label(parent, text=label, bg=BG_WINDOW, fg=FG_DIM, font=FONT_BODY).pack(
-                side=tk.LEFT, padx=(0, 2)
-            )
+            tk.Label(
+                parent, text=label, bg=BG_WINDOW, fg=FG_DIM, font=FONT_NAME_BODY
+            ).pack(side=tk.LEFT, padx=(0, 2))
             var = tk.StringVar(value=values[0])
             menu = tk.OptionMenu(
                 parent,
@@ -138,7 +138,7 @@ class MeetingsTab:
             menu.configure(
                 bg=COLOR_BUTTON,
                 fg=FG_TEXT,
-                font=FONT_BODY,
+                font=FONT_NAME_BODY,
                 activebackground=COLOR_BUTTON_ACTIVE,
                 highlightthickness=0,
                 relief=tk.FLAT,
@@ -163,7 +163,7 @@ class MeetingsTab:
             textvariable=self._count_var,
             bg=BG_WINDOW,
             fg=FG_DIM,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
         ).pack(side=tk.LEFT, padx=(0, PAD))
 
         tk.Button(
@@ -172,7 +172,7 @@ class MeetingsTab:
             command=self.refresh,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
@@ -189,14 +189,14 @@ class MeetingsTab:
             background=BG_OUTPUT,
             foreground=FG_TEXT,
             fieldbackground=BG_OUTPUT,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
             rowheight=24,
         )
         style.configure(
             "Meetings.Treeview.Heading",
             background=COLOR_TAB_BG,
             foreground=FG_TEXT,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
         )
 
         columns = ("date", "name", "concluded", "summarized", "sources")
@@ -654,7 +654,7 @@ class MeetingsTab:
             popup,
             bg=BG_OUTPUT,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
             wrap=tk.WORD,
             padx=PAD,
             pady=PAD,

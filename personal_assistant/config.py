@@ -10,9 +10,20 @@ if _plat.system() == "Windows":
 else:
     FONT_FAMILY = "Noto Sans"
 
-FONT_BODY = (FONT_FAMILY, -13)
-FONT_HEADING = (FONT_FAMILY, -15, "bold")
-FONT_INPUT = (FONT_FAMILY, -14)
+# Base pixel sizes (negative = DPI-independent pixels)
+FONT_SIZE_BODY = -13
+FONT_SIZE_HEADING = -15
+FONT_SIZE_INPUT = -14
+
+# Named font registration keys (created at runtime by Dashboard._build)
+FONT_NAME_BODY = "app_body"
+FONT_NAME_HEADING = "app_heading"
+FONT_NAME_INPUT = "app_input"
+
+# Legacy tuples — used as fallback before named fonts are created
+FONT_BODY = (FONT_FAMILY, FONT_SIZE_BODY)
+FONT_HEADING = (FONT_FAMILY, FONT_SIZE_HEADING, "bold")
+FONT_INPUT = (FONT_FAMILY, FONT_SIZE_INPUT)
 
 # Colors — dark theme base
 BG_WINDOW = "#1e1e1e"
