@@ -47,6 +47,14 @@ def collect_events(
     time_min = (start_of_local_today - timedelta(days=days_back)).isoformat()
     time_max = (now + timedelta(days=days_ahead)).isoformat()
 
+    logger.debug(
+        "Querying %s: time_min=%s time_max=%s days_back=%d days_ahead=%d",
+        calendar_id,
+        time_min,
+        time_max,
+        days_back,
+        days_ahead,
+    )
     raw_events = _fetch_events(calendar_id, time_min=time_min, time_max=time_max)
     normalized = [_normalize_event(e) for e in raw_events]
 
