@@ -18,8 +18,8 @@ from personal_assistant.config import (
     COLOR_BUTTON_ACTIVE,
     FG_DIM,
     FG_TEXT,
-    FONT_BODY,
-    FONT_INPUT,
+    FONT_NAME_BODY,
+    FONT_NAME_INPUT,
     PAD,
 )
 
@@ -59,7 +59,7 @@ class SettingsTab:
             text="sources.md",
             bg=BG_WINDOW,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
         ).pack(side=tk.LEFT)
 
         self._status_var = tk.StringVar(value="")
@@ -68,7 +68,7 @@ class SettingsTab:
             textvariable=self._status_var,
             bg=BG_WINDOW,
             fg=FG_DIM,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
         ).pack(side=tk.LEFT, padx=(PAD, 0))
 
         tk.Button(
@@ -77,7 +77,7 @@ class SettingsTab:
             command=self._save,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
@@ -92,7 +92,7 @@ class SettingsTab:
             editor_frame,
             bg=BG_INPUT,
             fg=FG_TEXT,
-            font=FONT_INPUT,
+            font=FONT_NAME_INPUT,
             wrap=tk.WORD,
             padx=PAD,
             pady=PAD,
@@ -120,7 +120,7 @@ class SettingsTab:
             text="Git Checkpoint",
             bg=BG_WINDOW,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
         ).pack(side=tk.LEFT)
 
         self._checkpoint_status_var = tk.StringVar(value="")
@@ -129,7 +129,7 @@ class SettingsTab:
             textvariable=self._checkpoint_status_var,
             bg=BG_WINDOW,
             fg=FG_DIM,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
         ).pack(side=tk.LEFT, padx=(PAD, 0))
 
         tk.Button(
@@ -138,7 +138,7 @@ class SettingsTab:
             command=self._checkpoint,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
@@ -149,7 +149,7 @@ class SettingsTab:
             checkpoint_frame,
             bg=BG_INPUT,
             fg=FG_TEXT,
-            font=FONT_INPUT,
+            font=FONT_NAME_INPUT,
             insertbackground=FG_TEXT,
             highlightthickness=0,
             borderwidth=1,

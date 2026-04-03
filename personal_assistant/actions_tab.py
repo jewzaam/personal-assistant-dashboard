@@ -20,7 +20,7 @@ from personal_assistant.config import (
     COLOR_HTML_FALLBACK_FG,
     FG_DIM,
     FG_TEXT,
-    FONT_BODY,
+    FONT_NAME_BODY,
     PAD,
 )
 
@@ -47,7 +47,7 @@ class ActionsTab:
             textvariable=self._status_var,
             bg=BG_WINDOW,
             fg=FG_DIM,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
         ).pack(side=tk.LEFT)
 
         tk.Button(
@@ -56,7 +56,7 @@ class ActionsTab:
             command=self.refresh,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
@@ -81,7 +81,7 @@ class ActionsTab:
                 self._parent,
                 bg=BG_OUTPUT,
                 fg=FG_TEXT,
-                font=FONT_BODY,
+                font=FONT_NAME_BODY,
                 wrap=tk.WORD,
                 state=tk.DISABLED,
                 highlightthickness=0,
@@ -98,6 +98,12 @@ class ActionsTab:
         """Update the status label (called by AssistantTab)."""
         self._status_var.set(text)
 
+    def set_font_scale(self, scale: float) -> None:
+        """Apply font scaling to the HTML frame via CSS."""
+        self._font_scale_css = f"body {{ font-size: {scale * 100:.0f}%; }}"
+        if self._html_frame is not None:
+            self._html_frame.add_css(self._font_scale_css)
+
     def refresh(self) -> None:
         """Reload the HTML file."""
         if self._html_frame is None:
@@ -106,6 +112,8 @@ class ActionsTab:
             content = ACTIONS_HTML.read_text(encoding="utf-8")
             self._html_frame.load_html(content)
             self._html_frame.add_css(SPACING_CSS)
+            if hasattr(self, "_font_scale_css"):
+                self._html_frame.add_css(self._font_scale_css)
         else:
             self._html_frame.load_html(
                 f"<html><body style='background:{COLOR_HTML_FALLBACK_BG};"

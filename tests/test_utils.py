@@ -8,7 +8,9 @@ import json
 from personal_assistant.utils import (
     atomic_write_json,
     atomic_write_text,
+    filter_dismissed_missed_meetings,
     format_event_time,
+    get_meeting_url,
 )
 
 # -- format_event_time --------------------------------------------------------
@@ -87,3 +89,106 @@ def test_atomic_write_text_overwrites_existing(tmp_path):
     atomic_write_text(path, "old")
     atomic_write_text(path, "new")
     assert path.read_text() == "new"
+
+
+# -- get_meeting_url ----------------------------------------------------------
+
+
+def test_get_meeting_url_hangout_link():
+    event = {"hangout_link": "https://meet.google.com/abc-defg-hij"}
+    assert get_meeting_url(event) == "https://meet.google.com/abc-defg-hij"
+
+
+def test_get_meeting_url_hangout_preferred_over_description():
+    event = {
+        "hangout_link": "https://meet.google.com/aaa-bbbb-ccc",
+        "description": "Join: https://zoom.us/j/123456",
+    }
+    assert get_meeting_url(event) == "https://meet.google.com/aaa-bbbb-ccc"
+
+
+def test_get_meeting_url_meet_in_location():
+    event = {"location": "https://meet.google.com/xyz-abcd-efg"}
+    assert get_meeting_url(event) == "https://meet.google.com/xyz-abcd-efg"
+
+
+def test_get_meeting_url_teams_in_description():
+    event = {
+        "description": "Join here: https://teams.microsoft.com/l/meetup-join/abc123"
+    }
+    assert get_meeting_url(event) == "https://teams.microsoft.com/l/meetup-join/abc123"
+
+
+def test_get_meeting_url_zoom_in_description():
+    event = {"description": "Zoom: https://company.zoom.us/j/987654321?pwd=abc"}
+    assert get_meeting_url(event) == "https://company.zoom.us/j/987654321?pwd=abc"
+
+
+def test_get_meeting_url_location_checked_before_description():
+    event = {
+        "location": "https://meet.google.com/loc-meet-url",
+        "description": "https://zoom.us/j/111111",
+    }
+    assert get_meeting_url(event) == "https://meet.google.com/loc-meet-url"
+
+
+def test_get_meeting_url_no_link():
+    event = {"summary": "Team standup", "location": "Room 42"}
+    assert get_meeting_url(event) is None
+
+
+def test_get_meeting_url_empty_event():
+    assert get_meeting_url({}) is None
+
+
+def test_get_meeting_url_none_hangout():
+    event = {"hangout_link": None, "location": "https://meet.google.com/aaa-bbb-ccc"}
+    assert get_meeting_url(event) == "https://meet.google.com/aaa-bbb-ccc"
+
+
+# -- filter_dismissed_missed_meetings -----------------------------------------
+
+
+def test_filter_dismissed_removes_matching():
+    meetings = [
+        {"id": "evt1", "summary": "Meeting 1"},
+        {"id": "evt2", "summary": "Meeting 2"},
+        {"id": "evt3", "summary": "Meeting 3"},
+    ]
+    dismissed = {"evt2"}
+    result = filter_dismissed_missed_meetings(meetings, dismissed)
+    assert len(result) == 2
+    assert all(e["id"] != "evt2" for e in result)
+
+
+def test_filter_dismissed_empty_dismissed_set():
+    meetings = [{"id": "evt1", "summary": "Meeting 1"}]
+    result = filter_dismissed_missed_meetings(meetings, set())
+    assert result is meetings  # same object, no copy
+
+
+def test_filter_dismissed_empty_meetings():
+    result = filter_dismissed_missed_meetings([], {"evt1"})
+    assert result == []
+
+
+def test_filter_dismissed_no_overlap():
+    meetings = [{"id": "evt1"}, {"id": "evt2"}]
+    dismissed = {"evt99"}
+    result = filter_dismissed_missed_meetings(meetings, dismissed)
+    assert len(result) == 2
+
+
+def test_filter_dismissed_all_dismissed():
+    meetings = [{"id": "evt1"}, {"id": "evt2"}]
+    dismissed = {"evt1", "evt2"}
+    result = filter_dismissed_missed_meetings(meetings, dismissed)
+    assert result == []
+
+
+def test_filter_dismissed_missing_id_field():
+    meetings = [{"summary": "No ID event"}, {"id": "evt1"}]
+    dismissed = {"evt1"}
+    result = filter_dismissed_missed_meetings(meetings, dismissed)
+    assert len(result) == 1
+    assert result[0]["summary"] == "No ID event"

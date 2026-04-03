@@ -13,7 +13,6 @@ from typing import Any
 from personal_assistant.models import ConsoleLogCallback, NotifyTabCallback
 from personal_assistant.config import (
     ASSISTANT_DIR,
-    BG_INPUT,
     BG_OUTPUT,
     BG_WINDOW,
     BORDER_COLOR,
@@ -26,8 +25,7 @@ from personal_assistant.config import (
     FG_ACCENT,
     FG_DIM,
     FG_TEXT,
-    FONT_BODY,
-    FONT_INPUT,
+    FONT_NAME_BODY,
     PAD,
 )
 
@@ -51,6 +49,7 @@ class ChatTab:
         self._root = root
         self._console_log = console_log
         self._notify_tab = notify_tab
+        self._on_external_send: Any = None
         self._client: Any = None
         self._streaming = False
         self._started = False
@@ -79,7 +78,7 @@ class ChatTab:
             msg_frame,
             bg=BG_OUTPUT,
             fg=FG_TEXT,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
             wrap=tk.WORD,
             state=tk.DISABLED,
             borderwidth=0,
@@ -116,80 +115,24 @@ class ChatTab:
             textvariable=self._status_var,
             bg=BG_WINDOW,
             fg=FG_DIM,
-            font=FONT_BODY,
+            font=FONT_NAME_BODY,
             anchor=tk.W,
         )
         self._status_label.pack(fill=tk.X, padx=PAD, pady=(0, 0))
 
-        # Input bar
-        input_bar = tk.Frame(self._parent, bg=BG_WINDOW)
-        input_bar.pack(fill=tk.X, padx=PAD, pady=(0, PAD))
+        # Send/Stop button — updated externally by _send_now / _on_done
+        self._send_btn: tk.Button | None = None
 
-        self._input = tk.Text(
-            input_bar,
-            bg=BG_INPUT,
-            fg=FG_TEXT,
-            font=FONT_INPUT,
-            wrap=tk.WORD,
-            height=3,
-            insertbackground=FG_TEXT,
-            relief=tk.FLAT,
-            borderwidth=0,
-            highlightthickness=0,
-            padx=PAD,
-            pady=PAD,
-        )
-        self._input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, PAD))
-        self._input.bind("<Return>", self._on_enter)
-        self._input.bind("<Shift-Return>", lambda e: None)
-        self._input.bind("<Control-BackSpace>", self._on_ctrl_backspace)
+    # -- button control ------------------------------------------------------
 
-        btn_frame = tk.Frame(input_bar, bg=BG_WINDOW)
-        btn_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(PAD, 0))
-
-        self._send_btn = tk.Button(
-            btn_frame,
-            text="Send",
-            command=self._send,
-            bg=COLOR_BUTTON,
-            fg=FG_TEXT,
-            font=FONT_BODY,
-            relief=tk.FLAT,
-            activebackground=COLOR_BUTTON_ACTIVE,
-            cursor="hand2",
-            padx=8,
-        )
-        self._send_btn.pack(side=tk.TOP, pady=(0, 4))
-
-        tk.Button(
-            btn_frame,
-            text="Clear",
-            command=self._clear,
-            bg=COLOR_BUTTON,
-            fg=FG_TEXT,
-            font=FONT_BODY,
-            relief=tk.FLAT,
-            activebackground=COLOR_BUTTON_ACTIVE,
-            cursor="hand2",
-            padx=8,
-        ).pack(side=tk.TOP)
-
-    # -- key bindings --------------------------------------------------------
+    def set_send_button(self, btn: tk.Button) -> None:
+        """Attach an external Send/Stop button for this chat session."""
+        self._send_btn = btn
 
     def _stop(self) -> None:
         """Interrupt the current response."""
         if self._client and self._streaming:
             self._client.interrupt()
-
-    def _on_enter(self, event: tk.Event) -> str:  # type: ignore[type-arg]
-        """Enter sends the message."""
-        self._send()
-        return "break"
-
-    def _on_ctrl_backspace(self, event: tk.Event) -> str:  # type: ignore[type-arg]
-        """Delete the word before the cursor."""
-        self._input.delete("insert -1c wordstart", tk.INSERT)
-        return "break"
 
     # -- send / receive ------------------------------------------------------
 
@@ -204,31 +147,16 @@ class ChatTab:
         self._append_user(text)
         self._send_now(text)
 
-    def _send(self) -> None:
-        """Send the current input text to Claude, or queue if busy."""
-        text = self._input.get("1.0", tk.END).strip()
-        if not text:
-            return
-
-        self._input.delete("1.0", tk.END)
-
-        if self._streaming:
-            self._pending_messages.append(text)
-            self._status_text = f"Queued ({len(self._pending_messages)})"
-            return
-
-        self._append_user(text)
-        self._send_now(text)
-
     def _send_now(self, text: str) -> None:
         """Send a message immediately."""
         self._streaming = True
-        self._send_btn.config(
-            text="Stop",
-            command=self._stop,
-            bg=COLOR_STOP_BUTTON,
-            activebackground=COLOR_STOP_BUTTON_ACTIVE,
-        )
+        if self._send_btn:
+            self._send_btn.config(
+                text="Stop",
+                command=self._stop,
+                bg=COLOR_STOP_BUTTON,
+                activebackground=COLOR_STOP_BUTTON_ACTIVE,
+            )
         self._assistant_active = False
 
         self._send_time = time.monotonic()
@@ -313,12 +241,7 @@ class ChatTab:
         """Response complete."""
         self._streaming = False
         self._assistant_active = False
-        self._send_btn.config(
-            text="Send",
-            command=self._send,
-            bg=COLOR_BUTTON,
-            activebackground=COLOR_BUTTON_ACTIVE,
-        )
+        self._reset_send_btn()
         self._stop_status_timer()
         if self._current_response:
             self._log_assistant("".join(self._current_response))
@@ -340,21 +263,30 @@ class ChatTab:
             return
 
         self._status_var.set("Ready")
-        self._input.focus_set()
         if self._notify_tab:
             self._notify_tab("Chat")
+
+    def _reset_send_btn(self) -> None:
+        """Restore the Send button to its default state."""
+        if self._send_btn:
+            self._send_btn.config(
+                text="Send",
+                command=self._on_send_click,
+                bg=COLOR_BUTTON,
+                activebackground=COLOR_BUTTON_ACTIVE,
+            )
+
+    def _on_send_click(self) -> None:
+        """Called by the external Send button — delegates to Dashboard."""
+        if self._on_external_send:
+            self._on_external_send()
 
     def _on_error(self, error: str) -> None:
         """Display error inline and re-enable input."""
         self._streaming = False
         self._assistant_active = False
         self._current_response.clear()
-        self._send_btn.config(
-            text="Send",
-            command=self._send,
-            bg=COLOR_BUTTON,
-            activebackground=COLOR_BUTTON_ACTIVE,
-        )
+        self._reset_send_btn()
         self._stop_status_timer()
         elapsed = time.monotonic() - self._send_time
         duration = self._format_duration(elapsed)
@@ -368,7 +300,6 @@ class ChatTab:
             self._messages.see(tk.END)
         except tk.TclError:
             pass
-        self._input.focus_set()
         self._pending_messages.clear()
         if self._console_log:
             self._console_log(f"Chat error: {error}", "error", "", "")
@@ -456,7 +387,7 @@ class ChatTab:
 
     def refresh(self) -> None:
         """Called when the tab is activated."""
-        self._input.focus_set()
+        pass
 
     def on_destroy(self) -> None:
         """Called during dashboard shutdown to clean up resources."""
