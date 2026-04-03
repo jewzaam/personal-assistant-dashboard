@@ -259,6 +259,6 @@ def test_stop_when_not_started_is_noop():
 # -- system prompt ------------------------------------------------------------
 
 
-def test_system_prompt_mentions_limitations():
-    assert "cannot" in SYSTEM_PROMPT.lower()
-    assert "do not guess" in SYSTEM_PROMPT.lower()
+def test_system_prompt_requires_claude_md():
+    assert "claude.md" in SYSTEM_PROMPT.lower()
+    assert "must" in SYSTEM_PROMPT.lower()

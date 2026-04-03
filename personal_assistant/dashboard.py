@@ -214,7 +214,20 @@ class Dashboard:
         self._notebook = ttk.Notebook(main, style="Dark.TNotebook")
         self._notebook.pack(fill=tk.BOTH, expand=True)
 
-        # Assistant tab (default — first tab)
+        # Chat tab (default — first tab)
+        chat_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(chat_frame, text="Chat")
+
+        from personal_assistant.chat_tab import ChatTab
+
+        self._chat_tab = ChatTab(
+            chat_frame,
+            self._root,
+            console_log=self.log_console,
+            notify_tab=self._notify_tab,
+        )
+
+        # Assistant tab
         assistant_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(assistant_frame, text="Assistant")
 
@@ -233,19 +246,7 @@ class Dashboard:
             self._root,
             on_actions_refresh=self._actions_tab.refresh,
             on_actions_status=self._actions_tab.set_status,
-            console_log=self.log_console,
-            notify_tab=self._notify_tab,
-        )
-
-        # Chat tab
-        chat_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
-        self._notebook.add(chat_frame, text="Chat")
-
-        from personal_assistant.chat_tab import ChatTab
-
-        self._chat_tab = ChatTab(
-            chat_frame,
-            self._root,
+            on_chat_send=self._chat_tab.send_message,
             console_log=self.log_console,
             notify_tab=self._notify_tab,
         )

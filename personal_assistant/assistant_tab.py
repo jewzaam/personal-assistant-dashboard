@@ -34,7 +34,6 @@ from personal_assistant.config import (
     FILE_WATCH_INTERVAL_MS,
     FONT_BODY,
     PAD,
-    REFRESH_COMMAND,
 )
 from personal_assistant.state_repo import DEFAULT_STATE_PATH
 
@@ -109,6 +108,7 @@ class AssistantTab:
         *,
         on_actions_refresh: Any = None,
         on_actions_status: Any = None,
+        on_chat_send: Any = None,
         console_log: ConsoleLogCallback | None = None,
         notify_tab: NotifyTabCallback | None = None,
     ) -> None:
@@ -116,6 +116,7 @@ class AssistantTab:
         self._root = root
         self._on_actions_refresh = on_actions_refresh
         self._on_actions_status = on_actions_status
+        self._on_chat_send = on_chat_send
         self._console_log = console_log
         self._notify_tab = notify_tab
         self._running = False
@@ -359,37 +360,12 @@ class AssistantTab:
     # --- Refresh ---
 
     def _on_refresh(self) -> None:
-        """Launch the refresh command as a detached background process."""
-        if self._running:
-            return
-        self._running = True
-        self._refresh_started = time.time()
-        self._refresh_btn.configure(state="disabled")
-        self._status_var.set("Refreshing...")
-
-        # Git commit before refresh (quick, synchronous)
-        self._git_commit()
-
-        # Launch detached process
-        try:
-            proc = subprocess.Popen(
-                REFRESH_COMMAND,
-                cwd=str(ASSISTANT_DIR),
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            self._refresh_pid = proc.pid
-            self._save_pid(proc.pid)
-            self._refresh_btn.configure(text=f"PID: {proc.pid}")
-            self._log("[Assistant] refresh started (PID %d)" % proc.pid, "progress")
-        except Exception as exc:
-            logger.exception("Failed to launch refresh process")
-            self._log(f"[Assistant] refresh launch failed: {exc}", "error")
-            self._running = False
-            self._refresh_btn.configure(state="normal", text="Refresh")
+        """Send /personal-assistant to the Chat tab."""
+        if self._on_chat_send:
+            self._on_chat_send("/personal-assistant")
+            self._status_var.set("Sent to Chat")
+        else:
+            self._status_var.set("Chat not available")
 
     def _git_commit(self) -> None:
         """Stage and commit changes in the assistant directory."""

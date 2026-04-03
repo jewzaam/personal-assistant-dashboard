@@ -193,6 +193,17 @@ class ChatTab:
 
     # -- send / receive ------------------------------------------------------
 
+    def send_message(self, text: str) -> None:
+        """Public API: send a message as if the user typed it."""
+        if not text:
+            return
+        if self._streaming:
+            self._pending_messages.append(text)
+            self._status_text = f"Queued ({len(self._pending_messages)})"
+            return
+        self._append_user(text)
+        self._send_now(text)
+
     def _send(self) -> None:
         """Send the current input text to Claude, or queue if busy."""
         text = self._input.get("1.0", tk.END).strip()
@@ -200,13 +211,13 @@ class ChatTab:
             return
 
         self._input.delete("1.0", tk.END)
-        self._append_user(text)
 
         if self._streaming:
             self._pending_messages.append(text)
             self._status_text = f"Queued ({len(self._pending_messages)})"
             return
 
+        self._append_user(text)
         self._send_now(text)
 
     def _send_now(self, text: str) -> None:
@@ -314,7 +325,6 @@ class ChatTab:
             self._current_response.clear()
         elapsed = time.monotonic() - self._send_time
         duration = self._format_duration(elapsed)
-        self._status_var.set("Ready")
         try:
             self._messages.config(state=tk.NORMAL)
             self._messages.insert(tk.END, f"\n[success] {duration}\n\n", "thinking_msg")
@@ -322,13 +332,17 @@ class ChatTab:
             self._messages.see(tk.END)
         except tk.TclError:
             pass
-        self._input.focus_set()
-        if self._notify_tab:
-            self._notify_tab("Chat")
 
         if self._pending_messages:
             next_msg = self._pending_messages.pop(0)
+            self._append_user(next_msg)
             self._send_now(next_msg)
+            return
+
+        self._status_var.set("Ready")
+        self._input.focus_set()
+        if self._notify_tab:
+            self._notify_tab("Chat")
 
     def _on_error(self, error: str) -> None:
         """Display error inline and re-enable input."""
