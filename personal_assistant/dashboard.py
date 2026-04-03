@@ -330,6 +330,20 @@ class Dashboard:
         self._console_text.configure(yscrollcommand=console_scroll.set)
         self._console_text.pack(fill=tk.BOTH, expand=True)
 
+        # Settings tab — sources.md editor and git checkpoint
+        settings_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(settings_frame, text="\u2699")
+
+        from personal_assistant.settings_tab import SettingsTab
+
+        self._settings_tab = SettingsTab(
+            settings_frame,
+            self._root,
+            console_log=self.log_console,
+            notify_tab_persistent=self._notify_tab_persistent,
+            clear_persistent_bell=self._clear_persistent_bell,
+        )
+
         # About tab — dummy tab selected during shade so all real tabs
         # can show notification dots
         about_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
@@ -1163,6 +1177,8 @@ class Dashboard:
             self._meetings_tab.on_destroy()
         if hasattr(self, "_chat_tab"):
             self._chat_tab.on_destroy()
+        if hasattr(self, "_settings_tab"):
+            self._settings_tab.on_destroy()
         if restart:
             import os
             import sys
