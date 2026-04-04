@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from personal_assistant.models import CalendarEvent
+from personal_assistant_dashboard.models import CalendarEvent
 
 
 def format_event_time(time_str: str) -> str:

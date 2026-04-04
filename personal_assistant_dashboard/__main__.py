@@ -14,10 +14,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from personal_assistant import state_repo, config_manager
-from personal_assistant.collectors import calendar_collector
-from personal_assistant.analyzers import calendar_analyzer
-from personal_assistant.config import SCOPE_CHECK_DELAY_MS
+from personal_assistant_dashboard import state_repo, config_manager
+from personal_assistant_dashboard.collectors import calendar_collector
+from personal_assistant_dashboard.analyzers import calendar_analyzer
+from personal_assistant_dashboard.config import SCOPE_CHECK_DELAY_MS
 
 
 def _add_repo_path_arg(parser: argparse.ArgumentParser) -> None:
@@ -126,7 +126,7 @@ def _cmd_gui(args: argparse.Namespace) -> None:
             pass
 
     import tkinter as tk
-    from personal_assistant.dashboard import Dashboard
+    from personal_assistant_dashboard.dashboard import Dashboard
 
     state_path = getattr(args, "state_path", state_repo.DEFAULT_STATE_PATH)
 
@@ -264,7 +264,7 @@ def main() -> None:
 
     # Route uncaught exceptions to log file
     if log_file:
-        _logger = logging.getLogger("personal_assistant")
+        _logger = logging.getLogger("personal_assistant_dashboard")
 
         def _excepthook(
             exc_type: type[BaseException],

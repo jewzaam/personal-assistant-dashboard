@@ -13,10 +13,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from personal_assistant.config import GWS_BINARY
-from personal_assistant.state_repo import DEFAULT_STATE_PATH
-from personal_assistant.models import CalendarEvent
-from personal_assistant.utils import atomic_write_json
+from personal_assistant_dashboard.config import GWS_BINARY
+from personal_assistant_dashboard.state_repo import DEFAULT_STATE_PATH
+from personal_assistant_dashboard.models import CalendarEvent
+from personal_assistant_dashboard.utils import atomic_write_json
 
 logger = logging.getLogger(__name__)
 

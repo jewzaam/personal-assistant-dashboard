@@ -4,17 +4,17 @@
 import subprocess
 from unittest.mock import patch
 
-from personal_assistant.claude_client import send_prompt
+from personal_assistant_dashboard.claude_client import send_prompt
 
 
 def test_send_prompt_returns_stdout():
-    with patch("personal_assistant.claude_client.subprocess.run") as mock_run:
+    with patch("personal_assistant_dashboard.claude_client.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = "Hello from Claude\n"
         mock_run.return_value.stderr = ""
 
         with patch(
-            "personal_assistant.claude_client.find_claude_binary",
+            "personal_assistant_dashboard.claude_client.find_claude_binary",
             return_value="/usr/bin/claude",
         ):
             result = send_prompt("test prompt")
@@ -23,13 +23,13 @@ def test_send_prompt_returns_stdout():
 
 
 def test_send_prompt_returns_error_on_nonzero_exit():
-    with patch("personal_assistant.claude_client.subprocess.run") as mock_run:
+    with patch("personal_assistant_dashboard.claude_client.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 1
         mock_run.return_value.stdout = ""
         mock_run.return_value.stderr = "something broke"
 
         with patch(
-            "personal_assistant.claude_client.find_claude_binary",
+            "personal_assistant_dashboard.claude_client.find_claude_binary",
             return_value="/usr/bin/claude",
         ):
             result = send_prompt("test prompt")
@@ -39,7 +39,8 @@ def test_send_prompt_returns_error_on_nonzero_exit():
 
 def test_send_prompt_binary_not_found():
     with patch(
-        "personal_assistant.claude_client.find_claude_binary", return_value=None
+        "personal_assistant_dashboard.claude_client.find_claude_binary",
+        return_value=None,
     ):
         result = send_prompt("test prompt")
 
@@ -47,13 +48,13 @@ def test_send_prompt_binary_not_found():
 
 
 def test_send_prompt_continue_flag():
-    with patch("personal_assistant.claude_client.subprocess.run") as mock_run:
+    with patch("personal_assistant_dashboard.claude_client.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = "response"
         mock_run.return_value.stderr = ""
 
         with patch(
-            "personal_assistant.claude_client.find_claude_binary",
+            "personal_assistant_dashboard.claude_client.find_claude_binary",
             return_value="/usr/bin/claude",
         ):
             send_prompt("test", continue_conversation=True)
@@ -63,11 +64,11 @@ def test_send_prompt_continue_flag():
 
 
 def test_send_prompt_timeout_returns_error():
-    with patch("personal_assistant.claude_client.subprocess.run") as mock_run:
+    with patch("personal_assistant_dashboard.claude_client.subprocess.run") as mock_run:
         mock_run.side_effect = subprocess.TimeoutExpired(cmd=["claude"], timeout=30.0)
 
         with patch(
-            "personal_assistant.claude_client.find_claude_binary",
+            "personal_assistant_dashboard.claude_client.find_claude_binary",
             return_value="/usr/bin/claude",
         ):
             result = send_prompt("test prompt")

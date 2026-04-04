@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_assistant.config_manager import (
+from personal_assistant_dashboard.config_manager import (
     add_calendar,
     add_github_repo,
     add_jira_tracking,

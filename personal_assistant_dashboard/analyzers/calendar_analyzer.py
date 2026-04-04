@@ -12,11 +12,11 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from personal_assistant.state_repo import (
+from personal_assistant_dashboard.state_repo import (
     DEFAULT_STATE_PATH,
     get_file_at_last_commit,
 )
-from personal_assistant.models import CalendarEvent
+from personal_assistant_dashboard.models import CalendarEvent
 
 logger = logging.getLogger(__name__)
 

@@ -17,8 +17,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from personal_assistant.models import CalendarEvent
-from personal_assistant.config import (
+from personal_assistant_dashboard.models import CalendarEvent
+from personal_assistant_dashboard.config import (
     AUTO_SHADE_POLL_MS,
     BG_OUTPUT,
     BG_WINDOW,
@@ -78,8 +78,8 @@ from personal_assistant.config import (
     SHADED_HEIGHT,
     TOOLTIP_DELAY_MS,
 )
-from personal_assistant.state_repo import DEFAULT_STATE_PATH
-from personal_assistant.utils import atomic_write_json, format_event_time
+from personal_assistant_dashboard.state_repo import DEFAULT_STATE_PATH
+from personal_assistant_dashboard.utils import atomic_write_json, format_event_time
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +238,7 @@ class Dashboard:
         chat_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(chat_frame, text="Chat")
 
-        from personal_assistant.chat_tab import ChatTab
+        from personal_assistant_dashboard.chat_tab import ChatTab
 
         self._chat_tab = ChatTab(
             chat_frame,
@@ -251,7 +251,7 @@ class Dashboard:
         pages_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(pages_frame, text="Pages")
 
-        from personal_assistant.pages_tab import PagesTab
+        from personal_assistant_dashboard.pages_tab import PagesTab
 
         self._pages_tab = PagesTab(
             pages_frame,
@@ -294,7 +294,7 @@ class Dashboard:
         settings_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(settings_frame, text="\u2699")
 
-        from personal_assistant.settings_tab import SettingsTab
+        from personal_assistant_dashboard.settings_tab import SettingsTab
 
         self._settings_tab = SettingsTab(
             settings_frame,
@@ -944,7 +944,7 @@ class Dashboard:
         menu.add_command(label=auto_shade_label, command=self._toggle_auto_shade)
 
         # Run on Startup toggle
-        from personal_assistant.startup import get_run_on_startup
+        from personal_assistant_dashboard.startup import get_run_on_startup
 
         is_autostart = get_run_on_startup()
         startup_label = "\u2713 Run on Startup" if is_autostart else "Run on Startup"
@@ -1039,7 +1039,7 @@ class Dashboard:
 
     def _toggle_run_on_startup(self) -> None:
         """Toggle XDG autostart .desktop file."""
-        from personal_assistant.startup import (
+        from personal_assistant_dashboard.startup import (
             get_run_on_startup,
             set_run_on_startup,
         )
@@ -1250,7 +1250,7 @@ class Dashboard:
         thread.start()
 
     def _do_check_scopes(self) -> None:
-        from personal_assistant.gws_auth import check_scopes
+        from personal_assistant_dashboard.gws_auth import check_scopes
 
         status = check_scopes()
         if status.all_required_met:
@@ -1268,7 +1268,7 @@ class Dashboard:
         if not status:
             return
 
-        from personal_assistant.gws_auth import check_scopes
+        from personal_assistant_dashboard.gws_auth import check_scopes
 
         if status is None:
             status = check_scopes()
@@ -1547,7 +1547,7 @@ class Dashboard:
 
     def _get_meeting_url(self, event: CalendarEvent) -> str | None:
         """Extract a video conference URL from the event."""
-        from personal_assistant.utils import get_meeting_url
+        from personal_assistant_dashboard.utils import get_meeting_url
 
         return get_meeting_url(event)
 
@@ -2132,10 +2132,10 @@ class Dashboard:
     def _do_extend_range(self) -> None:
         """Background: re-collect with extended range."""
         try:
-            from personal_assistant.collectors.calendar_collector import (
+            from personal_assistant_dashboard.collectors.calendar_collector import (
                 collect_all_calendars,
             )
-            from personal_assistant.config_manager import load_config
+            from personal_assistant_dashboard.config_manager import load_config
 
             today = date.today()
             days_ahead = max((self._current_date - today).days + 7, 14)
@@ -2196,14 +2196,14 @@ class Dashboard:
 
     def _do_refresh(self) -> None:
         try:
-            from personal_assistant.collectors.calendar_collector import (
+            from personal_assistant_dashboard.collectors.calendar_collector import (
                 collect_all_calendars,
             )
-            from personal_assistant.analyzers.calendar_analyzer import (
+            from personal_assistant_dashboard.analyzers.calendar_analyzer import (
                 analyze_all_calendars,
             )
-            from personal_assistant.config_manager import load_config
-            from personal_assistant.state_repo import init_repo
+            from personal_assistant_dashboard.config_manager import load_config
+            from personal_assistant_dashboard.state_repo import init_repo
 
             init_repo(path=self._state_path)
 
@@ -2275,7 +2275,7 @@ class Dashboard:
         self._all_events = events
         self._all_conflicts = conflicts
         self._all_changes = changes
-        from personal_assistant.utils import filter_dismissed_missed_meetings
+        from personal_assistant_dashboard.utils import filter_dismissed_missed_meetings
 
         self._missed_meetings = filter_dismissed_missed_meetings(
             missed_meetings or [], self._dismissed_conflicts

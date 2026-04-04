@@ -2,7 +2,7 @@
 
 .PHONY: check help install install-dev install-no-deps uninstall clean format format-check lint typecheck test test-verbose coverage mutation mutation-report
 
-PACKAGE_NAME ?= personal_assistant
+PACKAGE_NAME ?= personal_assistant_dashboard
 
 ifeq ($(OS),Windows_NT)
     VENV_DIR ?= .venv

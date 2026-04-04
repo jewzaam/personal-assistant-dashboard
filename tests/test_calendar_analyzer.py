@@ -4,7 +4,7 @@
 import json
 from pathlib import Path
 
-from personal_assistant.analyzers.calendar_analyzer import (
+from personal_assistant_dashboard.analyzers.calendar_analyzer import (
     CalendarAnalysis,
     CalendarChange,
     Conflict,
@@ -14,7 +14,7 @@ from personal_assistant.analyzers.calendar_analyzer import (
     _parse_event_time,
     _user_declined,
 )
-from personal_assistant.state_repo import commit_state
+from personal_assistant_dashboard.state_repo import commit_state
 from tests.conftest import FIXTURES_DIR
 
 

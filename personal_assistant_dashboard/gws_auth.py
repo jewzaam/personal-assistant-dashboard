@@ -8,7 +8,7 @@ import logging
 import subprocess
 from dataclasses import dataclass, field
 
-from personal_assistant.config import GWS_BINARY
+from personal_assistant_dashboard.config import GWS_BINARY
 
 logger = logging.getLogger(__name__)
 

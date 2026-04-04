@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from personal_assistant.state_repo import (
+from personal_assistant_dashboard.state_repo import (
     StateRepoError,
     commit_state,
     get_changes,

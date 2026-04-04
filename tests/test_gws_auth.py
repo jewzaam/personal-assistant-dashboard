@@ -5,7 +5,7 @@ import json
 import subprocess
 from unittest.mock import MagicMock, patch
 
-from personal_assistant.gws_auth import (
+from personal_assistant_dashboard.gws_auth import (
     REQUIRED_SCOPES,
     ScopeStatus,
     check_scopes,
@@ -32,7 +32,7 @@ def test_check_scopes_all_granted() -> None:
     all_scopes = list(REQUIRED_SCOPES.keys()) + [
         "https://www.googleapis.com/auth/drive.readonly",
     ]
-    with patch("personal_assistant.gws_auth.subprocess.run") as mock_run:
+    with patch("personal_assistant_dashboard.gws_auth.subprocess.run") as mock_run:
         mock_run.return_value = _mock_auth_status(all_scopes)
         status = check_scopes()
 
@@ -44,7 +44,7 @@ def test_check_scopes_all_granted() -> None:
 
 def test_check_scopes_missing_required() -> None:
     # Only grant readonly, missing calendar.events
-    with patch("personal_assistant.gws_auth.subprocess.run") as mock_run:
+    with patch("personal_assistant_dashboard.gws_auth.subprocess.run") as mock_run:
         mock_run.return_value = _mock_auth_status(
             ["https://www.googleapis.com/auth/calendar.readonly"]
         )
@@ -58,7 +58,7 @@ def test_check_scopes_missing_required() -> None:
 
 def test_check_scopes_binary_not_found() -> None:
     with patch(
-        "personal_assistant.gws_auth.subprocess.run",
+        "personal_assistant_dashboard.gws_auth.subprocess.run",
         side_effect=FileNotFoundError(),
     ):
         status = check_scopes()
@@ -68,7 +68,7 @@ def test_check_scopes_binary_not_found() -> None:
 
 
 def test_check_scopes_token_expired() -> None:
-    with patch("personal_assistant.gws_auth.subprocess.run") as mock_run:
+    with patch("personal_assistant_dashboard.gws_auth.subprocess.run") as mock_run:
         mock_run.return_value = _mock_auth_status([], token_valid=False)
         status = check_scopes()
 
@@ -77,7 +77,7 @@ def test_check_scopes_token_expired() -> None:
 
 
 def test_check_scopes_command_fails() -> None:
-    with patch("personal_assistant.gws_auth.subprocess.run") as mock_run:
+    with patch("personal_assistant_dashboard.gws_auth.subprocess.run") as mock_run:
         result = MagicMock()
         result.returncode = 1
         result.stdout = ""
@@ -90,7 +90,7 @@ def test_check_scopes_command_fails() -> None:
 
 
 def test_check_scopes_bad_json() -> None:
-    with patch("personal_assistant.gws_auth.subprocess.run") as mock_run:
+    with patch("personal_assistant_dashboard.gws_auth.subprocess.run") as mock_run:
         result = MagicMock()
         result.returncode = 0
         result.stdout = "not json"
@@ -129,7 +129,7 @@ def test_scope_status_summary_unavailable() -> None:
 
 
 def test_optional_scopes_tracked() -> None:
-    with patch("personal_assistant.gws_auth.subprocess.run") as mock_run:
+    with patch("personal_assistant_dashboard.gws_auth.subprocess.run") as mock_run:
         mock_run.return_value = _mock_auth_status(list(REQUIRED_SCOPES.keys()))
         status = check_scopes()
 
@@ -141,7 +141,7 @@ def test_optional_scopes_tracked() -> None:
 def test_check_scopes_timeout() -> None:
     """Timeout during gws auth status returns error state."""
     with patch(
-        "personal_assistant.gws_auth.subprocess.run",
+        "personal_assistant_dashboard.gws_auth.subprocess.run",
         side_effect=subprocess.TimeoutExpired("gws", 10),
     ):
         status = check_scopes()

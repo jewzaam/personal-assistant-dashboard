@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from personal_assistant.collectors.calendar_collector import (
+from personal_assistant_dashboard.collectors.calendar_collector import (
     CalendarCollectorError,
     collect_all_calendars,
     collect_events,
@@ -22,7 +22,7 @@ from tests.conftest import mock_subprocess_result
 
 def test_collect_events_writes_json(state_dir: Path, gws_response: str) -> None:
     with patch(
-        "personal_assistant.collectors.calendar_collector.subprocess.run"
+        "personal_assistant_dashboard.collectors.calendar_collector.subprocess.run"
     ) as mock_run:
         mock_run.return_value = mock_subprocess_result(stdout=gws_response)
         events = collect_events("primary", repo_path=state_dir)
@@ -36,7 +36,7 @@ def test_collect_events_writes_json(state_dir: Path, gws_response: str) -> None:
 
 def test_collect_events_normalizes_fields(state_dir: Path, gws_response: str) -> None:
     with patch(
-        "personal_assistant.collectors.calendar_collector.subprocess.run"
+        "personal_assistant_dashboard.collectors.calendar_collector.subprocess.run"
     ) as mock_run:
         mock_run.return_value = mock_subprocess_result(stdout=gws_response)
         events = collect_events("primary", repo_path=state_dir)
@@ -52,7 +52,7 @@ def test_collect_events_normalizes_fields(state_dir: Path, gws_response: str) ->
 
 def test_collect_events_handles_all_day(state_dir: Path, gws_response: str) -> None:
     with patch(
-        "personal_assistant.collectors.calendar_collector.subprocess.run"
+        "personal_assistant_dashboard.collectors.calendar_collector.subprocess.run"
     ) as mock_run:
         mock_run.return_value = mock_subprocess_result(stdout=gws_response)
         events = collect_events("primary", repo_path=state_dir)
@@ -64,7 +64,7 @@ def test_collect_events_handles_all_day(state_dir: Path, gws_response: str) -> N
 
 def test_collect_events_gws_not_found(state_dir: Path) -> None:
     with patch(
-        "personal_assistant.collectors.calendar_collector.subprocess.run",
+        "personal_assistant_dashboard.collectors.calendar_collector.subprocess.run",
         side_effect=FileNotFoundError(),
     ):
         with pytest.raises(CalendarCollectorError, match="not found"):
@@ -73,7 +73,7 @@ def test_collect_events_gws_not_found(state_dir: Path) -> None:
 
 def test_collect_events_gws_failure(state_dir: Path) -> None:
     with patch(
-        "personal_assistant.collectors.calendar_collector.subprocess.run"
+        "personal_assistant_dashboard.collectors.calendar_collector.subprocess.run"
     ) as mock_run:
         from unittest.mock import MagicMock
 
@@ -89,7 +89,7 @@ def test_collect_events_gws_failure(state_dir: Path) -> None:
 
 def test_collect_events_bad_json(state_dir: Path) -> None:
     with patch(
-        "personal_assistant.collectors.calendar_collector.subprocess.run"
+        "personal_assistant_dashboard.collectors.calendar_collector.subprocess.run"
     ) as mock_run:
         from unittest.mock import MagicMock
 
@@ -105,7 +105,7 @@ def test_collect_events_bad_json(state_dir: Path) -> None:
 
 def test_collect_all_calendars(state_dir: Path, gws_response: str) -> None:
     with patch(
-        "personal_assistant.collectors.calendar_collector.subprocess.run"
+        "personal_assistant_dashboard.collectors.calendar_collector.subprocess.run"
     ) as mock_run:
         mock_run.return_value = mock_subprocess_result(stdout=gws_response)
         results = collect_all_calendars(
@@ -137,7 +137,7 @@ def test_collect_all_calendars_handles_failure(
         return result
 
     with patch(
-        "personal_assistant.collectors.calendar_collector.subprocess.run",
+        "personal_assistant_dashboard.collectors.calendar_collector.subprocess.run",
         side_effect=side_effect,
     ):
         results = collect_all_calendars(
@@ -209,7 +209,7 @@ def test_list_available_calendars() -> None:
         }
     )
     with patch(
-        "personal_assistant.collectors.calendar_collector.subprocess.run"
+        "personal_assistant_dashboard.collectors.calendar_collector.subprocess.run"
     ) as mock_run:
         from unittest.mock import MagicMock
 
@@ -228,7 +228,7 @@ def test_list_available_calendars() -> None:
 
 def test_list_available_calendars_failure() -> None:
     with patch(
-        "personal_assistant.collectors.calendar_collector.subprocess.run"
+        "personal_assistant_dashboard.collectors.calendar_collector.subprocess.run"
     ) as mock_run:
         from unittest.mock import MagicMock
 
@@ -263,7 +263,7 @@ def test_format_calendar_list() -> None:
 def test_collect_events_timeout(state_dir: Path) -> None:
     """Timeout during GWS CLI call raises CalendarCollectorError."""
     with patch(
-        "personal_assistant.collectors.calendar_collector.subprocess.run",
+        "personal_assistant_dashboard.collectors.calendar_collector.subprocess.run",
         side_effect=subprocess.TimeoutExpired("gws", 30),
     ):
         with pytest.raises(CalendarCollectorError, match="timed out"):
@@ -272,12 +272,14 @@ def test_collect_events_timeout(state_dir: Path) -> None:
 
 def test_collect_commit_analyze_integration(state_dir: Path, gws_response: str) -> None:
     """Integration test: collect → commit → modify → analyze detects changes."""
-    from personal_assistant.analyzers.calendar_analyzer import analyze_calendar
-    from personal_assistant.state_repo import commit_state
+    from personal_assistant_dashboard.analyzers.calendar_analyzer import (
+        analyze_calendar,
+    )
+    from personal_assistant_dashboard.state_repo import commit_state
 
     # Collect initial events
     with patch(
-        "personal_assistant.collectors.calendar_collector.subprocess.run"
+        "personal_assistant_dashboard.collectors.calendar_collector.subprocess.run"
     ) as mock_run:
         mock_run.return_value = mock_subprocess_result(stdout=gws_response)
         collect_events("primary", repo_path=state_dir)

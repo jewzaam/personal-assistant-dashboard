@@ -4,7 +4,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "personal-assistant"
+name = "personal-assistant-dashboard"
 version = "0.1.0"
 description = "CLI-first personal task management with voice input, powered by Claude"
 requires-python = ">=3.11"
@@ -27,10 +27,10 @@ dev = [
 ]
 
 [project.scripts]
-pa = "personal_assistant.__main__:main"
+pa = "personal_assistant_dashboard.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["personal_assistant*"]
+include = ["personal_assistant_dashboard*"]
 
 [tool.black]
 line-length = 88
@@ -53,14 +53,14 @@ markers = [
 
 [tool.coverage.run]
 omit = [
-    "personal_assistant/dashboard.py",
-    "personal_assistant/pages_tab.py",
-    "personal_assistant/config.py",
-    "personal_assistant/chat_client.py",
-    "personal_assistant/chat_tab.py",
-    "personal_assistant/settings_tab.py",
-    "personal_assistant/startup.py",
-    "personal_assistant/utils.py",
+    "personal_assistant_dashboard/dashboard.py",
+    "personal_assistant_dashboard/pages_tab.py",
+    "personal_assistant_dashboard/config.py",
+    "personal_assistant_dashboard/chat_client.py",
+    "personal_assistant_dashboard/chat_tab.py",
+    "personal_assistant_dashboard/settings_tab.py",
+    "personal_assistant_dashboard/startup.py",
+    "personal_assistant_dashboard/utils.py",
 ]
 
 [tool.coverage.report]

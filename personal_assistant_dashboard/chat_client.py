@@ -91,7 +91,7 @@ class ChatClient:
             )
             self._thread.start()
         future = asyncio.run_coroutine_threadsafe(self._connect(), self._loop)
-        from personal_assistant.config import TIMEOUT_SDK_CONNECT_S
+        from personal_assistant_dashboard.config import TIMEOUT_SDK_CONNECT_S
 
         future.result(timeout=TIMEOUT_SDK_CONNECT_S)
 
@@ -104,7 +104,7 @@ class ChatClient:
 
     async def _connect(self) -> None:
         """Create and connect the SDK client."""
-        from personal_assistant.config import WORK_DIR
+        from personal_assistant_dashboard.config import WORK_DIR
 
         options = ClaudeAgentOptions(
             system_prompt=SYSTEM_PROMPT,
@@ -128,7 +128,7 @@ class ChatClient:
         if loop_ref and self._client:
             future = asyncio.run_coroutine_threadsafe(self._disconnect(), loop_ref)
             try:
-                from personal_assistant.config import TIMEOUT_SDK_DISCONNECT_S
+                from personal_assistant_dashboard.config import TIMEOUT_SDK_DISCONNECT_S
 
                 future.result(timeout=TIMEOUT_SDK_DISCONNECT_S)
             except Exception:
@@ -138,7 +138,7 @@ class ChatClient:
             loop_ref.call_soon_threadsafe(loop_ref.stop)
 
         if thread_ref:
-            from personal_assistant.config import TIMEOUT_THREAD_JOIN_S
+            from personal_assistant_dashboard.config import TIMEOUT_THREAD_JOIN_S
 
             thread_ref.join(timeout=TIMEOUT_THREAD_JOIN_S)
 
