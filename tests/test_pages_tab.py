@@ -3,14 +3,11 @@
 
 from __future__ import annotations
 
-import pytest
-
 from personal_assistant_dashboard.pages_tab import (
     _DIRTY_PREFIX,
     _format_age,
     _strip_dirty,
 )
-
 
 # --- _format_age ---
 
