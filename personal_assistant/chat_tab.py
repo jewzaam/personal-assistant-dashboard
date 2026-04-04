@@ -86,6 +86,7 @@ class ChatTab:
             takefocus=0,
             padx=PAD,
             pady=PAD,
+            height=1,
             yscrollcommand=scrollbar.set,
         )
         self._messages.pack(fill=tk.BOTH, expand=True)

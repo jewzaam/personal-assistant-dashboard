@@ -233,7 +233,6 @@ class Dashboard:
         )
 
         self._notebook = ttk.Notebook(main, style="Dark.TNotebook")
-        self._notebook.pack(fill=tk.BOTH, expand=True)
 
         # Chat tab (default — first tab)
         chat_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
@@ -329,9 +328,13 @@ class Dashboard:
 
         self._build_calendar_tab(cal_tab)
 
-        # Persistent chat input — visible on all tabs
+        # Persistent chat input — packed first (BOTTOM) so it keeps priority
+        # when the window shrinks; notebook fills remaining space above.
         self._quick_chat_frame = tk.Frame(main, bg=BG_WINDOW)
-        self._quick_chat_frame.pack(fill=tk.X, padx=PAD, pady=(4, 0))
+        self._quick_chat_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=PAD, pady=(4, 0))
+
+        # Now pack the notebook — it expands into whatever space remains
+        self._notebook.pack(fill=tk.BOTH, expand=True)
 
         self._quick_chat_input = tk.Text(
             self._quick_chat_frame,
