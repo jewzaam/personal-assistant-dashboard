@@ -15,10 +15,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-meetings = [
-    "meet-enrich @ git+https://github.com/jewzaam/meet-enrich.git",
-    "meet-summarize @ git+https://github.com/jewzaam/meet-summarize.git",
-]
 dev = [
     "black>=23.0",
     "flake8>=6.0",
@@ -46,7 +42,7 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["meet_enrich.*", "meet_summarize.*", "tkinterweb.*", "claude_agent_sdk.*"]
+module = ["tkinterweb.*", "claude_agent_sdk.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -58,14 +54,11 @@ markers = [
 [tool.coverage.run]
 omit = [
     "personal_assistant/dashboard.py",
-    "personal_assistant/assistant_tab.py",
-    "personal_assistant/actions_tab.py",
-    "personal_assistant/meetings_tab.py",
+    "personal_assistant/pages_tab.py",
     "personal_assistant/config.py",
     "personal_assistant/chat_client.py",
     "personal_assistant/chat_tab.py",
     "personal_assistant/settings_tab.py",
-    "personal_assistant/collectors/meet_attendance.py",
     "personal_assistant/startup.py",
     "personal_assistant/utils.py",
 ]

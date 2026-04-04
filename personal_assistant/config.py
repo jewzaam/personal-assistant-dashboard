@@ -95,10 +95,9 @@ PAD = 8
 # Timing intervals (milliseconds)
 TOOLTIP_DELAY_MS = 800
 REFRESH_INTERVAL_MS = 60_000  # calendar auto-refresh
-FILE_WATCH_INTERVAL_MS = 10_000  # assistant HTML file polling
+FILE_WATCH_INTERVAL_MS = 10_000  # HTML file polling
 MENU_TIMEOUT_MS = 5000  # context menu auto-dismiss
 POLL_INTERVAL_MS = 200  # event queue polling
-PIPELINE_INTERVAL_MS = 10 * 60 * 1000  # meeting enrichment (10 minutes)
 AUTO_SHADE_POLL_MS = 2000  # auto-shade pointer check
 SCOPE_CHECK_DELAY_MS = 200  # delayed scope check on startup
 DEBOUNCE_RESIZE_MS = 150  # canvas resize debounce
@@ -110,7 +109,7 @@ TIMEOUT_SDK_DISCONNECT_S = 5  # SDK client disconnect grace period
 TIMEOUT_THREAD_JOIN_S = 10  # background thread join
 TIMEOUT_SUBPROCESS_S = 300  # claude -p (large context, slow)
 TIMEOUT_GWS_S = 30  # GWS calendar list (paged API)
-TIMEOUT_GWS_SHORT_S = 15  # GWS meet attendance, single calls
+TIMEOUT_GWS_SHORT_S = 15  # GWS single API calls
 TIMEOUT_GIT_S = 10  # local git operations
 TIMEOUT_GWS_AUTH_S = 10  # GWS auth status check
 
@@ -125,14 +124,8 @@ CANVAS_MIN_HEIGHT = 200
 CANVAS_MIN_WIDTH = 800
 CANVAS_EXTRA_HEIGHT = 20
 
-# Paths — assistant directory and files
-ASSISTANT_DIR = Path.home() / "Downloads" / "personal-assistant"
-ASSISTANT_HTML = ASSISTANT_DIR / "summary.html"
-ACTIONS_HTML = ASSISTANT_DIR / "actions.html"
+# Paths — working directory (captured once at import time)
+WORK_DIR = Path.cwd()
 
 # Commands
-REFRESH_COMMAND = 'claude -p "/personal-assistant"'
 GWS_BINARY = "gws"
-
-# Meeting pipeline
-MAX_CONCURRENT_SUMMARIZATION = 5

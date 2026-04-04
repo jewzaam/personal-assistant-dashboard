@@ -12,7 +12,7 @@ from typing import Any
 
 from personal_assistant.models import ConsoleLogCallback, NotifyTabCallback
 from personal_assistant.config import (
-    ASSISTANT_DIR,
+    WORK_DIR,
     BG_OUTPUT,
     BG_WINDOW,
     BORDER_COLOR,
@@ -31,7 +31,7 @@ from personal_assistant.config import (
 
 logger = logging.getLogger(__name__)
 
-CHAT_LOG_DIR = ASSISTANT_DIR / "scratch" / "chat-log"
+CHAT_LOG_DIR = WORK_DIR / "scratch" / "chat-log"
 
 
 class ChatTab:
@@ -355,9 +355,9 @@ class ChatTab:
         if not self._chat_log_path:
             return
         try:
-            with open(self._chat_log_path, "a") as f:
+            with open(self._chat_log_path, "a", encoding="utf-8") as f:
                 f.write(f"## You\n{text}\n\n")
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             logger.warning("failed to write chat log: %s", exc)
 
     def _log_assistant(self, text: str) -> None:
@@ -365,9 +365,9 @@ class ChatTab:
         if not self._chat_log_path:
             return
         try:
-            with open(self._chat_log_path, "a") as f:
+            with open(self._chat_log_path, "a", encoding="utf-8") as f:
                 f.write(f"## Claude\n{text}\n\n")
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             logger.warning("failed to write chat log: %s", exc)
 
     # -- clear / refresh -----------------------------------------------------

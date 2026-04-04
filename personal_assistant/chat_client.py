@@ -104,14 +104,13 @@ class ChatClient:
 
     async def _connect(self) -> None:
         """Create and connect the SDK client."""
-        from personal_assistant.config import ASSISTANT_DIR
+        from personal_assistant.config import WORK_DIR
 
-        pa_dir = ASSISTANT_DIR
         options = ClaudeAgentOptions(
             system_prompt=SYSTEM_PROMPT,
             can_use_tool=_deny_unapproved,
             include_partial_messages=True,
-            cwd=pa_dir,
+            cwd=WORK_DIR,
         )
         self._client = ClaudeSDKClient(options=options)
         await self._client.connect()

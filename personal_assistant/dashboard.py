@@ -142,7 +142,6 @@ class Dashboard:
         self._tooltip_timer: str | None = None
         self._tooltip_pending_pos: tuple[int, int] = (0, 0)
         self._notebook: ttk.Notebook | None = None
-        self._run_now_btn: tk.Button | None = None
         self._cal_refresh_timer: str | None = None
         self._shaded = False
         self._unshaded_geometry: str = ""
@@ -176,13 +175,11 @@ class Dashboard:
         self._window.protocol("WM_DELETE_WINDOW", self._shutdown)
         self._window.minsize(width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT)
 
-        # Remove title bar decorations
+        # Remove title bar decorations (Linux only — Motif hints preserve focus)
         import platform
 
         if platform.system() == "Linux":
             self._remove_decorations_linux(self._window)
-        else:
-            self._window.overrideredirect(True)
 
         # Drag support (no title bar = must drag from tab strip)
         self._drag_start_x = 0
@@ -251,27 +248,15 @@ class Dashboard:
             notify_tab=self._notify_tab,
         )
 
-        # Assistant tab
-        assistant_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
-        self._notebook.add(assistant_frame, text="Assistant")
+        # Pages tab — discovers HTML files in the working directory
+        pages_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(pages_frame, text="Pages")
 
-        # Actions tab (HTML — refreshed by Assistant)
-        actions_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
-        self._notebook.add(actions_frame, text="Actions")
+        from personal_assistant.pages_tab import PagesTab
 
-        from personal_assistant.actions_tab import ActionsTab
-
-        self._actions_tab = ActionsTab(actions_frame)
-
-        from personal_assistant.assistant_tab import AssistantTab
-
-        self._assistant_tab = AssistantTab(
-            assistant_frame,
+        self._pages_tab = PagesTab(
+            pages_frame,
             self._root,
-            on_actions_refresh=self._actions_tab.refresh,
-            on_actions_status=self._actions_tab.set_status,
-            on_chat_send=self._chat_tab.send_message,
-            console_log=self.log_console,
             notify_tab=self._notify_tab,
         )
 
@@ -279,57 +264,9 @@ class Dashboard:
         cal_tab = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(cal_tab, text="Calendar")
 
-        # Transcripts tab
-        meetings_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
-        self._notebook.add(meetings_frame, text="Transcripts")
-
-        from personal_assistant.meetings_tab import MeetingsTab
-
-        self._meetings_tab = MeetingsTab(
-            meetings_frame, self._root, console_log=self.log_console
-        )
-        self._meetings_tab._update_countdown_cb = self.update_countdown
-        self._meetings_tab._set_run_now_state_cb = self._set_run_now_enabled
-        self._meetings_tab._update_summarize_status_cb = self.update_summarize_status
-        # Console tab — background activity log with timer controls
+        # Console tab — background activity log
         console_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(console_frame, text="Console")
-
-        # Console controls bar
-        console_controls = tk.Frame(console_frame, bg=BG_WINDOW)
-        console_controls.pack(fill=tk.X, padx=PAD, pady=(PAD, 0))
-
-        self._countdown_var = tk.StringVar(value="")
-        tk.Label(
-            console_controls,
-            textvariable=self._countdown_var,
-            bg=BG_WINDOW,
-            fg=FG_DIM,
-            font=self._font_body,
-        ).pack(side=tk.LEFT)
-
-        self._run_now_btn = tk.Button(
-            console_controls,
-            text="Run Now",
-            command=self._force_pipeline,
-            bg=COLOR_BUTTON,
-            fg=FG_TEXT,
-            font=self._font_body,
-            relief=tk.FLAT,
-            activebackground=COLOR_BUTTON_ACTIVE,
-            cursor="hand2",
-            padx=8,
-        )
-        self._run_now_btn.pack(side=tk.RIGHT)
-
-        self._summarize_status_var = tk.StringVar(value="")
-        tk.Label(
-            console_controls,
-            textvariable=self._summarize_status_var,
-            bg=BG_WINDOW,
-            fg=FG_DIM,
-            font=self._font_body,
-        ).pack(side=tk.RIGHT, padx=(0, PAD))
 
         # Console text area
         self._console_text = tk.Text(
@@ -375,7 +312,7 @@ class Dashboard:
         tk.Label(
             about_frame,
             text="PA Dashboard\n\nPersonal assistant with calendar,\n"
-            "transcript management, and actions.",
+            "pages, and chat.",
             bg=BG_WINDOW,
             fg=FG_DIM,
             font=self._font_heading,
@@ -632,11 +569,6 @@ class Dashboard:
         self._resize_timer: str | None = None
         self._canvas.bind("<Configure>", self._on_canvas_resize)
 
-    def _set_run_now_enabled(self, enabled: bool) -> None:
-        """Enable or disable the Run Now button."""
-        if self._run_now_btn is not None:
-            self._run_now_btn.configure(state="normal" if enabled else "disabled")
-
     def _load_dismissed_conflicts(self) -> None:
         """Load dismissed conflict event IDs from disk."""
         path = self._state_path / "dismissed_conflicts.json"
@@ -739,21 +671,6 @@ class Dashboard:
         # Only hide visual if no persistent bell
         if tab_name not in self._persistent_tabs:
             self._hide_bell(tab_name)
-
-    def _force_pipeline(self) -> None:
-        """Force the pipeline to run immediately."""
-        if hasattr(self, "_meetings_tab"):
-            self._meetings_tab.force_pipeline()
-
-    def update_summarize_status(self, text: str) -> None:
-        """Update the summarization status in the Console tab."""
-        if hasattr(self, "_summarize_status_var"):
-            self._summarize_status_var.set(text)
-
-    def update_countdown(self, text: str) -> None:
-        """Update the countdown display in the Console tab."""
-        if hasattr(self, "_countdown_var"):
-            self._countdown_var.set(text)
 
     def log_console(
         self,
@@ -890,10 +807,8 @@ class Dashboard:
         # Update ttk style (doesn't auto-propagate from named fonts)
         self._style.configure("Dark.TNotebook.Tab", font=self._font_body)
         # Scale HTML content in Assistant and Actions tabs
-        if hasattr(self, "_assistant_tab"):
-            self._assistant_tab.set_font_scale(scale)
-        if hasattr(self, "_actions_tab"):
-            self._actions_tab.set_font_scale(scale)
+        if hasattr(self, "_pages_tab"):
+            self._pages_tab.set_font_scale(scale)
         # Re-render calendar canvas (uses font in create_text calls)
         if self._canvas:
             self._render_current_day()
@@ -943,8 +858,6 @@ class Dashboard:
         self._clear_tab_bell(tab_text)
         if tab_text == "Calendar":
             self._render_current_day()
-        if tab_text == "Transcripts" and hasattr(self, "_meetings_tab"):
-            self._meetings_tab.refresh()
         if tab_text == "Chat" and hasattr(self, "_chat_tab"):
             self._chat_tab.refresh()
 
@@ -1203,8 +1116,6 @@ class Dashboard:
                 tab_id = self._pre_shade_tab
                 tab_text = self._notebook.tab(tab_id, "text")
             state["tab"] = tab_text
-        if hasattr(self, "_meetings_tab"):
-            state["transcript_filters"] = self._meetings_tab.get_filter_state()
         if self._window:
             state["topmost"] = bool(self._window.attributes("-topmost"))
             state["sticky"] = self._sticky
@@ -1251,11 +1162,6 @@ class Dashboard:
                 if self._notebook.tab(tab_id, "text") == tab_name:
                     self._notebook.select(tab_id)
                     break
-
-        # Restore transcript filters
-        filters = state.get("transcript_filters")
-        if filters and hasattr(self, "_meetings_tab"):
-            self._meetings_tab.set_filter_state(filters)
 
         # Restore always-on-top and all-workspaces
         if state.get("topmost") and self._window:
@@ -1317,12 +1223,8 @@ class Dashboard:
         self._save_ui_state()
         self._stop_cal_refresh()
         # Clean up tab resources
-        if hasattr(self, "_assistant_tab"):
-            self._assistant_tab.on_destroy()
-        if hasattr(self, "_actions_tab"):
-            self._actions_tab.on_destroy()
-        if hasattr(self, "_meetings_tab"):
-            self._meetings_tab.on_destroy()
+        if hasattr(self, "_pages_tab"):
+            self._pages_tab.on_destroy()
         if hasattr(self, "_chat_tab"):
             self._chat_tab.on_destroy()
         if hasattr(self, "_settings_tab"):
@@ -1573,34 +1475,6 @@ class Dashboard:
         )
         self._context_menu = menu
 
-        # Determine if event is in the past
-        event_start = cal_event.get("start", "")
-        is_past = False
-        if event_start and len(event_start) > 10:
-            try:
-                start_dt = datetime.fromisoformat(event_start)
-                is_past = start_dt < datetime.now().astimezone()
-            except ValueError:
-                pass
-
-        # View Summary — at top for past meetings with a meet link
-        hangout = cal_event.get("hangout_link", "")
-        if is_past and hangout:
-            event_date = event_start[:10] if len(event_start) >= 10 else ""
-            summary_content = self._get_meeting_summary(hangout, event_date)
-            if summary_content is not None:
-                resolved_content: str = summary_content
-                resolved_title: str = cal_event.get("summary", "")
-
-                def _show_summary() -> None:
-                    self._dismiss_context_menu()
-                    self._show_summary_popup(resolved_title, resolved_content)
-
-                menu.add_command(label="View Summary", command=_show_summary)
-            else:
-                menu.add_command(label="View Summary", state=tk.DISABLED)
-            menu.add_separator()
-
         # Join Meeting — available when event has a video conference link
         meeting_url = self._get_meeting_url(cal_event)
         if meeting_url:
@@ -1671,35 +1545,6 @@ class Dashboard:
 
         # Auto-dismiss after 5 seconds
         self._menu_timer = self._root.after(MENU_TIMEOUT_MS, self._dismiss_context_menu)
-
-    def _get_meeting_summary(
-        self, hangout_link: str, event_date: str = ""
-    ) -> str | None:
-        """Look up a meeting summary by meet code + date.
-
-        Meet codes are reused across recurring meeting series, so date
-        is required to find the correct instance.
-        """
-        import re
-
-        match = re.search(r"meet\.google\.com/([a-z]+-[a-z]+-[a-z]+)", hangout_link)
-        if not match:
-            return None
-        meet_code = match.group(1)
-
-        try:
-            from meet_enrich.discovery import scan_meeting_folders
-            from meet_enrich.config import TRANSCRIPTS_ROOT
-            from meet_summarize.summary import get_summary
-
-            folders = scan_meeting_folders(transcripts_root=TRANSCRIPTS_ROOT)
-            for folder in folders:
-                if folder.meet_code == meet_code and folder.date == event_date:
-                    result: str | None = get_summary(folder.path)
-                    return result
-        except ImportError:
-            pass
-        return None
 
     def _get_meeting_url(self, event: CalendarEvent) -> str | None:
         """Extract a video conference URL from the event."""
@@ -2408,28 +2253,13 @@ class Dashboard:
                 all_conflicts.extend(analysis.conflicts)
                 all_changes.extend(analysis.changes)
 
-            # Check for active accepted meetings user hasn't joined
-            missed_meetings: list[CalendarEvent] = []
-            try:
-                from personal_assistant.collectors.meet_attendance import (
-                    check_missed_meetings,
-                )
-
-                today_str = date.today().isoformat()
-                today_events = [
-                    e for e in all_events if today_str in e.get("start", "")
-                ]
-                missed_meetings = check_missed_meetings(today_events)
-            except Exception:
-                logger.debug("Meet attendance check failed", exc_info=True)
-
             self._root.after(
                 0,
                 self._on_data_loaded,
                 all_events,
                 all_conflicts,
                 all_changes,
-                missed_meetings,
+                [],
             )
 
         except Exception as exc:
