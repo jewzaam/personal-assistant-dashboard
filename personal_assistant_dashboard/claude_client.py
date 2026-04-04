@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import shutil
 
-from personal_assistant.config import TIMEOUT_SUBPROCESS_S
+from personal_assistant_dashboard.config import TIMEOUT_SUBPROCESS_S
 import subprocess
 
 logger = logging.getLogger(__name__)

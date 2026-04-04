@@ -15,8 +15,8 @@ from tkinter import ttk
 from pathlib import Path
 from typing import Any
 
-from personal_assistant.models import NotifyTabCallback
-from personal_assistant.config import (
+from personal_assistant_dashboard.models import NotifyTabCallback
+from personal_assistant_dashboard.config import (
     BG_OUTPUT,
     BG_WINDOW,
     COLOR_BUTTON,

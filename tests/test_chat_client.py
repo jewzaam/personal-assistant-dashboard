@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock
 
-from personal_assistant.chat_client import (
+from personal_assistant_dashboard.chat_client import (
     SYSTEM_PROMPT,
     ChatClient,
     _deny_unapproved,

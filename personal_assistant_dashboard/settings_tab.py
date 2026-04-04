@@ -9,8 +9,8 @@ import threading
 import tkinter as tk
 from typing import Any
 
-from personal_assistant.models import NotifyTabCallback
-from personal_assistant.config import (
+from personal_assistant_dashboard.models import NotifyTabCallback
+from personal_assistant_dashboard.config import (
     WORK_DIR,
     BG_INPUT,
     BG_WINDOW,

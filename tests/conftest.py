@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from personal_assistant.state_repo import init_repo
+from personal_assistant_dashboard.state_repo import init_repo
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 

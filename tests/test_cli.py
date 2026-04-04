@@ -18,7 +18,7 @@ def _run_cli(*args: str) -> tuple[str, int]:
     with patch.object(sys, "argv", ["pa", *args]):
         with patch("sys.stdout", captured):
             try:
-                from personal_assistant.__main__ import main
+                from personal_assistant_dashboard.__main__ import main
 
                 main()
             except SystemExit as e:
@@ -60,7 +60,7 @@ def test_cli_track_add(state_dir: Path) -> None:
     assert code == 0
     assert "TEST-123" in output
     # Verify the config file was actually updated
-    from personal_assistant.config_manager import load_config
+    from personal_assistant_dashboard.config_manager import load_config
 
     config = load_config(repo_path=state_dir)
     jira_keys = [e["key"] for e in config.get("jira", [])]
@@ -86,7 +86,7 @@ def test_cli_track_repo(state_dir: Path) -> None:
     assert code == 0
     assert "owner/repo" in output
     # Verify the config file contains the repo
-    from personal_assistant.config_manager import load_config
+    from personal_assistant_dashboard.config_manager import load_config
 
     config = load_config(repo_path=state_dir)
     repos = config.get("github", {}).get("repos", [])
@@ -100,7 +100,8 @@ def test_cli_no_args_shows_help() -> None:
 
 def test_cli_collect_calendar(state_dir: Path) -> None:
     with patch(
-        "personal_assistant.collectors.calendar_collector" ".collect_all_calendars"
+        "personal_assistant_dashboard.collectors.calendar_collector"
+        ".collect_all_calendars"
     ) as mock_collect:
         mock_collect.return_value = {"primary": [{"id": "1"}]}
         output, code = _run_cli(

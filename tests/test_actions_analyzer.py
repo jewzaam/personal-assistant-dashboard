@@ -3,7 +3,9 @@
 
 from datetime import datetime, timezone
 
-from personal_assistant.analyzers.actions_analyzer import detect_declined_meetings
+from personal_assistant_dashboard.analyzers.actions_analyzer import (
+    detect_declined_meetings,
+)
 
 
 def _make_event(

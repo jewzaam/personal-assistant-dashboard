@@ -10,8 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from personal_assistant.models import ConsoleLogCallback, NotifyTabCallback
-from personal_assistant.config import (
+from personal_assistant_dashboard.models import ConsoleLogCallback, NotifyTabCallback
+from personal_assistant_dashboard.config import (
     WORK_DIR,
     BG_OUTPUT,
     BG_WINDOW,
@@ -178,7 +178,7 @@ class ChatTab:
         if self._client is not None:
             return
 
-        from personal_assistant.chat_client import ChatClient
+        from personal_assistant_dashboard.chat_client import ChatClient
 
         self._client = ChatClient(
             on_text=lambda t: self._schedule(self._on_text, t),

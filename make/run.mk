@@ -12,4 +12,4 @@ run: $(PYTHON)  ## Start the app (use DEBUG=1, PA_DIR=/path for working dir)
 	@mkdir -p "$(PA_DIR)"
 	@echo "Working dir: $(PA_DIR)"
 	@echo "Logging to $(PA_DIR)/$(LOG_FILE)"
-	cd "$(PA_DIR)" && "$(CURDIR)/$(PYTHON)" -m personal_assistant $(if $(DEBUG),--debug) gui --log-file $(LOG_FILE)
+	cd "$(PA_DIR)" && "$(CURDIR)/$(PYTHON)" -m $(PACKAGE_NAME) $(if $(DEBUG),--debug) gui --log-file $(LOG_FILE)

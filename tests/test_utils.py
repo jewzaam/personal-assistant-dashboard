@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 
-from personal_assistant.utils import (
+from personal_assistant_dashboard.utils import (
     atomic_write_json,
     atomic_write_text,
     filter_dismissed_missed_meetings,

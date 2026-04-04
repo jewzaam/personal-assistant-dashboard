@@ -13,9 +13,11 @@ _DESKTOP_FILENAME = "pa-dashboard.desktop"
 
 
 def _startup_cmd() -> str:
-    """Build the command string for auto-start."""
+    """Reconstruct the command string from the current invocation."""
     exe = Path(sys.executable)
-    return f'"{exe}" -m personal_assistant gui --log-file pa-dashboard.log'
+    # sys.argv[0] is the script/module entry; rebuild using -m for consistency
+    args = sys.argv[1:]  # everything after the entry point
+    return f'"{exe}" -m personal_assistant_dashboard {" ".join(args)}'.rstrip()
 
 
 def _desktop_file_path() -> Path:
