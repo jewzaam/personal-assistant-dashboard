@@ -30,7 +30,7 @@ class CalendarEvent(TypedDict, total=False):
     """A normalized calendar event from Google Calendar.
 
     This structure is produced by calendar_collector._normalize_event()
-    and consumed by calendar_analyzer, dashboard, and meetings_tab.
+    and consumed by calendar_analyzer and dashboard.
     """
 
     id: str
