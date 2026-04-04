@@ -261,6 +261,8 @@ class Dashboard:
             pages_frame,
             self._root,
             notify_tab=self._notify_tab,
+            notify_tab_persistent=self._notify_tab_persistent,
+            clear_persistent_bell=self._clear_persistent_bell,
         )
 
         # Calendar tab
@@ -898,8 +900,16 @@ class Dashboard:
     # --- Persistent chat input ---
 
     def _focus_quick_chat(self, _event: Any = None) -> None:
-        """Focus the persistent chat input field."""
-        if hasattr(self, "_quick_chat_input"):
+        """Three-state toggle: focus chat → shade → unshade."""
+        if self._shaded:
+            self._unshade()
+        elif (
+            hasattr(self, "_quick_chat_input")
+            and self._window
+            and self._window.focus_get() == self._quick_chat_input
+        ):
+            self._shade()
+        elif hasattr(self, "_quick_chat_input"):
             self._quick_chat_input.focus_set()
 
     def _on_quick_chat_send(self, _event: Any = None) -> str | None:

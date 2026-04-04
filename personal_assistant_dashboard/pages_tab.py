@@ -59,6 +59,14 @@ def _format_age(seconds: int) -> str:
         return f"{seconds // 86400}d ago"
 
 
+_DIRTY_PREFIX = "* "
+
+
+def _strip_dirty(name: str) -> str:
+    """Remove the dirty-file prefix if present."""
+    return name[len(_DIRTY_PREFIX) :] if name.startswith(_DIRTY_PREFIX) else name
+
+
 def scan_html_files() -> list[Path]:
     """Return sorted list of *.html files in WORK_DIR."""
     return sorted(WORK_DIR.glob("*.html"))
@@ -73,13 +81,18 @@ class PagesTab:
         root: tk.Tk,
         *,
         notify_tab: NotifyTabCallback | None = None,
+        notify_tab_persistent: NotifyTabCallback | None = None,
+        clear_persistent_bell: NotifyTabCallback | None = None,
     ) -> None:
         self._parent = parent
         self._root = root
         self._notify_tab = notify_tab
+        self._notify_tab_persistent = notify_tab_persistent
+        self._clear_persistent_bell = clear_persistent_bell
         self._watch_timer: str | None = None
         self._html_frame: Any = None
         self._mtimes: dict[str, float] = {}
+        self._dirty_files: set[str] = set()
         self._build()
         self._start_watch()
 
@@ -162,9 +175,12 @@ class PagesTab:
         """Re-scan WORK_DIR for HTML files and update the dropdown."""
         files = scan_html_files()
         names = [f.name for f in files]
-        current = self._file_var.get()
+        display_names = [
+            f"{_DIRTY_PREFIX}{n}" if n in self._dirty_files else n for n in names
+        ]
+        current = _strip_dirty(self._file_var.get())
 
-        self._combo["values"] = names
+        self._combo["values"] = display_names
 
         if not names:
             self._file_var.set("")
@@ -172,17 +188,21 @@ class PagesTab:
             return
 
         if current in names:
-            # Keep current selection
-            pass
+            idx = names.index(current)
+            self._file_var.set(display_names[idx])
         else:
             # Select first file
-            self._file_var.set(names[0])
+            self._file_var.set(display_names[0])
             self._load_file(names[0])
 
     def _on_select(self, _event: Any) -> None:
         """Handle dropdown selection change."""
-        name = self._file_var.get()
+        name = _strip_dirty(self._file_var.get())
         if name:
+            self._dirty_files.discard(name)
+            if not self._dirty_files and self._clear_persistent_bell:
+                self._clear_persistent_bell("Pages")
+            self._refresh_file_list()
             self._load_file(name)
 
     def _load_file(self, name: str) -> None:
@@ -217,7 +237,7 @@ class PagesTab:
 
     def _reload_current(self) -> None:
         """Reload the currently selected file."""
-        name = self._file_var.get()
+        name = _strip_dirty(self._file_var.get())
         if name:
             self._load_file(name)
 
@@ -246,19 +266,21 @@ class PagesTab:
             old_mtime = self._mtimes.get(f.name, 0.0)
             if old_mtime != 0.0 and mtime != old_mtime:
                 changed = True
+                self._dirty_files.add(f.name)
 
         self._mtimes = new_mtimes
 
         if changed:
             # Reload if current file changed
-            current = self._file_var.get()
+            current = _strip_dirty(self._file_var.get())
             if current and current in new_mtimes:
                 self._load_file(current)
-            if self._notify_tab is not None:
-                self._notify_tab("Pages")
+            self._refresh_file_list()
+            if self._notify_tab_persistent is not None:
+                self._notify_tab_persistent("Pages")
 
         # Update age display for current file
-        current = self._file_var.get()
+        current = _strip_dirty(self._file_var.get())
         if current and current in new_mtimes:
             age_seconds = int(time.time() - new_mtimes[current])
             self._status_var.set(f"Updated {_format_age(age_seconds)}")
@@ -266,6 +288,14 @@ class PagesTab:
         self._watch_timer = self._root.after(FILE_WATCH_INTERVAL_MS, self._poll_files)
 
     # --- Public API ---
+
+    def clear_dirty(self) -> None:
+        """Clear all dirty-file markers and refresh the dropdown."""
+        if self._dirty_files:
+            self._dirty_files.clear()
+            self._refresh_file_list()
+            if self._clear_persistent_bell:
+                self._clear_persistent_bell("Pages")
 
     def set_font_scale(self, scale: float) -> None:
         """Apply font scaling to the HTML frame via CSS."""
