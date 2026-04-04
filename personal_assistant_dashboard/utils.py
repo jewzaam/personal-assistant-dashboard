@@ -6,12 +6,37 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from personal_assistant_dashboard.models import CalendarEvent
+
+
+def run_cmd(
+    cmd: list[str],
+    *,
+    cwd: str | Path | None = None,
+    timeout: int | None = None,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Run a subprocess with UTF-8 encoding and replacement for decode errors.
+
+    All subprocess calls in this project should use this wrapper to avoid
+    UnicodeDecodeError on Windows (cp1252 default can't handle all output).
+    """
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=cwd,
+        timeout=timeout,
+        check=check,
+    )
 
 
 def format_event_time(time_str: str) -> str:

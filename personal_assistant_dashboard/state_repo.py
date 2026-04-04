@@ -44,16 +44,13 @@ def _run_git(
     repo_path: Path,
     *args: str,
     check: bool = True,
-) -> subprocess.CompletedProcess[str]:
+) -> "subprocess.CompletedProcess[str]":
     """Run a git command in the state repo."""
+    from personal_assistant_dashboard.utils import run_cmd
+
     cmd = ["git", "-C", str(repo_path), *args]
     logger.debug("Running: %s", " ".join(cmd))
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=check,
-    )
+    return run_cmd(cmd, check=check)
 
 
 def init_repo(*, path: Path = DEFAULT_STATE_PATH) -> Path:

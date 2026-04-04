@@ -60,6 +60,8 @@ class ChatTab:
         self._pending_messages: list[str] = []
         self._chat_log_path: Path | None = None
         self._current_response: list[str] = []
+        self._last_response: str = ""
+        self._on_response_done: Any = None  # one-shot callback(response_text)
         self._destroying = False
         self._last_text_time = 0.0
         self._build()
@@ -245,8 +247,13 @@ class ChatTab:
         self._reset_send_btn()
         self._stop_status_timer()
         if self._current_response:
-            self._log_assistant("".join(self._current_response))
+            self._last_response = "".join(self._current_response)
+            self._log_assistant(self._last_response)
             self._current_response.clear()
+            if self._on_response_done:
+                cb = self._on_response_done
+                self._on_response_done = None
+                cb(self._last_response)
         elapsed = time.monotonic() - self._send_time
         duration = self._format_duration(elapsed)
         try:

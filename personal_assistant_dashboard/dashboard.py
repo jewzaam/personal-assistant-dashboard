@@ -79,7 +79,11 @@ from personal_assistant_dashboard.config import (
     TOOLTIP_DELAY_MS,
 )
 from personal_assistant_dashboard.state_repo import DEFAULT_STATE_PATH
-from personal_assistant_dashboard.utils import atomic_write_json, format_event_time
+from personal_assistant_dashboard.utils import (
+    atomic_write_json,
+    format_event_time,
+    run_cmd,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -299,7 +303,6 @@ class Dashboard:
         self._settings_tab = SettingsTab(
             settings_frame,
             self._root,
-            console_log=self.log_console,
             notify_tab_persistent=self._notify_tab_persistent,
             clear_persistent_bell=self._clear_persistent_bell,
         )
@@ -328,13 +331,9 @@ class Dashboard:
 
         self._build_calendar_tab(cal_tab)
 
-        # Persistent chat input — packed first (BOTTOM) so it keeps priority
-        # when the window shrinks; notebook fills remaining space above.
         self._quick_chat_frame = tk.Frame(main, bg=BG_WINDOW)
-        self._quick_chat_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=PAD, pady=(4, 0))
-
-        # Now pack the notebook — it expands into whatever space remains
-        self._notebook.pack(fill=tk.BOTH, expand=True)
+        self._pack_main_layout()
+        self._build_checkpoint_overlay()
 
         self._quick_chat_input = tk.Text(
             self._quick_chat_frame,
@@ -410,6 +409,89 @@ class Dashboard:
         self._root.after(GEOMETRY_CAPTURE_DELAY_MS, self._capture_geometry)
         # Always start calendar data refresh (bells need fresh data)
         self._start_cal_refresh()
+        # Wake up the chat agent on startup
+        self._chat_tab._on_response_done = self._check_greeting_response
+        self._chat_tab.send_message("Greetings!")
+
+    def _schedule(self, fn: Any, *args: Any) -> None:
+        """Schedule a callback on the main thread from a background thread."""
+        try:
+            self._root.after(0, fn, *args)
+        except RuntimeError:
+            logger.debug("_schedule: main loop destroyed, dropped %s", fn)
+
+    def _pack_main_layout(self) -> None:
+        """Pack chat frame (BOTTOM) then notebook (expand) in the correct order.
+
+        Called from _build and _unshade. _shade forgets both widgets so that
+        re-packing here restores the original order.
+        """
+        if hasattr(self, "_quick_chat_frame"):
+            self._quick_chat_frame.pack(
+                side=tk.BOTTOM, fill=tk.X, padx=PAD, pady=(4, 0)
+            )
+        if self._notebook:
+            self._notebook.pack(fill=tk.BOTH, expand=True)
+
+    def _build_checkpoint_overlay(self) -> None:
+        """Overlay a checkpoint button + status on the notebook tab strip."""
+        frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+
+        self._checkpoint_status_var = tk.StringVar(value="")
+        tk.Label(
+            frame,
+            textvariable=self._checkpoint_status_var,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=self._font_body,
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        tk.Button(
+            frame,
+            text="Checkpoint",
+            command=self._checkpoint,
+            bg=COLOR_BUTTON,
+            fg=FG_TEXT,
+            font=self._font_body,
+            relief=tk.FLAT,
+            activebackground=COLOR_BUTTON_ACTIVE,
+            cursor="hand2",
+            padx=4,
+            pady=0,
+            borderwidth=0,
+            highlightthickness=0,
+        ).pack(side=tk.LEFT)
+
+        frame.place(relx=1.0, x=-4, y=2, anchor="ne")
+        self._checkpoint_frame = frame
+
+    def _checkpoint(self) -> None:
+        """Run git checkpoint in a background thread."""
+        from personal_assistant_dashboard.checkpoint import run_checkpoint
+        from personal_assistant_dashboard.config import WORK_DIR
+
+        self._checkpoint_status_var.set("Running...")
+
+        def _run() -> None:
+            result = run_checkpoint(WORK_DIR)
+            self._schedule(self._checkpoint_done, result.message, result.is_error)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _checkpoint_done(self, message: str, is_error: bool) -> None:
+        """Update checkpoint status and auto-clear after 5 seconds."""
+        self._checkpoint_status_var.set(message)
+        self.log_console(
+            f"Git checkpoint: {message}",
+            "error" if is_error else "success",
+            "",
+            "",
+        )
+        self._root.after(5000, self._clear_checkpoint_status)
+
+    def _clear_checkpoint_status(self) -> None:
+        """Clear the checkpoint status label."""
+        self._checkpoint_status_var.set("")
 
     def _build_calendar_tab(self, cal_tab: tk.Frame) -> None:
         """Build the calendar tab with nav, changes, canvas, and bindings."""
@@ -777,11 +859,12 @@ class Dashboard:
                 cm = re.match(r"\d+x\d+\+(-?\d+)\+(-?\d+)", cur)
                 cx, cy = cm.groups() if cm else (_old_x, _old_y)
                 self._window.geometry(f"{w}x{h}+{cx}+{cy}")
-        # Restore the persistent chat input (before the bottom bar)
-        if hasattr(self, "_quick_chat_frame") and hasattr(self, "_bottom_bar"):
-            self._quick_chat_frame.pack(
-                fill=tk.X, padx=PAD, pady=(4, 0), before=self._bottom_bar
-            )
+        # Forget notebook so _pack_main_layout re-packs in the correct order
+        # (chat BOTTOM first, then notebook). Can't forget it in _shade because
+        # the tab strip must remain visible for middle-click unshade.
+        if self._notebook:
+            self._notebook.pack_forget()
+        self._pack_main_layout()
         # Restore the tab that was active before shading
         if hasattr(self, "_pre_shade_tab") and self._pre_shade_tab:
             self._notebook.select(self._pre_shade_tab)  # type: ignore[union-attr]
@@ -841,6 +924,17 @@ class Dashboard:
         """Clear the chat conversation."""
         if hasattr(self, "_chat_tab"):
             self._chat_tab._clear()
+
+    def _check_greeting_response(self, response: str) -> None:
+        """Verify the chat agent replied with the expected greeting."""
+        if "The cake is a lie." not in response:
+            self.log_console(
+                f"Greeting check FAILED — expected 'The cake is a lie.' "
+                f"but got: {response[:200]}",
+                "error",
+                "",
+                "",
+            )
 
     def _on_tab_changed(self, _event: Any) -> None:
         """Refresh tabs when they become visible."""
@@ -1258,8 +1352,8 @@ class Dashboard:
         else:
             color = COLOR_CONFLICT  # red
 
-        self._root.after(0, self._scope_indicator.configure, {"fg": color})
         self._scope_status = status
+        self._schedule(self._scope_indicator.configure, {"fg": color})
 
     def _show_scope_details(self) -> None:
         """Show scope status in a popup."""
@@ -1832,12 +1926,12 @@ class Dashboard:
         """Background: call GWS to delete event, then refresh."""
         event_id = cal_event.get("id", "")
         if not event_id:
-            self._root.after(0, self._status_var.set, "Error: missing event ID")
+            self._schedule(self._status_var.set, "Error: missing event ID")
             return
 
         params = json.dumps({"calendarId": "primary", "eventId": event_id})
         try:
-            result = subprocess.run(
+            result = run_cmd(
                 [
                     "gws",
                     "calendar",
@@ -1846,10 +1940,7 @@ class Dashboard:
                     "--params",
                     params,
                 ],
-                capture_output=True,
-                text=True,
                 timeout=15,
-                check=False,
             )
             logger.info(
                 "GWS delete %s: exit=%d",
@@ -1858,10 +1949,10 @@ class Dashboard:
             )
             if result.returncode != 0:
                 err = result.stderr.strip() or result.stdout.strip()
-                self._root.after(0, self._status_var.set, f"Error: {err[:80]}")
+                self._schedule(self._status_var.set, f"Error: {err[:80]}")
                 return
         except Exception as exc:
-            self._root.after(0, self._status_var.set, f"Error: {exc}")
+            self._schedule(self._status_var.set, f"Error: {exc}")
             return
 
         # Re-collect and refresh
@@ -1882,11 +1973,7 @@ class Dashboard:
         """Background: call GWS to patch event response, then refresh."""
         event_id = cal_event.get("id", "")
         if not event_id:
-            self._root.after(
-                0,
-                self._status_var.set,
-                "Error: missing event ID",
-            )
+            self._schedule(self._status_var.set, "Error: missing event ID")
             return
 
         # Build full attendees list with user's status changed.
@@ -1903,18 +1990,14 @@ class Dashboard:
             updated_attendees.append(entry)
 
         if not found_self:
-            self._root.after(
-                0,
-                self._status_var.set,
-                "Error: user not in attendee list",
-            )
+            self._schedule(self._status_var.set, "Error: user not in attendee list")
             return
 
         params = json.dumps({"calendarId": "primary", "eventId": event_id})
         body = json.dumps({"attendees": updated_attendees})
 
         try:
-            result = subprocess.run(
+            result = run_cmd(
                 [
                     "gws",
                     "calendar",
@@ -1925,10 +2008,7 @@ class Dashboard:
                     "--json",
                     body,
                 ],
-                capture_output=True,
-                text=True,
                 timeout=15,
-                check=False,
             )
             logger.info(
                 "GWS patch %s -> %s: exit=%d",
@@ -1940,18 +2020,10 @@ class Dashboard:
                 logger.debug("GWS stderr: %s", result.stderr.strip())
             if result.returncode != 0:
                 err = result.stderr.strip() or result.stdout.strip()
-                self._root.after(
-                    0,
-                    self._status_var.set,
-                    f"Error: {err[:80]}",
-                )
+                self._schedule(self._status_var.set, f"Error: {err[:80]}")
                 return
         except Exception as exc:
-            self._root.after(
-                0,
-                self._status_var.set,
-                f"Error: {exc}",
-            )
+            self._schedule(self._status_var.set, f"Error: {exc}")
             return
 
         # Re-collect and refresh
@@ -2161,10 +2233,10 @@ class Dashboard:
                 with open(abs_path) as f:
                     all_events = json.load(f)
 
-            self._root.after(0, self._on_extended_data, all_events)
+            self._schedule(self._on_extended_data, all_events)
         except Exception as exc:
             logger.exception("Extend range failed")
-            self._root.after(0, self._status_var.set, f"Error: {exc}")
+            self._schedule(self._status_var.set, f"Error: {exc}")
 
     def _on_extended_data(self, events: list[CalendarEvent]) -> None:
         self._all_events = events
@@ -2232,7 +2304,7 @@ class Dashboard:
 
             self._collected_start = today - timedelta(days=days_back)
             self._collected_until = today + timedelta(days=days_ahead)
-            self._root.after(0, self._status_var.set, "Analyzing...")
+            self._schedule(self._status_var.set, "Analyzing...")
             analyses = analyze_all_calendars(repo_path=self._state_path)
 
             # Load all events from state files
@@ -2252,8 +2324,7 @@ class Dashboard:
                 all_conflicts.extend(analysis.conflicts)
                 all_changes.extend(analysis.changes)
 
-            self._root.after(
-                0,
+            self._schedule(
                 self._on_data_loaded,
                 all_events,
                 all_conflicts,
@@ -2263,7 +2334,7 @@ class Dashboard:
 
         except Exception as exc:
             logger.exception("Dashboard refresh failed")
-            self._root.after(0, self._status_var.set, f"Error: {exc}")
+            self._schedule(self._status_var.set, f"Error: {exc}")
 
     def _on_data_loaded(
         self,
@@ -2280,7 +2351,7 @@ class Dashboard:
         self._missed_meetings = filter_dismissed_missed_meetings(
             missed_meetings or [], self._dismissed_conflicts
         )
-        self._render_current_day()
+        self._render_current_day(preserve_scroll=True)
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._status_var.set(f"Updated at {timestamp}")
 
@@ -2446,10 +2517,11 @@ class Dashboard:
                     anchor=tk.NE,
                 )
 
-    def _render_current_day(self) -> None:
+    def _render_current_day(self, *, preserve_scroll: bool = False) -> None:
         if not self._canvas or not self._canvas.winfo_exists():
             return
 
+        saved_yview = self._canvas.yview()[0] if preserve_scroll else None
         self._canvas.delete("all")
 
         date_str = self._current_date.strftime("%Y-%m-%d")
@@ -2628,8 +2700,10 @@ class Dashboard:
                 anchor=tk.CENTER,
             )
 
-        # Scroll to now or top
-        if is_today and day_events:
+        # Scroll: restore previous position if preserving, otherwise scroll to now
+        if saved_yview is not None:
+            self._canvas.yview_moveto(saved_yview)
+        elif is_today and day_events:
             now_hour = now.hour + now.minute / 60
             if earliest <= now_hour <= latest:
                 frac = max(

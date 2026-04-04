@@ -6,8 +6,10 @@ from __future__ import annotations
 import logging
 import shutil
 
-from personal_assistant_dashboard.config import TIMEOUT_SUBPROCESS_S
 import subprocess
+
+from personal_assistant_dashboard.config import TIMEOUT_SUBPROCESS_S
+from personal_assistant_dashboard.utils import run_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +37,7 @@ def send_prompt(prompt: str, *, continue_conversation: bool = False) -> str:
 
     logger.debug("running: %s", cmd)
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT_SUBPROCESS_S,
-        )
+        result = run_cmd(cmd, timeout=TIMEOUT_SUBPROCESS_S)
         if result.returncode != 0:
             stderr = result.stderr.strip()
             logger.error("claude exited %d: %s", result.returncode, stderr)
