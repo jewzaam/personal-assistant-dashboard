@@ -16,7 +16,7 @@ from typing import Any
 from personal_assistant_dashboard.config import GWS_BINARY
 from personal_assistant_dashboard.state_repo import DEFAULT_STATE_PATH
 from personal_assistant_dashboard.models import CalendarEvent
-from personal_assistant_dashboard.utils import atomic_write_json
+from personal_assistant_dashboard.utils import atomic_write_json, run_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ def list_available_calendars() -> list[dict[str, str]]:
     Use this to discover calendar IDs for tracking config.
     """
     try:
-        result = subprocess.run(
+        result = run_cmd(
             [
                 GWS_BINARY,
                 "calendar",
@@ -111,10 +111,7 @@ def list_available_calendars() -> list[dict[str, str]]:
                 "list",
                 "--page-all",
             ],
-            capture_output=True,
-            text=True,
             timeout=30,
-            check=False,
         )
     except FileNotFoundError:
         raise CalendarCollectorError(f"GWS CLI binary not found: {GWS_BINARY}.")
@@ -182,12 +179,9 @@ def _fetch_events(
     )
 
     try:
-        result = subprocess.run(
+        result = run_cmd(
             [GWS_BINARY, "calendar", "events", "list", "--params", params],
-            capture_output=True,
-            text=True,
             timeout=30,
-            check=False,
         )
     except FileNotFoundError:
         raise CalendarCollectorError(

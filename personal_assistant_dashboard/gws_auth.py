@@ -9,6 +9,7 @@ import subprocess
 from dataclasses import dataclass, field
 
 from personal_assistant_dashboard.config import GWS_BINARY
+from personal_assistant_dashboard.utils import run_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -64,13 +65,7 @@ def check_scopes() -> ScopeStatus:
     status = ScopeStatus()
 
     try:
-        result = subprocess.run(
-            [GWS_BINARY, "auth", "status"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
+        result = run_cmd([GWS_BINARY, "auth", "status"], timeout=10)
     except FileNotFoundError:
         status.error = "gws binary not found"
         return status
