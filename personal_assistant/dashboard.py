@@ -398,39 +398,6 @@ class Dashboard:
         self._window.bind("<Control-minus>", lambda e: self._scale_fonts(-0.1))
         self._window.bind("<Control-0>", lambda e: self._scale_fonts(0.0, reset=True))
 
-        # Bottom bar: legend + status
-        self._bottom_bar = tk.Frame(main, bg=BG_WINDOW)
-        self._bottom_bar.pack(fill=tk.X, pady=(2, 0))
-
-        # Legend (left side)
-        legend = tk.Frame(self._bottom_bar, bg=BG_WINDOW)
-        legend.pack(side=tk.LEFT)
-        for label_text, color in [
-            ("meeting", COLOR_NORMAL),
-            ("1:1", COLOR_ONEONE),
-            ("conflict", COLOR_CONFLICT),
-        ]:
-            swatch = tk.Frame(legend, bg=color, width=10, height=10)
-            swatch.pack(side=tk.LEFT, padx=(0, 2))
-            swatch.pack_propagate(False)
-            tk.Label(
-                legend,
-                text=label_text,
-                bg=BG_WINDOW,
-                fg=FG_DIM,
-                font=self._font_body,
-            ).pack(side=tk.LEFT, padx=(0, 8))
-
-        # Status (right side)
-        tk.Label(
-            self._bottom_bar,
-            textvariable=self._status_var,
-            bg=BG_WINDOW,
-            fg=FG_DIM,
-            font=self._font_body,
-            anchor=tk.E,
-        ).pack(side=tk.RIGHT)
-
         # Right-click on notebook for Restart
         self._notebook.bind("<Button-3>", self._on_notebook_right_click)
 
@@ -530,6 +497,35 @@ class Dashboard:
         )
         self._scope_indicator.pack(side=tk.RIGHT, padx=(0, 8))
         self._scope_indicator.bind("<Button-1>", lambda e: self._show_scope_details())
+
+        # Status (right side, before scope dot)
+        tk.Label(
+            top_bar,
+            textvariable=self._status_var,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=self._font_body,
+            anchor=tk.E,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        # Legend (right side, before status)
+        legend = tk.Frame(top_bar, bg=BG_WINDOW)
+        legend.pack(side=tk.RIGHT, padx=(0, 8))
+        for label_text, color in [
+            ("meeting", COLOR_NORMAL),
+            ("1:1", COLOR_ONEONE),
+            ("conflict", COLOR_CONFLICT),
+        ]:
+            swatch = tk.Frame(legend, bg=color, width=10, height=10)
+            swatch.pack(side=tk.LEFT, padx=(0, 2))
+            swatch.pack_propagate(False)
+            tk.Label(
+                legend,
+                text=label_text,
+                bg=BG_WINDOW,
+                fg=FG_DIM,
+                font=self._font_body,
+            ).pack(side=tk.LEFT, padx=(0, 8))
 
         # Calendar area
         self._calendar_frame = tk.Frame(cal_tab, bg=BG_WINDOW)
