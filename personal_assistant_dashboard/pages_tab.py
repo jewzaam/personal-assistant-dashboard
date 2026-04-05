@@ -236,9 +236,13 @@ class PagesTab:
         self._status_var.set("No pages")
 
     def _reload_current(self) -> None:
-        """Reload the currently selected file."""
+        """Reload the currently selected file and clear its dirty marker."""
         name = _strip_dirty(self._file_var.get())
         if name:
+            self._dirty_files.discard(name)
+            if not self._dirty_files and self._clear_persistent_bell:
+                self._clear_persistent_bell("Pages")
+            self._refresh_file_list()
             self._load_file(name)
 
     # --- File watching ---

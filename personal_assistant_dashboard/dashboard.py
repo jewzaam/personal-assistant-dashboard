@@ -54,6 +54,9 @@ from personal_assistant_dashboard.config import (
     COLOR_TOOLTIP_BG,
     COLOR_TOOLTIP_FG,
     COLOR_WARNING,
+    COLOR_USAGE_GREEN,
+    COLOR_USAGE_RED,
+    COLOR_USAGE_YELLOW,
     COLOR_WHITE,
     COLOR_WINDOW_BORDER,
     DEBOUNCE_RESIZE_MS,
@@ -77,6 +80,7 @@ from personal_assistant_dashboard.config import (
     REFRESH_INTERVAL_MS,
     SHADED_HEIGHT,
     TOOLTIP_DELAY_MS,
+    USAGE_POLL_MS,
 )
 from personal_assistant_dashboard.state_repo import DEFAULT_STATE_PATH
 from personal_assistant_dashboard.utils import (
@@ -337,6 +341,7 @@ class Dashboard:
         self._quick_chat_frame = tk.Frame(main, bg=BG_WINDOW)
         self._pack_main_layout()
         self._build_checkpoint_overlay()
+        self._build_usage_overlay()
 
         self._quick_chat_input = tk.Text(
             self._quick_chat_frame,
@@ -450,8 +455,19 @@ class Dashboard:
             self._notebook.pack(fill=tk.BOTH, expand=True)
 
     def _build_checkpoint_overlay(self) -> None:
-        """Overlay a checkpoint button + status on the notebook tab strip."""
+        """Overlay usage label + checkpoint button on the notebook tab strip."""
         frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+
+        # Usage label (leftmost in frame)
+        self._usage_var = tk.StringVar(value="Limits..")
+        self._usage_label = tk.Label(
+            frame,
+            textvariable=self._usage_var,
+            bg=BG_WINDOW,
+            fg=COLOR_USAGE_GREEN,
+            font=self._font_body,
+        )
+        self._usage_label.pack(side=tk.LEFT, padx=(0, 8))
 
         self._checkpoint_status_var = tk.StringVar(value="")
         tk.Label(
@@ -508,6 +524,54 @@ class Dashboard:
     def _clear_checkpoint_status(self) -> None:
         """Clear the checkpoint status label."""
         self._checkpoint_status_var.set("")
+
+    def _build_usage_overlay(self) -> None:
+        """Start polling the OAuth usage API for the usage label."""
+        self._start_usage_poll()
+
+    def _start_usage_poll(self) -> None:
+        """Start polling the OAuth usage API."""
+        self._do_usage_poll()
+
+    def _do_usage_poll(self) -> None:
+        """Fetch usage in a background thread, schedule next poll."""
+
+        def _fetch() -> None:
+            from personal_assistant_dashboard.usage_poller import get_usage
+
+            try:
+                info = get_usage()
+                logger.debug("Usage poll result: %s", info)
+                self._schedule(self._update_usage_display, info)
+            except Exception:
+                logger.exception("Usage poll failed")
+
+        threading.Thread(target=_fetch, daemon=True, name="usage-poll").start()
+        self._root.after(USAGE_POLL_MS, self._do_usage_poll)
+
+    def _update_usage_display(self, info: Any) -> None:
+        """Update the usage label with fresh data."""
+        if info is None:
+            return
+        text = f"{info.resets_in}: {info.utilization:.0f}%"
+        if info.is_stale:
+            text = f"({text})"
+        self._usage_var.set(text)
+
+        # Color by threshold
+        from personal_assistant_dashboard.usage_poller import (
+            THRESHOLD_HIGH,
+            THRESHOLD_MID,
+        )
+
+        pct = info.utilization / 100.0
+        if pct >= THRESHOLD_HIGH:
+            color = COLOR_USAGE_RED
+        elif pct >= THRESHOLD_MID:
+            color = COLOR_USAGE_YELLOW
+        else:
+            color = COLOR_USAGE_GREEN
+        self._usage_label.configure(fg=color)
 
     def _build_calendar_tab(self, cal_tab: tk.Frame) -> None:
         """Build the calendar tab with nav, changes, canvas, and bindings."""
