@@ -148,6 +148,7 @@ class Dashboard:
         self._notebook: ttk.Notebook | None = None
         self._cal_refresh_timer: str | None = None
         self._shaded = False
+        self._voice_input: Any = None
         self._unshaded_geometry: str = ""
         self._last_good_geometry: str = ""
         self._shade_in_progress = False
@@ -352,6 +353,19 @@ class Dashboard:
             highlightcolor=FG_ACCENT,
             borderwidth=0,
         )
+        tk.Button(
+            self._quick_chat_frame,
+            text="\U0001f3a4",
+            command=self._on_mic_click,
+            bg=COLOR_BUTTON,
+            fg=FG_TEXT,
+            font=self._font_body,
+            relief=tk.FLAT,
+            activebackground=COLOR_BUTTON_ACTIVE,
+            cursor="hand2",
+            padx=4,
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
         self._quick_chat_input.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self._quick_chat_input.bind("<Return>", self._on_quick_chat_send)
         self._quick_chat_input.bind("<Shift-Return>", lambda e: None)  # allow newline
@@ -934,6 +948,32 @@ class Dashboard:
         """Clear the chat conversation."""
         if hasattr(self, "_chat_tab"):
             self._chat_tab._clear()
+
+    def _on_mic_click(self) -> None:
+        """Launch voice recording popup."""
+        if self._voice_input is not None and self._voice_input.is_active:
+            return
+        from personal_assistant_dashboard.voice_input import start_recording
+
+        self._voice_input = start_recording(
+            self._root,
+            on_done=self._on_voice_done,
+            on_error=self._on_voice_error,
+        )
+
+    def _on_voice_done(self, transcript: str) -> None:
+        """Auto-send voice transcript as a chat message."""
+        if hasattr(self, "_chat_tab"):
+            if self._notebook:
+                for tab_id in self._notebook.tabs():
+                    if self._notebook.tab(tab_id, "text") == "Chat":
+                        self._notebook.select(tab_id)
+                        break
+            self._chat_tab.send_message(f"[voice transcription] {transcript}")
+
+    def _on_voice_error(self, error: str) -> None:
+        """Log voice recording error to console."""
+        self.log_console(f"Voice recording error: {error}", "error", "", "")
 
     def _check_greeting_response(self, response: str) -> None:
         """Verify the chat agent replied with the expected greeting."""

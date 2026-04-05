@@ -10,11 +10,16 @@ description = "CLI-first personal task management with voice input, powered by C
 requires-python = ">=3.11"
 dependencies = [
     "claude-agent-sdk>=0.1.50",
+    "local-transcribe @ git+https://github.com/jewzaam/local-transcribe.git@v0.3.6",
     "pyyaml>=6.0",
     "tkinterweb>=3.0",
 ]
 
 [project.optional-dependencies]
+cuda = [
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12",
+]
 dev = [
     "black>=23.0",
     "flake8>=6.0",
@@ -42,7 +47,7 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["tkinterweb.*", "claude_agent_sdk.*"]
+module = ["tkinterweb.*", "claude_agent_sdk.*", "local_transcribe.*", "local_transcribe_ui.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
