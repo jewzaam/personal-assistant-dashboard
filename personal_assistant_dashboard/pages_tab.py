@@ -11,9 +11,11 @@ from __future__ import annotations
 import logging
 import time
 import tkinter as tk
+import webbrowser
 from tkinter import ttk
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from personal_assistant_dashboard.models import NotifyTabCallback
 from personal_assistant_dashboard.config import (
@@ -144,13 +146,11 @@ class PagesTab:
         try:
             from tkinterweb import HtmlFrame
 
-            import webbrowser
-
             self._html_frame = HtmlFrame(
                 self._parent,
                 messages_enabled=False,
                 dark_theme_enabled=True,
-                on_link_click=lambda url: webbrowser.open(url),
+                on_link_click=self._on_link_click,
             )
             self._html_frame.pack(fill=tk.BOTH, expand=True, padx=PAD, pady=PAD)
         except ImportError:
@@ -170,6 +170,22 @@ class PagesTab:
                 "tkinterweb not installed. " "Run: pip install tkinterweb[recommended]",
             )
             fallback.configure(state=tk.DISABLED)
+
+    def _on_link_click(self, url: str) -> None:
+        """Handle link clicks — scroll to anchors internally, open others externally."""
+        parsed = urlparse(url)
+        if parsed.fragment and (not parsed.scheme or parsed.scheme == "file"):
+            # Anchor link — reload current file at the anchor
+            name = _strip_dirty(self._file_var.get())
+            if name and self._html_frame is not None:
+                path = WORK_DIR / name
+                if path.exists():
+                    self._html_frame.load_url(path.as_uri() + "#" + parsed.fragment)
+                    self._html_frame.add_css(SPACING_CSS)
+                    if hasattr(self, "_font_scale_css"):
+                        self._html_frame.add_css(self._font_scale_css)
+            return
+        webbrowser.open(url)
 
     def _refresh_file_list(self) -> None:
         """Re-scan WORK_DIR for HTML files and update the dropdown."""

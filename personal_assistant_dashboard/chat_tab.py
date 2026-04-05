@@ -73,9 +73,6 @@ class ChatTab:
         msg_frame = tk.Frame(self._parent, bg=BG_OUTPUT)
         msg_frame.pack(fill=tk.BOTH, expand=True, padx=PAD, pady=(PAD, 0))
 
-        scrollbar = tk.Scrollbar(msg_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
         self._messages = tk.Text(
             msg_frame,
             bg=BG_OUTPUT,
@@ -89,10 +86,8 @@ class ChatTab:
             padx=PAD,
             pady=PAD,
             height=1,
-            yscrollcommand=scrollbar.set,
         )
         self._messages.pack(fill=tk.BOTH, expand=True)
-        scrollbar.config(command=self._messages.yview)
 
         # Tags for message styling
         self._messages.tag_configure("user_name", foreground=FG_ACCENT, justify=tk.LEFT)

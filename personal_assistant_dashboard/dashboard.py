@@ -374,6 +374,7 @@ class Dashboard:
         self._quick_chat_input.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self._quick_chat_input.bind("<Return>", self._on_quick_chat_send)
         self._quick_chat_input.bind("<Shift-Return>", lambda e: None)  # allow newline
+        self._quick_chat_input.bind("<Control-BackSpace>", self._on_ctrl_backspace)
 
         btn_frame = tk.Frame(self._quick_chat_frame, bg=BG_WINDOW)
         btn_frame.pack(side=tk.RIGHT, padx=(4, 0))
@@ -430,9 +431,7 @@ class Dashboard:
         self._root.after(GEOMETRY_CAPTURE_DELAY_MS, self._capture_geometry)
         # Always start calendar data refresh (bells need fresh data)
         self._start_cal_refresh()
-        # Wake up the chat agent on startup
-        self._chat_tab._on_response_done = self._check_greeting_response
-        self._chat_tab.send_message("Greetings!")
+        # Chat agent wakes on first user message — no startup greeting
 
     def _schedule(self, fn: Any, *args: Any) -> None:
         """Schedule a callback on the main thread from a background thread."""
@@ -989,6 +988,21 @@ class Dashboard:
             self._shade()
         elif hasattr(self, "_quick_chat_input"):
             self._quick_chat_input.focus_set()
+
+    def _on_ctrl_backspace(self, _event: Any = None) -> str:
+        """Delete the previous word and its leading whitespace."""
+        w = self._quick_chat_input
+        pos = w.index("insert")
+        if pos == "1.0":
+            return "break"
+        # Walk back past whitespace, then past the word.
+        idx = pos
+        while w.compare(idx, ">", "1.0") and w.get(f"{idx}-1c", idx) in " \t":
+            idx = w.index(f"{idx}-1c")
+        while w.compare(idx, ">", "1.0") and w.get(f"{idx}-1c", idx) not in " \t\n":
+            idx = w.index(f"{idx}-1c")
+        w.delete(idx, pos)
+        return "break"
 
     def _on_quick_chat_send(self, _event: Any = None) -> str | None:
         """Send text from the persistent chat input and switch to Chat tab."""
