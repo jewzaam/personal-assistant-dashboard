@@ -86,6 +86,9 @@ COLOR_ALERT = "#e06c75"
 COLOR_WHITE = "#ffffff"
 COLOR_HTML_FALLBACK_BG = "#252525"
 COLOR_HTML_FALLBACK_FG = "#ccc"
+COLOR_USAGE_GREEN = "#98c379"
+COLOR_USAGE_YELLOW = "#e5c07b"
+COLOR_USAGE_RED = "#e06c75"
 
 # Layout
 WINDOW_WIDTH = 700
@@ -98,6 +101,7 @@ REFRESH_INTERVAL_MS = 60_000  # calendar auto-refresh
 FILE_WATCH_INTERVAL_MS = 10_000  # HTML file polling
 MENU_TIMEOUT_MS = 5000  # context menu auto-dismiss
 POLL_INTERVAL_MS = 200  # event queue polling
+USAGE_POLL_MS = 120_000  # OAuth usage API polling
 AUTO_SHADE_POLL_MS = 2000  # auto-shade pointer check
 SCOPE_CHECK_DELAY_MS = 200  # delayed scope check on startup
 DEBOUNCE_RESIZE_MS = 150  # canvas resize debounce
