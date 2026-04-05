@@ -31,9 +31,27 @@ For development (includes testing and linting tools):
 pip install -e ".[dev]"
 ```
 
+## Configuration
+
+The dashboard reads its workspace path from `~/.claude/personal-assistant-config.json`, shared with the [personal-assistant](https://github.com/jewzaam/personal-assistant) plugin. See that repo for the full config schema.
+
+At minimum, `pa_workspace` must be set:
+
+```json
+{
+  "pa_workspace": "~/source/personal-assistant-home"
+}
+```
+
 ## Usage
 
 Launch the dashboard:
+
+```bash
+make run
+```
+
+Or directly:
 
 ```bash
 pa gui
