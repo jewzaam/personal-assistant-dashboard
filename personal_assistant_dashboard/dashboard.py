@@ -651,6 +651,7 @@ class Dashboard:
             bg=BG_OUTPUT,
             highlightthickness=0,
             borderwidth=0,
+            takefocus=True,
         )
         self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -1776,6 +1777,7 @@ class Dashboard:
         """Show event details popup on left-click."""
         if not self._canvas:
             return
+        self._canvas.focus_set()
 
         item = self._canvas.find_closest(
             self._canvas.canvasx(event.x),
