@@ -180,8 +180,16 @@ def _fetch_events(
 
     try:
         result = run_cmd(
-            [GWS_BINARY, "calendar", "events", "list", "--params", params],
-            timeout=30,
+            [
+                GWS_BINARY,
+                "calendar",
+                "events",
+                "list",
+                "--params",
+                params,
+                "--page-all",
+            ],
+            timeout=60,
         )
     except FileNotFoundError:
         raise CalendarCollectorError(
@@ -196,12 +204,26 @@ def _fetch_events(
             f"GWS CLI failed (exit {result.returncode}): {result.stderr.strip()}"
         )
 
+    # --page-all emits NDJSON (one JSON object per page).
+    # Try NDJSON first, fall back to single JSON object.
+    output = result.stdout.strip()
+    if not output:
+        return []
+    items: list[dict[str, Any]] = []
     try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise CalendarCollectorError(f"Failed to parse GWS CLI output: {exc}")
-
-    items: list[dict[str, Any]] = data.get("items", [])
+        data = json.loads(output)
+        # Single JSON object (one page or no --page-all)
+        items.extend(data.get("items", []))
+    except json.JSONDecodeError:
+        # NDJSON: one JSON object per line
+        for line in output.splitlines():
+            if not line.strip():
+                continue
+            try:
+                page = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise CalendarCollectorError(f"Failed to parse GWS CLI output: {exc}")
+            items.extend(page.get("items", []))
     return items
 
 

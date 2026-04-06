@@ -54,9 +54,6 @@ from personal_assistant_dashboard.config import (
     COLOR_TOOLTIP_BG,
     COLOR_TOOLTIP_FG,
     COLOR_WARNING,
-    COLOR_USAGE_GREEN,
-    COLOR_USAGE_RED,
-    COLOR_USAGE_YELLOW,
     COLOR_WHITE,
     COLOR_WINDOW_BORDER,
     DEBOUNCE_RESIZE_MS,
@@ -80,7 +77,6 @@ from personal_assistant_dashboard.config import (
     REFRESH_INTERVAL_MS,
     SHADED_HEIGHT,
     TOOLTIP_DELAY_MS,
-    USAGE_POLL_MS,
 )
 from personal_assistant_dashboard.state_repo import DEFAULT_STATE_PATH
 from personal_assistant_dashboard.utils import (
@@ -262,12 +258,15 @@ class Dashboard:
 
         from personal_assistant_dashboard.pages_tab import PagesTab
 
+        self._pages_notifications = True  # overridden by _apply_ui_state
         self._pages_tab = PagesTab(
             pages_frame,
             self._root,
             notify_tab=self._notify_tab,
             notify_tab_persistent=self._notify_tab_persistent,
             clear_persistent_bell=self._clear_persistent_bell,
+            notifications_enabled=self._pages_notifications,
+            on_notifications_changed=self._on_pages_notifications_changed,
         )
 
         # Calendar tab
@@ -341,7 +340,6 @@ class Dashboard:
         self._quick_chat_frame = tk.Frame(main, bg=BG_WINDOW)
         self._pack_main_layout()
         self._build_checkpoint_overlay()
-        self._build_usage_overlay()
 
         self._quick_chat_input = tk.Text(
             self._quick_chat_frame,
@@ -419,6 +417,12 @@ class Dashboard:
         self._window.bind("<Control-minus>", lambda e: self._scale_fonts(-0.1))
         self._window.bind("<Control-0>", lambda e: self._scale_fonts(0.0, reset=True))
 
+        # Calendar navigation: j/k and arrow keys (guarded for text inputs)
+        self._window.bind("<Key-j>", self._on_nav_next)
+        self._window.bind("<Key-k>", self._on_nav_prev)
+        self._window.bind("<Left>", self._on_nav_prev)
+        self._window.bind("<Right>", self._on_nav_next)
+
         # Right-click on notebook for Restart
         self._notebook.bind("<Button-3>", self._on_notebook_right_click)
 
@@ -456,17 +460,6 @@ class Dashboard:
     def _build_checkpoint_overlay(self) -> None:
         """Overlay usage label + checkpoint button on the notebook tab strip."""
         frame = tk.Frame(self._notebook, bg=BG_WINDOW)
-
-        # Usage label (leftmost in frame)
-        self._usage_var = tk.StringVar(value="Limits..")
-        self._usage_label = tk.Label(
-            frame,
-            textvariable=self._usage_var,
-            bg=BG_WINDOW,
-            fg=COLOR_USAGE_GREEN,
-            font=self._font_body,
-        )
-        self._usage_label.pack(side=tk.LEFT, padx=(0, 8))
 
         self._checkpoint_status_var = tk.StringVar(value="")
         tk.Label(
@@ -524,53 +517,10 @@ class Dashboard:
         """Clear the checkpoint status label."""
         self._checkpoint_status_var.set("")
 
-    def _build_usage_overlay(self) -> None:
-        """Start polling the OAuth usage API for the usage label."""
-        self._start_usage_poll()
-
-    def _start_usage_poll(self) -> None:
-        """Start polling the OAuth usage API."""
-        self._do_usage_poll()
-
-    def _do_usage_poll(self) -> None:
-        """Fetch usage in a background thread, schedule next poll."""
-
-        def _fetch() -> None:
-            from personal_assistant_dashboard.usage_poller import get_usage
-
-            try:
-                info = get_usage()
-                logger.debug("Usage poll result: %s", info)
-                self._schedule(self._update_usage_display, info)
-            except Exception:
-                logger.exception("Usage poll failed")
-
-        threading.Thread(target=_fetch, daemon=True, name="usage-poll").start()
-        self._root.after(USAGE_POLL_MS, self._do_usage_poll)
-
-    def _update_usage_display(self, info: Any) -> None:
-        """Update the usage label with fresh data."""
-        if info is None:
-            return
-        text = f"{info.resets_in}: {info.utilization:.0f}%"
-        if info.is_stale:
-            text = f"({text})"
-        self._usage_var.set(text)
-
-        # Color by threshold
-        from personal_assistant_dashboard.usage_poller import (
-            THRESHOLD_HIGH,
-            THRESHOLD_MID,
-        )
-
-        pct = info.utilization / 100.0
-        if pct >= THRESHOLD_HIGH:
-            color = COLOR_USAGE_RED
-        elif pct >= THRESHOLD_MID:
-            color = COLOR_USAGE_YELLOW
-        else:
-            color = COLOR_USAGE_GREEN
-        self._usage_label.configure(fg=color)
+    def _on_pages_notifications_changed(self, enabled: bool) -> None:
+        """Persist pages notification preference."""
+        self._pages_notifications = enabled
+        self._save_ui_state()
 
     def _build_calendar_tab(self, cal_tab: tk.Frame) -> None:
         """Build the calendar tab with nav, changes, canvas, and bindings."""
@@ -1341,6 +1291,9 @@ class Dashboard:
             state["topmost"] = bool(self._window.attributes("-topmost"))
             state["sticky"] = self._sticky
             state["auto_shade"] = self._auto_shade
+        # Save pages notification preference
+        if hasattr(self, "_pages_notifications") and not self._pages_notifications:
+            state["pages_notifications"] = False
         # Save font scale
         if hasattr(self, "_font_scale") and self._font_scale != 1.0:
             state["font_scale"] = round(self._font_scale, 2)
@@ -1395,6 +1348,12 @@ class Dashboard:
         if state.get("auto_shade"):
             self._auto_shade = True
             self._start_auto_shade_poll()
+
+        # Restore pages notification preference
+        if not state.get("pages_notifications", True):
+            self._pages_notifications = False
+            if hasattr(self, "_pages_tab"):
+                self._pages_tab._notify_var.set(False)
 
         # Restore font scale
         font_scale = state.get("font_scale")
@@ -2156,6 +2115,29 @@ class Dashboard:
 
         # Re-collect and refresh
         self._do_refresh()
+
+    def _is_text_focused(self) -> bool:
+        """Return True if a text input widget has focus."""
+        focused = self._window.focus_get() if self._window else None
+        return isinstance(focused, (tk.Text, tk.Entry, ttk.Entry, ttk.Combobox))
+
+    def _on_nav_prev(self, _event: Any = None) -> str | None:
+        """Handle Left/k keypress — navigate calendar if no text input focused."""
+        if self._is_text_focused() or not self._notebook:
+            return None
+        tab_id = self._notebook.select()
+        if self._notebook.tab(tab_id, "text") == "Calendar":
+            self._prev_day()
+        return "break"
+
+    def _on_nav_next(self, _event: Any = None) -> str | None:
+        """Handle Right/j keypress — navigate calendar if no text input focused."""
+        if self._is_text_focused() or not self._notebook:
+            return None
+        tab_id = self._notebook.select()
+        if self._notebook.tab(tab_id, "text") == "Calendar":
+            self._next_day()
+        return "break"
 
     def _prev_day(self) -> None:
         self._dismiss_context_menu()
