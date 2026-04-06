@@ -22,6 +22,8 @@ from personal_assistant_dashboard.config import (
     COLOR_ERROR,
     COLOR_STOP_BUTTON,
     COLOR_STOP_BUTTON_ACTIVE,
+    COLOR_SUCCESS,
+    COLOR_WARNING,
     FG_ACCENT,
     FG_DIM,
     FG_TEXT,
@@ -105,6 +107,7 @@ class ChatTab:
         self._messages.tag_configure(
             "separator", foreground=BORDER_COLOR, justify=tk.CENTER
         )
+        self._messages.tag_configure("timestamp", foreground=FG_DIM, justify=tk.LEFT)
 
         # Status label
         self._status_var = tk.StringVar(value="")
@@ -126,6 +129,12 @@ class ChatTab:
     def set_send_button(self, btn: tk.Button) -> None:
         """Attach an external Send/Stop button for this chat session."""
         self._send_btn = btn
+
+    def _set_status(self, text: str) -> None:
+        """Update status text and color — green for Ready, yellow otherwise."""
+        self._status_var.set(text)
+        color = COLOR_SUCCESS if text == "Ready" else COLOR_WARNING
+        self._status_label.config(fg=color)
 
     def _stop(self) -> None:
         """Interrupt the current response."""
@@ -201,6 +210,7 @@ class ChatTab:
             return
         elapsed = self._format_duration(time.monotonic() - self._send_time)
         self._status_var.set(f"{self._status_text} ({elapsed})")
+        self._status_label.config(fg=COLOR_WARNING)
         self._status_timer = self._root.after(1000, self._tick_status)
 
     def _schedule(self, fn: Any, *args: Any) -> None:
@@ -265,7 +275,7 @@ class ChatTab:
             self._send_now(next_msg)
             return
 
-        self._status_var.set("Ready")
+        self._set_status("Ready")
         if self._notify_tab:
             self._notify_tab("Chat")
 
@@ -293,7 +303,7 @@ class ChatTab:
         self._stop_status_timer()
         elapsed = time.monotonic() - self._send_time
         duration = self._format_duration(elapsed)
-        self._status_var.set("Error")
+        self._set_status("Error")
         try:
             self._messages.config(state=tk.NORMAL)
             self._messages.insert(
@@ -321,9 +331,11 @@ class ChatTab:
 
     def _append_user(self, text: str) -> None:
         """Insert a user message into the display."""
+        ts = datetime.now().strftime("%H:%M")
         try:
             self._messages.config(state=tk.NORMAL)
-            self._messages.insert(tk.END, "You\n", "user_name")
+            self._messages.insert(tk.END, "You ", "user_name")
+            self._messages.insert(tk.END, f"{ts}\n", "timestamp")
             self._messages.insert(tk.END, text + "\n\n", "user_msg")
             self._messages.config(state=tk.DISABLED)
             self._messages.see(tk.END)
@@ -334,9 +346,11 @@ class ChatTab:
     def _start_assistant(self) -> None:
         """Insert the Claude label before streaming text."""
         self._assistant_active = True
+        ts = datetime.now().strftime("%H:%M")
         try:
             self._messages.config(state=tk.NORMAL)
-            self._messages.insert(tk.END, "Claude\n", "assistant_name")
+            self._messages.insert(tk.END, "Claude ", "assistant_name")
+            self._messages.insert(tk.END, f"{ts}\n", "timestamp")
             self._messages.config(state=tk.DISABLED)
             self._messages.see(tk.END)
         except tk.TclError:
@@ -357,9 +371,10 @@ class ChatTab:
         self._ensure_chat_log()
         if not self._chat_log_path:
             return
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             with open(self._chat_log_path, "a", encoding="utf-8") as f:
-                f.write(f"## You\n{text}\n\n")
+                f.write(f"## You ({ts})\n{text}\n\n")
         except (OSError, UnicodeError) as exc:
             logger.warning("failed to write chat log: %s", exc)
 
@@ -367,9 +382,10 @@ class ChatTab:
         """Append an assistant response to the chat log."""
         if not self._chat_log_path:
             return
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             with open(self._chat_log_path, "a", encoding="utf-8") as f:
-                f.write(f"## Claude\n{text}\n\n")
+                f.write(f"## Claude ({ts})\n{text}\n\n")
         except (OSError, UnicodeError) as exc:
             logger.warning("failed to write chat log: %s", exc)
 
