@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from pathlib import Path
 from typing import Any, Callable
 
 from claude_agent_sdk import (
@@ -102,15 +103,32 @@ class ChatClient:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
+    @staticmethod
+    def _find_last_session(cwd: Path) -> str | None:
+        """Find the most recent session ID for the given working directory."""
+        home = Path.home()
+        project_key = str(cwd).replace("/", "-").replace("\\", "-").replace(":", "-")
+        sessions_dir = home / ".claude" / "projects" / project_key
+        if not sessions_dir.is_dir():
+            return None
+        jsonl_files = [f for f in sessions_dir.iterdir() if f.suffix == ".jsonl"]
+        if not jsonl_files:
+            return None
+        latest = max(jsonl_files, key=lambda f: f.stat().st_mtime)
+        return latest.stem
+
     async def _connect(self) -> None:
         """Create and connect the SDK client."""
         from personal_assistant_dashboard.config import WORK_DIR
 
+        last_session = self._find_last_session(WORK_DIR)
+        logger.info("resuming session %s", last_session or "(new)")
         options = ClaudeAgentOptions(
             system_prompt=SYSTEM_PROMPT,
             can_use_tool=_deny_unapproved,
             include_partial_messages=True,
             cwd=WORK_DIR,
+            resume=last_session,
         )
         self._client = ClaudeSDKClient(options=options)
         await self._client.connect()

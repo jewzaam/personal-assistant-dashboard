@@ -349,7 +349,7 @@ class Dashboard:
             fg=FG_TEXT,
             insertbackground=FG_TEXT,
             font=self._font_input,
-            height=3,
+            height=2,
             wrap=tk.WORD,
             padx=PAD,
             pady=4,
@@ -371,13 +371,13 @@ class Dashboard:
             padx=4,
         ).pack(side=tk.LEFT, padx=(0, 4))
 
-        self._quick_chat_input.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        btn_frame = tk.Frame(self._quick_chat_frame, bg=BG_WINDOW)
+        btn_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(4, 0))
+
+        self._quick_chat_input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._quick_chat_input.bind("<Return>", self._on_quick_chat_send)
         self._quick_chat_input.bind("<Shift-Return>", lambda e: None)  # allow newline
         self._quick_chat_input.bind("<Control-BackSpace>", self._on_ctrl_backspace)
-
-        btn_frame = tk.Frame(self._quick_chat_frame, bg=BG_WINDOW)
-        btn_frame.pack(side=tk.RIGHT, padx=(4, 0))
 
         self._quick_send_btn = tk.Button(
             btn_frame,
@@ -391,7 +391,7 @@ class Dashboard:
             cursor="hand2",
             padx=8,
         )
-        self._quick_send_btn.pack(side=tk.TOP, pady=(0, 2))
+        self._quick_send_btn.pack(side=tk.TOP, fill=tk.X, pady=(0, 2))
 
         tk.Button(
             btn_frame,
@@ -404,7 +404,7 @@ class Dashboard:
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=8,
-        ).pack(side=tk.TOP)
+        ).pack(side=tk.TOP, fill=tk.X)
 
         # Wire the Send button to ChatTab for Send/Stop toggling
         self._chat_tab.set_send_button(self._quick_send_btn)
