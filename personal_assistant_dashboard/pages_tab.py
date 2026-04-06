@@ -14,7 +14,7 @@ import tkinter as tk
 import webbrowser
 from tkinter import ttk
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from personal_assistant_dashboard.models import NotifyTabCallback
@@ -85,16 +85,20 @@ class PagesTab:
         notify_tab: NotifyTabCallback | None = None,
         notify_tab_persistent: NotifyTabCallback | None = None,
         clear_persistent_bell: NotifyTabCallback | None = None,
+        notifications_enabled: bool = True,
+        on_notifications_changed: Callable[[bool], None] | None = None,
     ) -> None:
         self._parent = parent
         self._root = root
         self._notify_tab = notify_tab
         self._notify_tab_persistent = notify_tab_persistent
         self._clear_persistent_bell = clear_persistent_bell
+        self._on_notifications_changed = on_notifications_changed
         self._watch_timer: str | None = None
         self._html_frame: Any = None
         self._mtimes: dict[str, float] = {}
         self._dirty_files: set[str] = set()
+        self._notify_var = tk.BooleanVar(value=notifications_enabled)
         self._build()
         self._start_watch()
 
@@ -124,6 +128,19 @@ class PagesTab:
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=4,
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        tk.Checkbutton(
+            controls,
+            text="Notify",
+            variable=self._notify_var,
+            command=self._on_notify_toggle,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            selectcolor=BG_WINDOW,
+            activebackground=BG_WINDOW,
+            activeforeground=FG_DIM,
+            font=FONT_NAME_BODY,
         ).pack(side=tk.RIGHT, padx=(4, 0))
 
         self._status_var = tk.StringVar(value="")
@@ -191,9 +208,8 @@ class PagesTab:
         """Re-scan WORK_DIR for HTML files and update the dropdown."""
         files = scan_html_files()
         names = [f.name for f in files]
-        display_names = [
-            f"{_DIRTY_PREFIX}{n}" if n in self._dirty_files else n for n in names
-        ]
+        dirty = self._dirty_files if self._notify_var.get() else set()
+        display_names = [f"{_DIRTY_PREFIX}{n}" if n in dirty else n for n in names]
         current = _strip_dirty(self._file_var.get())
 
         self._combo["values"] = display_names
@@ -261,6 +277,18 @@ class PagesTab:
             self._refresh_file_list()
             self._load_file(name)
 
+    def _on_notify_toggle(self) -> None:
+        """Handle notification checkbox toggle."""
+        enabled = self._notify_var.get()
+        if not enabled:
+            # Clear existing bells when muting
+            self._dirty_files.clear()
+            self._refresh_file_list()
+            if self._clear_persistent_bell:
+                self._clear_persistent_bell("Pages")
+        if self._on_notifications_changed:
+            self._on_notifications_changed(enabled)
+
     # --- File watching ---
 
     def _start_watch(self) -> None:
@@ -296,7 +324,7 @@ class PagesTab:
             if current and current in new_mtimes:
                 self._load_file(current)
             self._refresh_file_list()
-            if self._notify_tab_persistent is not None:
+            if self._notify_tab_persistent is not None and self._notify_var.get():
                 self._notify_tab_persistent("Pages")
 
         # Update age display for current file
