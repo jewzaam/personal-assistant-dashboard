@@ -177,7 +177,8 @@ class ChatTab:
         if self._client is None:
             self._on_error("Failed to initialize chat client")
             return
-        self._client.send(text)
+        ts = self._format_timestamp()
+        self._client.send(f"[{ts}] {text}")
 
     def _ensure_client(self) -> None:
         """Lazily create and start the chat client."""
@@ -329,9 +330,20 @@ class ChatTab:
 
     # -- message formatting --------------------------------------------------
 
+    @staticmethod
+    def _format_timestamp() -> str:
+        """Format current time for display and agent messages."""
+        now = datetime.now().astimezone()
+        tz_abbr = now.strftime("%Z")
+        if " " in tz_abbr:
+            tz_abbr = "".join(w[0] for w in tz_abbr.split())
+        day = now.day
+        hour = now.hour % 12 or 12
+        return now.strftime(f"%a, %b {day}, %Y {hour}:%M %p {tz_abbr}")
+
     def _append_user(self, text: str) -> None:
         """Insert a user message into the display."""
-        ts = datetime.now().strftime("%H:%M")
+        ts = self._format_timestamp()
         try:
             self._messages.config(state=tk.NORMAL)
             self._messages.insert(tk.END, "You ", "user_name")
@@ -346,7 +358,7 @@ class ChatTab:
     def _start_assistant(self) -> None:
         """Insert the Claude label before streaming text."""
         self._assistant_active = True
-        ts = datetime.now().strftime("%H:%M")
+        ts = self._format_timestamp()
         try:
             self._messages.config(state=tk.NORMAL)
             self._messages.insert(tk.END, "Claude ", "assistant_name")
