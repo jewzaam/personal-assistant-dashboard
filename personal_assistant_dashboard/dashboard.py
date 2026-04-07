@@ -3021,7 +3021,7 @@ def _find_active_meetings(
     for event in all_events:
         if event.get("all_day"):
             continue
-        if event.get("event_type") == "workingLocation":
+        if event.get("event_type") in ("workingLocation", "outOfOffice"):
             continue
         if event.get("status") == "cancelled":
             continue

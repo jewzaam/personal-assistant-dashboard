@@ -117,6 +117,16 @@ def test_working_location_excluded():
     assert _find_active_meetings([event]) == []
 
 
+def test_out_of_office_excluded():
+    now = datetime.now(timezone.utc)
+    event = _make_event(
+        start=now - timedelta(minutes=10),
+        end=now + timedelta(minutes=20),
+        event_type="outOfOffice",
+    )
+    assert _find_active_meetings([event]) == []
+
+
 def test_no_attendees_treated_as_accepted():
     """User's own event with no attendees list should be detected."""
     now = datetime.now(timezone.utc)
