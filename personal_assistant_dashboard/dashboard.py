@@ -1700,17 +1700,20 @@ class Dashboard:
 
             menu.add_command(label="DELETE \U0001f4a5", command=_delete_cmd)
 
-        # Dismiss conflict — only if event is in a conflict
+        # Dismiss — for conflicts or active (missed) meetings
         event_id = cal_event.get("id", "")
         in_conflict = any(
             c.event_a["id"] == event_id or c.event_b["id"] == event_id
             for c in self._all_conflicts
         )
-        if in_conflict:
+        is_missed = any(e.get("id") == event_id for e in self._missed_meetings)
+        if in_conflict or is_missed:
             is_dismissed = event_id in self._dismissed_conflicts
-            dismiss_label = (
-                "\u2713 Dismiss conflict" if is_dismissed else "Dismiss conflict"
-            )
+            if in_conflict:
+                label_text = "Dismiss conflict"
+            else:
+                label_text = "Dismiss alert"
+            dismiss_label = "\u2713 " + label_text if is_dismissed else label_text
 
             def _toggle_dismiss(eid: str = event_id) -> None:
                 self._dismiss_context_menu()
@@ -2436,12 +2439,24 @@ class Dashboard:
                 all_conflicts.extend(analysis.conflicts)
                 all_changes.extend(analysis.changes)
 
+            missed = _find_active_meetings(all_events)
+
+            # Filter out meetings the user is currently attending
+            if missed:
+                from personal_assistant_dashboard.collectors.meet_collector import (
+                    find_attended_event_ids,
+                )
+
+                attended = find_attended_event_ids(missed)
+                if attended:
+                    missed = [e for e in missed if e.get("id", "") not in attended]
+
             self._schedule(
                 self._on_data_loaded,
                 all_events,
                 all_conflicts,
                 all_changes,
-                [],
+                missed,
             )
 
         except Exception as exc:
@@ -2995,6 +3010,36 @@ def _layout_events(
             )
 
     return positioned
+
+
+def _find_active_meetings(
+    all_events: list[CalendarEvent],
+) -> list[CalendarEvent]:
+    """Return accepted, timed events that are happening right now."""
+    now = datetime.now().astimezone()
+    active: list[CalendarEvent] = []
+    for event in all_events:
+        if event.get("all_day"):
+            continue
+        if event.get("event_type") == "workingLocation":
+            continue
+        if event.get("status") == "cancelled":
+            continue
+        status = _user_response_status(event)
+        if status not in ("accepted", "tentative"):
+            continue
+        start_str = event.get("start", "")
+        end_str = event.get("end", "")
+        if not start_str or not end_str:
+            continue
+        try:
+            start = datetime.fromisoformat(start_str)
+            end = datetime.fromisoformat(end_str)
+        except ValueError:
+            continue
+        if start <= now < end:
+            active.append(event)
+    return active
 
 
 def _filter_events_for_date(
