@@ -125,6 +125,7 @@ class ChatClient:
         logger.info("resuming session %s", last_session or "(new)")
         options = ClaudeAgentOptions(
             system_prompt=SYSTEM_PROMPT,
+            permission_mode="default",
             can_use_tool=_deny_unapproved,
             include_partial_messages=True,
             cwd=WORK_DIR,
