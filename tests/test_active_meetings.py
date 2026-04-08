@@ -16,6 +16,7 @@ def _make_event(
     event_type: str = "default",
     event_id: str = "evt1",
     summary: str = "Meeting",
+    hangout_link: str | None = "https://meet.google.com/abc-defg-hij",
 ) -> dict:
     attendees = [
         {"email": "me@example.com", "self": True, "response_status": response_status}
@@ -29,7 +30,7 @@ def _make_event(
         "status": status,
         "attendees": attendees,
         "event_type": event_type,
-        "hangout_link": None,
+        "hangout_link": hangout_link,
     }
 
 
@@ -127,8 +128,8 @@ def test_out_of_office_excluded():
     assert _find_active_meetings([event]) == []
 
 
-def test_no_attendees_treated_as_accepted():
-    """User's own event with no attendees list should be detected."""
+def test_no_attendees_no_meet_code_excluded():
+    """Solo event with no meeting code should not trigger alert."""
     now = datetime.now(timezone.utc)
     event = {
         "id": "own",
@@ -139,5 +140,48 @@ def test_no_attendees_treated_as_accepted():
         "status": "confirmed",
         "attendees": [],
         "event_type": "default",
+        "hangout_link": None,
     }
+    assert _find_active_meetings([event]) == []
+
+
+def test_no_attendees_with_meet_code_included():
+    """Solo event with a meeting code should still trigger alert."""
+    now = datetime.now(timezone.utc)
+    event = {
+        "id": "own",
+        "summary": "Recording session",
+        "start": (now - timedelta(minutes=5)).isoformat(),
+        "end": (now + timedelta(minutes=25)).isoformat(),
+        "all_day": False,
+        "status": "confirmed",
+        "attendees": [],
+        "event_type": "default",
+        "hangout_link": "https://meet.google.com/abc-defg-hij",
+    }
+    assert len(_find_active_meetings([event])) == 1
+
+
+def test_self_only_attendee_no_meet_code_excluded():
+    """Event where user is sole attendee with no meeting code → no alert."""
+    now = datetime.now(timezone.utc)
+    event = _make_event(
+        start=now - timedelta(minutes=10),
+        end=now + timedelta(minutes=20),
+    )
+    event["hangout_link"] = None
+    assert _find_active_meetings([event]) == []
+
+
+def test_multiple_attendees_no_meet_code_included():
+    """In-person meeting with other attendees but no meet code → alert."""
+    now = datetime.now(timezone.utc)
+    event = _make_event(
+        start=now - timedelta(minutes=10),
+        end=now + timedelta(minutes=20),
+    )
+    event["hangout_link"] = None
+    event["attendees"].append(
+        {"email": "other@example.com", "self": False, "response_status": "accepted"}
+    )
     assert len(_find_active_meetings([event])) == 1
