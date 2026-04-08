@@ -66,6 +66,7 @@ class ChatTab:
         self._on_response_done: Any = None  # one-shot callback(response_text)
         self._destroying = False
         self._last_text_time = 0.0
+        self._auto_scroll = True
         self._build()
 
     # -- UI ------------------------------------------------------------------
@@ -90,6 +91,28 @@ class ChatTab:
             height=1,
         )
         self._messages.pack(fill=tk.BOTH, expand=True)
+
+        # Detect manual scroll — disable auto-scroll when user scrolls up
+        self._messages.bind("<MouseWheel>", self._on_user_scroll)
+        self._messages.bind("<Button-4>", self._on_user_scroll)  # Linux scroll up
+        self._messages.bind("<Button-5>", self._on_user_scroll)  # Linux scroll down
+
+        # Snap-to-bottom button (hidden initially)
+        self._snap_btn = tk.Button(
+            msg_frame,
+            text="\u25bc",
+            font=(FONT_NAME_BODY,),
+            bg=COLOR_BUTTON,
+            fg=FG_TEXT,
+            activebackground=COLOR_BUTTON_ACTIVE,
+            activeforeground=FG_TEXT,
+            borderwidth=1,
+            relief=tk.SOLID,
+            cursor="hand2",
+            command=self._snap_to_bottom,
+        )
+        # Place in bottom-right corner of msg_frame, hidden by default
+        self._snap_btn_visible = False
 
         # Tags for message styling
         self._messages.tag_configure("user_name", foreground=FG_ACCENT, justify=tk.LEFT)
@@ -140,6 +163,55 @@ class ChatTab:
         """Interrupt the current response."""
         if self._client and self._streaming:
             self._client.interrupt()
+
+    # -- scroll lock -----------------------------------------------------------
+
+    def _is_at_bottom(self) -> bool:
+        """Check if the messages widget is scrolled to the bottom."""
+        try:
+            return self._messages.yview()[1] >= 0.99
+        except tk.TclError:
+            return True
+
+    def _on_user_scroll(self, _event: Any = None) -> None:
+        """User scrolled manually — update auto-scroll state."""
+        self._root.after(50, self._check_scroll_position)
+
+    def _check_scroll_position(self) -> None:
+        """Check position after scroll event settles."""
+        at_bottom = self._is_at_bottom()
+        if at_bottom:
+            self._auto_scroll = True
+            self._hide_snap_btn()
+        else:
+            self._auto_scroll = False
+            self._show_snap_btn()
+
+    def _scroll_to_end(self) -> None:
+        """Scroll to bottom only if auto-scroll is enabled."""
+        if self._auto_scroll:
+            self._messages.see(tk.END)
+
+    def _snap_to_bottom(self) -> None:
+        """User clicked the snap-to-bottom button."""
+        self._auto_scroll = True
+        try:
+            self._messages.see(tk.END)
+        except tk.TclError:
+            pass
+        self._hide_snap_btn()
+
+    def _show_snap_btn(self) -> None:
+        """Show the snap-to-bottom indicator."""
+        if not self._snap_btn_visible:
+            self._snap_btn.place(relx=1.0, rely=1.0, anchor=tk.SE, x=-8, y=-8)
+            self._snap_btn_visible = True
+
+    def _hide_snap_btn(self) -> None:
+        """Hide the snap-to-bottom indicator."""
+        if self._snap_btn_visible:
+            self._snap_btn.place_forget()
+            self._snap_btn_visible = False
 
     # -- send / receive ------------------------------------------------------
 
@@ -235,7 +307,7 @@ class ChatTab:
                 self._messages.insert(tk.END, "\n", "assistant_msg")
             self._messages.insert(tk.END, delta, "assistant_msg")
             self._messages.config(state=tk.DISABLED)
-            self._messages.see(tk.END)
+            self._scroll_to_end()
         except tk.TclError:
             pass
         self._current_response.append(delta)
@@ -266,7 +338,7 @@ class ChatTab:
             self._messages.config(state=tk.NORMAL)
             self._messages.insert(tk.END, f"\n[success] {duration}\n\n", "thinking_msg")
             self._messages.config(state=tk.DISABLED)
-            self._messages.see(tk.END)
+            self._scroll_to_end()
         except tk.TclError:
             pass
 
@@ -311,7 +383,7 @@ class ChatTab:
                 tk.END, f"\n[failure] {error} ({duration})\n\n", "error_msg"
             )
             self._messages.config(state=tk.DISABLED)
-            self._messages.see(tk.END)
+            self._scroll_to_end()
         except tk.TclError:
             pass
         self._pending_messages.clear()
@@ -350,7 +422,7 @@ class ChatTab:
             self._messages.insert(tk.END, f"{ts}\n", "timestamp")
             self._messages.insert(tk.END, text + "\n\n", "user_msg")
             self._messages.config(state=tk.DISABLED)
-            self._messages.see(tk.END)
+            self._scroll_to_end()
         except tk.TclError:
             pass
         self._log_user(text)
@@ -364,7 +436,7 @@ class ChatTab:
             self._messages.insert(tk.END, "Claude ", "assistant_name")
             self._messages.insert(tk.END, f"{ts}\n", "timestamp")
             self._messages.config(state=tk.DISABLED)
-            self._messages.see(tk.END)
+            self._scroll_to_end()
         except tk.TclError:
             pass
 
