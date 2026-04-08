@@ -135,6 +135,7 @@ class Dashboard:
         self._collected_start: date | None = None
         self._dismissed_conflicts: set[str] = set()
         self._notified_change_ids: set[str] = set()
+        self._logged_missed_ids: set[str] = set()
         self._first_cal_load = True
         self._sticky = False  # all workspaces
         self._auto_shade = False
@@ -2445,7 +2446,7 @@ class Dashboard:
 
         # Bell on Calendar if today has genuinely new changes
         today_str = date.today().isoformat()
-        new_change_keys: set[str] = set()
+        changes_by_key: dict[str, Any] = {}
         for c in changes:
             start = c.event.get("start", "")
             touches_today = start.startswith(today_str)
@@ -2456,8 +2457,8 @@ class Dashboard:
             if touches_today and c.change_type in ("new", "time_changed"):
                 # Include start time in key so moves generate new keys
                 key = f"{c.event.get('id', '')}:{start}"
-                new_change_keys.add(key)
-        unseen = new_change_keys - self._notified_change_ids
+                changes_by_key[key] = c
+        unseen = set(changes_by_key) - self._notified_change_ids
         is_first_load = self._first_cal_load
         if is_first_load:
             self._first_cal_load = False
@@ -2466,6 +2467,21 @@ class Dashboard:
             # Don't bell for new/changed events on first load
             if not is_first_load:
                 self._notify_tab("Calendar")
+                for key in unseen:
+                    ch = changes_by_key[key]
+                    summary = ch.event.get("summary", "Unknown")
+                    s = ch.event.get("start", "")
+                    time_part = s[11:16] if len(s) > 16 else s
+                    if ch.change_type == "time_changed":
+                        self.log_console(
+                            f"[Calendar] moved — {time_part} {summary}",
+                            "warning",
+                        )
+                    elif ch.change_type == "new":
+                        self.log_console(
+                            f"[Calendar] new — {time_part} {summary}",
+                            "warning",
+                        )
 
         # Persistent bell: unaccepted events, unresolved conflicts, or missed meetings
         today_events = _filter_events_for_date(events, today_str)
@@ -2480,8 +2496,12 @@ class Dashboard:
         else:
             self._clear_persistent_bell("Calendar")
 
-        # Log missed meetings to console with clickable Meet link
+        # Log missed meetings to console with clickable Meet link (once each)
         for evt in self._missed_meetings:
+            evt_id = evt.get("id", "")
+            if evt_id in self._logged_missed_ids:
+                continue
+            self._logged_missed_ids.add(evt_id)
             summary = evt.get("summary", "Unknown meeting")
             start = evt.get("start", "")
             time_part = start[11:16] if len(start) > 16 else start
