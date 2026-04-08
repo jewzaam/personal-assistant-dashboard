@@ -186,12 +186,7 @@ class Dashboard:
         if platform.system() == "Linux":
             self._remove_decorations_linux(self._window)
 
-        # Drag support (no title bar = must drag from tab strip)
-        self._drag_start_x = 0
-        self._drag_start_y = 0
-        self._dragged = False
-
-        # Off-white border around the window (no WM decorations)
+        # Off-white border around the window
         self._window.configure(bg=COLOR_WINDOW_BORDER)
         main = tk.Frame(self._window, bg=BG_WINDOW)
         main.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
@@ -331,9 +326,6 @@ class Dashboard:
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         # Middle-click on notebook tab strip to toggle shade
         self._notebook.bind("<Button-2>", self._on_shade_toggle)
-        # Drag from tab strip
-        self._notebook.bind("<Button-1>", self._on_drag_start)
-        self._notebook.bind("<B1-Motion>", self._on_drag_motion)
 
         self._build_calendar_tab(cal_tab)
 
@@ -1178,37 +1170,6 @@ class Dashboard:
             subprocess.TimeoutExpired,
         ):
             window.overrideredirect(True)
-
-    # --- Drag to move ---
-
-    _DRAG_THRESHOLD = 5
-
-    def _on_drag_start(self, event: Any) -> None:
-        """Start drag from tab strip."""
-        self._drag_start_x = event.x
-        self._drag_start_y = event.y
-        self._dragged = False
-
-    def _on_drag_motion(self, event: Any) -> None:
-        """Drag the window by moving from tab strip."""
-        if not self._window:
-            return
-        dx = abs(event.x - self._drag_start_x)
-        dy = abs(event.y - self._drag_start_y)
-        if dx > self._DRAG_THRESHOLD or dy > self._DRAG_THRESHOLD:
-            self._dragged = True
-        if self._dragged:
-            import re
-
-            x = self._window.winfo_x() + event.x - self._drag_start_x
-            y = self._window.winfo_y() + event.y - self._drag_start_y
-            self._window.geometry(f"+{x}+{y}")
-            if self._shaded and self._unshaded_geometry:
-                m = re.match(r"(\d+)x(\d+)", self._unshaded_geometry)
-                if m:
-                    self._last_good_geometry = f"{m.group(1)}x{m.group(2)}+{x}+{y}"
-            else:
-                self._last_good_geometry = self._window.geometry()
 
     def _toggle_run_on_startup(self) -> None:
         """Toggle XDG autostart .desktop file."""
