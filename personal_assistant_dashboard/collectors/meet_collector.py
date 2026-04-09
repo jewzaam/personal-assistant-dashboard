@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from typing import Any
 from urllib.parse import urlparse
 
 from personal_assistant_dashboard.config import GWS_BINARY
@@ -29,6 +30,29 @@ _MEET_CODE_RE = re.compile(r"[a-z]{3}-[a-z]{4}-[a-z]{3}")
 
 # Cached user ID (people/me resource ID) — doesn't change within a session
 _cached_user_id: str | None = None
+
+
+def _parse_ndjson(stdout: str, list_key: str) -> list[dict[str, Any]]:
+    """Parse GWS CLI output that may be NDJSON (from --page-all) or single JSON."""
+    output = stdout.strip()
+    if not output:
+        return []
+    try:
+        data = json.loads(output)
+        result: list[dict[str, Any]] = data.get(list_key, [])
+        return result
+    except json.JSONDecodeError:
+        pass
+    items: list[dict[str, Any]] = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        try:
+            page = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        items.extend(page.get(list_key, []))
+    return items
 
 
 def _extract_meeting_code(hangout_link: str) -> str | None:
@@ -100,6 +124,7 @@ def _find_conference_names(meeting_code: str) -> list[str]:
                 "list",
                 "--params",
                 json.dumps({"filter": f'space.meeting_code="{meeting_code}"'}),
+                "--page-all",
                 "--format",
                 "json",
             ],
@@ -115,11 +140,8 @@ def _find_conference_names(meeting_code: str) -> list[str]:
             result.stderr[:80],
         )
         return []
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return []
-    return [r["name"] for r in data.get("conferenceRecords", []) if "name" in r]
+    records = _parse_ndjson(result.stdout, "conferenceRecords")
+    return [r["name"] for r in records if "name" in r]
 
 
 def _user_in_conference(conference_name: str, user_id: str) -> bool:
@@ -142,6 +164,7 @@ def _user_in_conference(conference_name: str, user_id: str) -> bool:
                         "parent": conference_name,
                     }
                 ),
+                "--page-all",
                 "--format",
                 "json",
             ],
@@ -151,12 +174,9 @@ def _user_in_conference(conference_name: str, user_id: str) -> bool:
         return False
     if result.returncode != 0:
         return False
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return False
+    participants = _parse_ndjson(result.stdout, "participants")
     user_resource = f"users/{user_id}"
-    for participant in data.get("participants", []):
+    for participant in participants:
         signed_in = participant.get("signedinUser", {})
         if signed_in.get("user") == user_resource:
             return True

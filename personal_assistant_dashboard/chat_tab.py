@@ -20,6 +20,7 @@ from personal_assistant_dashboard.config import (
     COLOR_BUTTON,
     COLOR_BUTTON_ACTIVE,
     COLOR_ERROR,
+    COLOR_SECTION_HEADER,
     COLOR_STOP_BUTTON,
     COLOR_STOP_BUTTON_ACTIVE,
     COLOR_SUCCESS,
@@ -131,6 +132,10 @@ class ChatTab:
             "separator", foreground=BORDER_COLOR, justify=tk.CENTER
         )
         self._messages.tag_configure("timestamp", foreground=FG_DIM, justify=tk.LEFT)
+        self._messages.tag_configure(
+            "system_name", foreground=COLOR_SECTION_HEADER, justify=tk.LEFT
+        )
+        self._messages.tag_configure("system_msg", foreground=FG_DIM, justify=tk.LEFT)
 
         # Status label
         self._status_var = tk.StringVar(value="")
@@ -215,15 +220,20 @@ class ChatTab:
 
     # -- send / receive ------------------------------------------------------
 
-    def send_message(self, text: str) -> None:
-        """Public API: send a message as if the user typed it."""
+    def send_message(self, text: str, *, displayed: bool = False) -> None:
+        """Public API: send a message as if the user typed it.
+
+        Args:
+            displayed: if True, the user message is already shown in chat.
+        """
         if not text:
             return
         if self._streaming:
             self._pending_messages.append(text)
             self._status_text = f"Queued ({len(self._pending_messages)})"
             return
-        self._append_user(text)
+        if not displayed:
+            self._append_user(text)
         self._send_now(text)
 
     def _send_now(self, text: str) -> None:
@@ -426,6 +436,19 @@ class ChatTab:
         except tk.TclError:
             pass
         self._log_user(text)
+
+    def _append_system(self, text: str) -> None:
+        """Insert a Dashboard message into the display (no logging)."""
+        ts = self._format_timestamp()
+        try:
+            self._messages.config(state=tk.NORMAL)
+            self._messages.insert(tk.END, "Dashboard ", "system_name")
+            self._messages.insert(tk.END, f"{ts}\n", "timestamp")
+            self._messages.insert(tk.END, text + "\n\n", "system_msg")
+            self._messages.config(state=tk.DISABLED)
+            self._scroll_to_end()
+        except tk.TclError:
+            pass
 
     def _start_assistant(self) -> None:
         """Insert the Claude label before streaming text."""

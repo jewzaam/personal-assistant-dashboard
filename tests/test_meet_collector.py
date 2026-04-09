@@ -13,6 +13,7 @@ from personal_assistant_dashboard.collectors.meet_collector import (
     _extract_meeting_code,
     _find_conference_names,
     _get_user_resource_id,
+    _parse_ndjson,
     _user_in_conference,
     find_attended_event_ids,
 )
@@ -33,6 +34,25 @@ def _mock_result(stdout: str = "", stderr: str = "", returncode: int = 0):
     return CompletedProcess(
         args=[], returncode=returncode, stdout=stdout, stderr=stderr
     )
+
+
+class TestParseNdjson:
+    def test_single_json(self):
+        stdout = json.dumps({"items": [{"id": 1}, {"id": 2}]})
+        assert _parse_ndjson(stdout, "items") == [{"id": 1}, {"id": 2}]
+
+    def test_ndjson_multiple_pages(self):
+        page1 = json.dumps({"items": [{"id": 1}]})
+        page2 = json.dumps({"items": [{"id": 2}, {"id": 3}]})
+        stdout = f"{page1}\n{page2}"
+        assert _parse_ndjson(stdout, "items") == [{"id": 1}, {"id": 2}, {"id": 3}]
+
+    def test_empty_string(self):
+        assert _parse_ndjson("", "items") == []
+
+    def test_missing_key(self):
+        stdout = json.dumps({"other": [1]})
+        assert _parse_ndjson(stdout, "items") == []
 
 
 class TestExtractMeetingCode:
@@ -135,6 +155,21 @@ class TestFindConferenceNames:
         mock_cmd.return_value = _mock_result(returncode=1, stderr="error")
         assert _find_conference_names("abc-defg-hij") == []
 
+    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    def test_page_all_flag_passed(self, mock_cmd):
+        mock_cmd.return_value = _mock_result(stdout=json.dumps({}))
+        _find_conference_names("abc-defg-hij")
+        cmd_args = mock_cmd.call_args[0][0]
+        assert "--page-all" in cmd_args
+
+    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    def test_ndjson_multiple_pages(self, mock_cmd):
+        page1 = json.dumps({"conferenceRecords": [{"name": "conferenceRecords/a"}]})
+        page2 = json.dumps({"conferenceRecords": [{"name": "conferenceRecords/b"}]})
+        mock_cmd.return_value = _mock_result(stdout=f"{page1}\n{page2}")
+        result = _find_conference_names("abc-defg-hij")
+        assert result == ["conferenceRecords/a", "conferenceRecords/b"]
+
 
 class TestUserInConference:
     @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
@@ -178,6 +213,32 @@ class TestUserInConference:
     def test_empty_participants(self, mock_cmd):
         mock_cmd.return_value = _mock_result(stdout=json.dumps({}))
         assert _user_in_conference("conferenceRecords/abc", "12345") is False
+
+    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    def test_page_all_flag_passed(self, mock_cmd):
+        mock_cmd.return_value = _mock_result(stdout=json.dumps({}))
+        _user_in_conference("conferenceRecords/abc", "12345")
+        cmd_args = mock_cmd.call_args[0][0]
+        assert "--page-all" in cmd_args
+
+    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    def test_ndjson_user_on_second_page(self, mock_cmd):
+        page1 = json.dumps(
+            {
+                "participants": [
+                    {"signedinUser": {"user": "users/99999"}},
+                ]
+            }
+        )
+        page2 = json.dumps(
+            {
+                "participants": [
+                    {"signedinUser": {"user": "users/12345"}},
+                ]
+            }
+        )
+        mock_cmd.return_value = _mock_result(stdout=f"{page1}\n{page2}")
+        assert _user_in_conference("conferenceRecords/abc", "12345") is True
 
 
 class TestFindAttendedEventIds:

@@ -116,6 +116,14 @@ def _cmd_analyze_calendar(args: argparse.Namespace) -> None:
 
 
 def _cmd_gui(args: argparse.Namespace) -> None:
+    # Change into the configured workspace so log files and cwd-dependent
+    # code land in the right place (the .desktop autostart file has no
+    # WorkingDirectory, so without this we'd run from $HOME).
+    from personal_assistant_dashboard.config import WORK_DIR
+
+    os.makedirs(WORK_DIR, exist_ok=True)
+    os.chdir(WORK_DIR)
+
     # Windows DPI awareness — must be called before Tk() is created
     if sys.platform == "win32":
         try:
@@ -249,6 +257,12 @@ def main() -> None:
     level = logging.DEBUG if args.debug else logging.INFO
     log_fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
     log_file = getattr(args, "log_file", None)
+    if log_file and not os.path.isabs(log_file):
+        # Resolve relative log paths against WORK_DIR so the log lands in
+        # the workspace even when launched without a WorkingDirectory.
+        from personal_assistant_dashboard.config import WORK_DIR
+
+        log_file = str(WORK_DIR / log_file)
     if log_file:
         os.makedirs(os.path.dirname(os.path.abspath(log_file)), exist_ok=True)
         handler = logging.handlers.RotatingFileHandler(

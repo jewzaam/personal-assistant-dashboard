@@ -77,6 +77,7 @@ from personal_assistant_dashboard.config import (
     REFRESH_INTERVAL_MS,
     SHADED_HEIGHT,
     TOOLTIP_DELAY_MS,
+    WORK_DIR,
 )
 from personal_assistant_dashboard.state_repo import DEFAULT_STATE_PATH
 from personal_assistant_dashboard.utils import (
@@ -948,6 +949,38 @@ class Dashboard:
         w.delete(idx, pos)
         return "break"
 
+    _QUICK_CAPTURE_PREFIXES: dict[str, str] = {
+        "plan:": "plans.md",
+        "action:": "actions.md",
+    }
+
+    def _try_quick_capture(self, text: str) -> bool:
+        """Intercept plan:/action: prefixes and append to the workspace file.
+
+        Returns True if the text was captured (caller should not send to chat).
+        The caller is responsible for displaying the user message first.
+        """
+        lower = text.lower()
+        for prefix, filename in self._QUICK_CAPTURE_PREFIXES.items():
+            if lower.startswith(prefix):
+                item = text[len(prefix) :].strip()
+                if not item:
+                    return False  # empty after prefix — let chat handle it
+                target = WORK_DIR / filename
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with open(target, "a", encoding="utf-8") as f:
+                        f.write(f"- {item}\n")
+                    logger.info("Quick-captured to %s: %s", filename, item)
+                    if hasattr(self, "_chat_tab"):
+                        self._chat_tab._append_system(f"Captured to {filename}")
+                except OSError:
+                    logger.exception("Failed to write quick capture to %s", target)
+                    if hasattr(self, "_chat_tab"):
+                        self._chat_tab._append_system(f"Failed to write to {filename}")
+                return True
+        return False
+
     def _on_quick_chat_send(self, _event: Any = None) -> str | None:
         """Send text from the persistent chat input and switch to Chat tab."""
         if not hasattr(self, "_quick_chat_input"):
@@ -956,14 +989,22 @@ class Dashboard:
         if not text:
             return "break"
         self._quick_chat_input.delete("1.0", tk.END)
-        # Switch to Chat tab
+
+        # Switch to Chat tab and show user message immediately
         if self._notebook:
             for tab_id in self._notebook.tabs():
                 if self._notebook.tab(tab_id, "text") == "Chat":
                     self._notebook.select(tab_id)
                     break
         if hasattr(self, "_chat_tab"):
-            self._chat_tab.send_message(text)
+            self._chat_tab._append_user(text)
+
+        # Quick-capture plan:/action: without sending to Claude
+        if self._try_quick_capture(text):
+            return "break"
+
+        if hasattr(self, "_chat_tab"):
+            self._chat_tab.send_message(text, displayed=True)
         return "break"
 
     def _on_quick_chat_clear(self) -> None:
