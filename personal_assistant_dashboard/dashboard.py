@@ -1757,9 +1757,9 @@ class Dashboard:
             for c in self._all_conflicts
         )
         is_missed = any(e.get("id") == event_id for e in self._missed_meetings)
-        if in_conflict or is_missed:
-            is_dismissed = event_id in self._dismissed_conflicts
-            if in_conflict:
+        is_dismissed = event_id in self._dismissed_conflicts
+        if in_conflict or is_missed or is_dismissed:
+            if in_conflict or is_dismissed:
                 label_text = "Dismiss conflict"
             else:
                 label_text = "Dismiss alert"
