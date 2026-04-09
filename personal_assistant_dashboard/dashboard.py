@@ -1090,11 +1090,18 @@ class Dashboard:
         )
 
     def _update_cal_countdown(self) -> None:
-        """Update the Calendar tab label with a countdown to the next meeting."""
+        """Update the Calendar tab label with a countdown to the next meeting.
+
+        Shows time until the next meeting the user hasn't joined yet:
+        future meetings (not started) and missed meetings (started but
+        not attended). Stops at 00:00 — the missed-meeting alert handles
+        the rest.
+        """
         if not self._notebook:
             return
         now = datetime.now().astimezone()
         horizon = now + timedelta(hours=COUNTDOWN_HORIZON_H)
+        missed_ids = {e.get("id", "") for e in self._missed_meetings}
         next_start: datetime | None = None
         for event in self._all_events:
             if event.get("all_day"):
@@ -1106,13 +1113,15 @@ class Dashboard:
                 start_dt = datetime.fromisoformat(start_str)
             except ValueError:
                 continue
-            if start_dt <= now or start_dt > horizon:
+            if start_dt > horizon:
+                continue
+            if start_dt <= now and event.get("id", "") not in missed_ids:
                 continue
             if next_start is None or start_dt < next_start:
                 next_start = start_dt
 
         if next_start is not None:
-            delta = next_start - now
+            delta = max(next_start - now, timedelta(0))
             total_minutes = int(delta.total_seconds()) // 60
             hours, minutes = divmod(total_minutes, 60)
             label = f"Calendar {hours:02d}:{minutes:02d}"
