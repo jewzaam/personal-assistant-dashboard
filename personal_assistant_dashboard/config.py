@@ -103,6 +103,7 @@ AUTO_SHADE_POLL_MS = 2000  # auto-shade pointer check
 SCOPE_CHECK_DELAY_MS = 200  # delayed scope check on startup
 DEBOUNCE_RESIZE_MS = 150  # canvas resize debounce
 GEOMETRY_CAPTURE_DELAY_MS = 500  # delay before capturing initial window geometry
+COUNTDOWN_HORIZON_H = 8  # show countdown if next meeting within this many hours
 
 # Subprocess/connection timeouts (seconds)
 TIMEOUT_SDK_CONNECT_S = 30  # SDK client initial connection

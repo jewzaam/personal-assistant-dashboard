@@ -76,6 +76,7 @@ from personal_assistant_dashboard.config import (
     PAD,
     REFRESH_INTERVAL_MS,
     SHADED_HEIGHT,
+    COUNTDOWN_HORIZON_H,
     TOOLTIP_DELAY_MS,
     WORK_DIR,
 )
@@ -269,6 +270,7 @@ class Dashboard:
         # Calendar tab
         cal_tab = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(cal_tab, text="Calendar")
+        self._cal_tab_id = str(self._notebook.tabs()[-1])
 
         # Console tab — background activity log
         console_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
@@ -751,7 +753,7 @@ class Dashboard:
         if not self._notebook:
             return
         for tab_id in self._notebook.tabs():
-            if self._notebook.tab(tab_id, "text") == tab_name:
+            if self._notebook.tab(tab_id, "text").startswith(tab_name):
                 self._notebook.tab(
                     tab_id,
                     image=self._notify_bg,
@@ -764,7 +766,7 @@ class Dashboard:
         if not self._notebook:
             return
         for tab_id in self._notebook.tabs():
-            if self._notebook.tab(tab_id, "text") == tab_name:
+            if self._notebook.tab(tab_id, "text").startswith(tab_name):
                 self._notebook.tab(tab_id, image="", compound="text")
                 break
 
@@ -1061,8 +1063,10 @@ class Dashboard:
             return
         tab_id = self._notebook.select()
         tab_text = self._notebook.tab(tab_id, "text")
-        self._clear_tab_bell(tab_text)
-        if tab_text == "Calendar":
+        # Use base name for bell clearing (countdown may append to tab text)
+        bell_name = "Calendar" if str(tab_id) == self._cal_tab_id else tab_text
+        self._clear_tab_bell(bell_name)
+        if str(tab_id) == self._cal_tab_id:
             self._render_current_day()
         if tab_text == "Chat" and hasattr(self, "_chat_tab"):
             self._chat_tab.refresh()
@@ -1084,6 +1088,40 @@ class Dashboard:
         self._cal_refresh_timer = self._root.after(
             REFRESH_INTERVAL_MS, self._do_cal_refresh_cycle
         )
+
+    def _update_cal_countdown(self) -> None:
+        """Update the Calendar tab label with a countdown to the next meeting."""
+        if not self._notebook:
+            return
+        now = datetime.now().astimezone()
+        horizon = now + timedelta(hours=COUNTDOWN_HORIZON_H)
+        next_start: datetime | None = None
+        for event in self._all_events:
+            if event.get("all_day"):
+                continue
+            start_str = event.get("start", "")
+            if not start_str:
+                continue
+            try:
+                start_dt = datetime.fromisoformat(start_str)
+            except ValueError:
+                continue
+            if start_dt <= now or start_dt > horizon:
+                continue
+            if next_start is None or start_dt < next_start:
+                next_start = start_dt
+
+        if next_start is not None:
+            delta = next_start - now
+            total_minutes = int(delta.total_seconds()) // 60
+            hours, minutes = divmod(total_minutes, 60)
+            label = f"Calendar {hours:02d}:{minutes:02d}"
+        else:
+            label = "Calendar"
+        try:
+            self._notebook.tab(self._cal_tab_id, text=label)
+        except tk.TclError:
+            pass
 
     def _capture_geometry(self) -> None:
         """Snapshot current window geometry and persist to disk."""
@@ -2134,7 +2172,7 @@ class Dashboard:
         if self._is_text_focused() or not self._notebook:
             return None
         tab_id = self._notebook.select()
-        if self._notebook.tab(tab_id, "text") == "Calendar":
+        if str(tab_id) == self._cal_tab_id:
             self._prev_day()
         return "break"
 
@@ -2143,7 +2181,7 @@ class Dashboard:
         if self._is_text_focused() or not self._notebook:
             return None
         tab_id = self._notebook.select()
-        if self._notebook.tab(tab_id, "text") == "Calendar":
+        if str(tab_id) == self._cal_tab_id:
             self._next_day()
         return "break"
 
@@ -2553,6 +2591,8 @@ class Dashboard:
                 link=meet_link,
                 link_label="Join",
             )
+
+        self._update_cal_countdown()
 
     def _resolve_conflict_ids(self, day_events: list[CalendarEvent]) -> set[str]:
         """Resolve which event IDs should be marked as conflicts.
