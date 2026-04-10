@@ -125,6 +125,7 @@ MIN_RESIZE_HEIGHT = 200
 CANVAS_MIN_HEIGHT = 200
 CANVAS_MIN_WIDTH = 800
 CANVAS_EXTRA_HEIGHT = 20
+DETAIL_PANEL_WIDTH = 300
 
 # Paths — working directory (from config file, falls back to cwd)
 _PA_CONFIG = Path.home() / ".claude" / "personal-assistant-config.json"
