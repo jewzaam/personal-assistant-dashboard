@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import platform
 import subprocess
 import threading
 import tkinter as tk
@@ -190,8 +191,6 @@ class Dashboard:
         self._window.minsize(width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT)
 
         # Remove title bar decorations (Linux only — Motif hints preserve focus)
-        import platform
-
         if platform.system() == "Linux":
             self._remove_decorations_linux(self._window)
 
@@ -1249,6 +1248,13 @@ class Dashboard:
             activeforeground=COLOR_MENU_ACTIVE_FG,
         )
 
+        # Always on Top (Windows only — Linux WM handles natively)
+        # On Windows, topmost also pins across virtual desktops.
+        if platform.system() == "Windows":
+            is_topmost = bool(self._window.attributes("-topmost"))
+            topmost_label = "\u2713 Always on Top" if is_topmost else "Always on Top"
+            menu.add_command(label=topmost_label, command=self._toggle_topmost)
+
         # Auto Shade toggle
         auto_shade_label = "\u2713 Auto Shade" if self._auto_shade else "Auto Shade"
         menu.add_command(label=auto_shade_label, command=self._toggle_auto_shade)
@@ -1324,6 +1330,13 @@ class Dashboard:
         )
 
         set_run_on_startup(enabled=not get_run_on_startup())
+
+    def _toggle_topmost(self) -> None:
+        """Toggle always-on-top window attribute."""
+        if not self._window:
+            return
+        current = bool(self._window.attributes("-topmost"))
+        self._window.attributes("-topmost", not current)
 
     def _toggle_auto_shade(self) -> None:
         """Toggle auto-shade on pointer leave."""
