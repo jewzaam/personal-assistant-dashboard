@@ -1986,12 +1986,12 @@ class Dashboard:
 
         is_organizer = cal_event.get("organizer_self", False)
         buttons: list[tuple[str, str, str]] = []
+        buttons.append(("Accept", "accepted", COLOR_ACCEPTED))
+        buttons.append(("Maybe", "tentative", COLOR_TENTATIVE))
         if is_organizer:
             buttons.append(("DELETE \U0001f4a5", "delete", COLOR_CONFLICT))
         else:
             buttons.append(("Decline", "declined", COLOR_CONFLICT))
-        buttons.append(("Maybe", "tentative", COLOR_TENTATIVE))
-        buttons.append(("Accept", "accepted", COLOR_ACCEPTED))
 
         for label, status_val, color in buttons:
             if status_val == "delete":
