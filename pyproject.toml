@@ -63,6 +63,7 @@ omit = [
     "personal_assistant_dashboard/config.py",
     "personal_assistant_dashboard/chat_client.py",
     "personal_assistant_dashboard/chat_tab.py",
+    "personal_assistant_dashboard/info_tab.py",
     "personal_assistant_dashboard/settings_tab.py",
     "personal_assistant_dashboard/startup.py",
     "personal_assistant_dashboard/utils.py",

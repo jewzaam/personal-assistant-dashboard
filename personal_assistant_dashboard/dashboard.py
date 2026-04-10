@@ -317,20 +317,19 @@ class Dashboard:
             clear_persistent_bell=self._clear_persistent_bell,
         )
 
-        # About tab — dummy tab selected during shade so all real tabs
-        # can show notification dots
-        about_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
-        self._notebook.add(about_frame, text="\u2139")
-        tk.Label(
-            about_frame,
-            text="PA Dashboard\n\nPersonal assistant with calendar,\n"
-            "pages, and chat.",
-            bg=BG_WINDOW,
-            fg=FG_DIM,
-            font=self._font_heading,
-            justify=tk.CENTER,
-        ).pack(expand=True)
-        self._about_tab_id = str(about_frame)
+        # Info tab — usage/cost/quota display, also selected during shade
+        # so all real tabs can show notification dots
+        info_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(info_frame, text="\u2139")
+
+        from personal_assistant_dashboard.info_tab import InfoTab
+
+        self._info_tab = InfoTab(
+            info_frame,
+            self._root,
+            console_log=self.log_console,
+        )
+        self._info_tab_id = str(info_frame)
 
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         # Middle-click on notebook tab strip to toggle shade
@@ -877,10 +876,10 @@ class Dashboard:
             w, _h, x, y = m.groups()
             # Remember which tab was active before shading
             self._pre_shade_tab = self._notebook.select()  # type: ignore[union-attr]
-            # Select the About tab so all real tabs show notification dots
+            # Select the Info tab so all real tabs show notification dots
             # Unbind tab-changed to prevent immediate unshade
             self._notebook.unbind("<<NotebookTabChanged>>")  # type: ignore[union-attr]
-            self._notebook.select(self._about_tab_id)  # type: ignore[union-attr]
+            self._notebook.select(self._info_tab_id)  # type: ignore[union-attr]
             self._root.after(100, self._rebind_tab_changed)
             self._window.minsize(
                 width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT_SHADED
@@ -1111,7 +1110,7 @@ class Dashboard:
         if self._shaded:
             # User clicked a tab while shaded — unshade to that tab
             clicked_tab = self._notebook.select() if self._notebook else ""
-            if clicked_tab != self._about_tab_id:
+            if clicked_tab != self._info_tab_id:
                 self._pre_shade_tab = clicked_tab
             self._unshade()
         if not self._notebook:
@@ -1402,7 +1401,7 @@ class Dashboard:
         if self._notebook:
             tab_id = self._notebook.select()
             tab_text = self._notebook.tab(tab_id, "text")
-            # Don't save About tab — save the pre-shade tab instead
+            # Don't save Info tab — save the pre-shade tab instead
             if tab_text == "\u2139" and hasattr(self, "_pre_shade_tab"):
                 tab_id = self._pre_shade_tab
                 tab_text = self._notebook.tab(tab_id, "text")
@@ -1537,6 +1536,8 @@ class Dashboard:
             self._chat_tab.on_destroy()
         if hasattr(self, "_settings_tab"):
             self._settings_tab.on_destroy()
+        if hasattr(self, "_info_tab"):
+            self._info_tab.destroy()
         if restart:
             import os
             import sys
