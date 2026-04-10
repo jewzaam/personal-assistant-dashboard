@@ -117,19 +117,23 @@ class ChatClient:
         latest = max(jsonl_files, key=lambda f: f.stat().st_mtime)
         return latest.stem
 
-    async def _connect(self) -> None:
-        """Create and connect the SDK client."""
+    async def _connect(self, *, fresh: bool = False) -> None:
+        """Create and connect the SDK client.
+
+        Args:
+            fresh: if True, start a new session instead of resuming the last one.
+        """
         from personal_assistant_dashboard.config import WORK_DIR
 
-        last_session = self._find_last_session(WORK_DIR)
-        logger.info("resuming session %s", last_session or "(new)")
+        resume = None if fresh else self._find_last_session(WORK_DIR)
+        logger.info("resuming session %s", resume or "(new)")
         options = ClaudeAgentOptions(
             system_prompt=SYSTEM_PROMPT,
             permission_mode="default",
             can_use_tool=_deny_unapproved,
             include_partial_messages=True,
             cwd=WORK_DIR,
-            resume=last_session,
+            resume=resume,
         )
         self._client = ClaudeSDKClient(options=options)
         await self._client.connect()
@@ -258,10 +262,10 @@ class ChatClient:
         asyncio.run_coroutine_threadsafe(self._reconnect(), loop_ref)
 
     async def _reconnect(self) -> None:
-        """Disconnect and reconnect to start fresh."""
+        """Disconnect and reconnect with a brand-new session."""
         try:
             await self._disconnect()
-            await self._connect()
+            await self._connect(fresh=True)
         except Exception as exc:
             logger.exception("reconnect failed")
             self._on_error(f"Failed to reconnect: {exc}")
