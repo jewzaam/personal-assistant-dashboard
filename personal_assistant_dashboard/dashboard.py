@@ -956,6 +956,38 @@ class Dashboard:
         "action:": "actions.md",
     }
 
+    _BUILTIN_COMMANDS: dict[str, str] = {
+        "help": "Show this help message",
+        "session_id": "Show the current chat session ID",
+        "plan:": "Append a plan item to plans.md",
+        "action:": "Append an action item to actions.md",
+    }
+
+    def _try_builtin_command(self, text: str) -> bool:
+        """Intercept built-in commands (help, session_id).
+
+        Returns True if the text was handled (caller should not send to chat).
+        The caller is responsible for displaying the user message first.
+        """
+        lower = text.strip().lower()
+        if lower == "help":
+            lines = ["Built-in commands:"]
+            for cmd, desc in self._BUILTIN_COMMANDS.items():
+                lines.append(f"  {cmd}  — {desc}")
+            if hasattr(self, "_chat_tab"):
+                self._chat_tab._append_system("\n".join(lines))
+            return True
+        if lower == "session_id":
+            from personal_assistant_dashboard.chat_client import ChatClient
+            from personal_assistant_dashboard.config import WORK_DIR
+
+            sid = ChatClient._find_last_session(WORK_DIR)
+            msg = sid if sid else "No active session"
+            if hasattr(self, "_chat_tab"):
+                self._chat_tab._append_system(msg)
+            return True
+        return False
+
     def _try_quick_capture(self, text: str) -> bool:
         """Intercept plan:/action: prefixes and append to the workspace file.
 
@@ -1001,7 +1033,9 @@ class Dashboard:
         if hasattr(self, "_chat_tab"):
             self._chat_tab._append_user(text)
 
-        # Quick-capture plan:/action: without sending to Claude
+        # Built-in commands and quick-capture — don't send to Claude
+        if self._try_builtin_command(text):
+            return "break"
         if self._try_quick_capture(text):
             return "break"
 
