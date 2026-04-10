@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import tkinter as tk
 from datetime import datetime
@@ -35,6 +36,11 @@ from personal_assistant_dashboard.config import (
 logger = logging.getLogger(__name__)
 
 CHAT_LOG_DIR = WORK_DIR / "scratch" / "chat-log"
+_CHAT_LOG_ENTRY = re.compile(
+    r"^## (You|Claude) \(([^)]+)\)\n(.*?)(?=^## |\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_HISTORY_PAIRS = 5
 
 
 class ChatTab:
@@ -151,6 +157,57 @@ class ChatTab:
 
         # Send/Stop button — updated externally by _send_now / _on_done
         self._send_btn: tk.Button | None = None
+
+    # -- history replay -------------------------------------------------------
+
+    def load_history(self, help_text: str) -> None:
+        """Replay recent messages from the last chat log, or show help."""
+        messages = self._load_last_chat_log()
+        if not messages:
+            self._append_system(help_text)
+            return
+        for role, ts, text in messages:
+            self._display_history_entry(role, ts, text)
+        try:
+            self._messages.config(state=tk.NORMAL)
+            self._messages.insert(tk.END, "── resumed ──\n\n", "separator")
+            self._messages.config(state=tk.DISABLED)
+            self._messages.see(tk.END)
+        except tk.TclError:
+            pass
+
+    def _load_last_chat_log(self) -> list[tuple[str, str, str]]:
+        """Parse the last N message pairs from the most recent chat log."""
+        if not CHAT_LOG_DIR.is_dir():
+            return []
+        logs = sorted(CHAT_LOG_DIR.glob("*.md"), key=lambda f: f.name, reverse=True)
+        if not logs:
+            return []
+        try:
+            content = logs[0].read_text(encoding="utf-8")
+        except OSError:
+            return []
+        matches = _CHAT_LOG_ENTRY.findall(content)
+        if not matches:
+            return []
+        return matches[-(_HISTORY_PAIRS * 2) :]
+
+    def _display_history_entry(self, role: str, ts: str, text: str) -> None:
+        """Display a historical message without logging."""
+        text = text.strip()
+        try:
+            self._messages.config(state=tk.NORMAL)
+            if role == "You":
+                self._messages.insert(tk.END, "You ", "user_name")
+                self._messages.insert(tk.END, f"{ts}\n", "timestamp")
+                self._messages.insert(tk.END, text + "\n\n", "user_msg")
+            else:
+                self._messages.insert(tk.END, "Claude ", "assistant_name")
+                self._messages.insert(tk.END, f"{ts}\n", "timestamp")
+                self._messages.insert(tk.END, text + "\n\n", "assistant_msg")
+            self._messages.config(state=tk.DISABLED)
+        except tk.TclError:
+            pass
 
     # -- button control ------------------------------------------------------
 
@@ -501,7 +558,11 @@ class ChatTab:
     def _clear(self) -> None:
         """Clear conversation history and display."""
         self._pending_messages.clear()
-        self._chat_log_path = None
+        # Create a new empty chat log so restart after clear shows help.
+        CHAT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        self._chat_log_path = CHAT_LOG_DIR / f"{timestamp}.md"
+        self._chat_log_path.touch()
         try:
             self._messages.config(state=tk.NORMAL)
             self._messages.delete("1.0", tk.END)

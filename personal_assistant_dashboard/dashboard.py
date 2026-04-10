@@ -254,6 +254,10 @@ class Dashboard:
             console_log=self.log_console,
             notify_tab=self._notify_tab,
         )
+        help_lines = ["Built-in commands:"]
+        for cmd, desc in self._BUILTIN_COMMANDS.items():
+            help_lines.append(f"  {cmd}  — {desc}")
+        self._chat_tab.load_history("\n".join(help_lines))
 
         # Pages tab — discovers HTML files in the working directory
         pages_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
@@ -1159,6 +1163,8 @@ class Dashboard:
         next_start: datetime | None = None
         for event in self._all_events:
             if event.get("all_day"):
+                continue
+            if _user_response_status(event) == "declined":
                 continue
             start_str = event.get("start", "")
             if not start_str:
