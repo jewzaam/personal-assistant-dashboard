@@ -57,6 +57,7 @@ from personal_assistant_dashboard.config import (
     COLOR_WHITE,
     COLOR_WINDOW_BORDER,
     DEBOUNCE_RESIZE_MS,
+    DETAIL_PANEL_WIDTH,
     BG_INPUT,
     FG_ACCENT,
     FG_DIM,
@@ -148,6 +149,11 @@ class Dashboard:
         self._tooltip_tag: str | None = None
         self._tooltip_timer: str | None = None
         self._tooltip_pending_pos: tuple[int, int] = (0, 0)
+        self._detail_panel: tk.Frame | None = None
+        self._detail_visible = False
+        self._selected_event_tag: str | None = None
+        self._paned: tk.PanedWindow | None = None
+        self._detail_panel_width: int = DETAIL_PANEL_WIDTH
         self._notebook: ttk.Notebook | None = None
         self._cal_refresh_timer: str | None = None
         self._shaded = False
@@ -634,13 +640,22 @@ class Dashboard:
                 font=self._font_body,
             ).pack(side=tk.LEFT, padx=(0, 8))
 
-        # Calendar area
+        # Calendar area — PanedWindow for canvas + detail panel
         self._calendar_frame = tk.Frame(cal_tab, bg=BG_WINDOW)
         self._calendar_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Canvas + scrollbar (persistent, redrawn on nav)
-        self._canvas_container = tk.Frame(self._calendar_frame, bg=BORDER_COLOR)
-        self._canvas_container.pack(fill=tk.BOTH, expand=True)
+        self._paned = tk.PanedWindow(
+            self._calendar_frame,
+            orient=tk.HORIZONTAL,
+            bg=BORDER_COLOR,
+            sashwidth=4,
+            sashrelief=tk.FLAT,
+        )
+        self._paned.pack(fill=tk.BOTH, expand=True)
+
+        # Left pane: canvas + scrollbar
+        self._canvas_container = tk.Frame(self._paned, bg=BORDER_COLOR)
+        self._paned.add(self._canvas_container, stretch="always")
 
         self._canvas = tk.Canvas(
             self._canvas_container,
@@ -657,6 +672,10 @@ class Dashboard:
         self._scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self._canvas.configure(yscrollcommand=self._scrollbar.set)
 
+        # Right pane: detail panel (built once, shown/hidden dynamically)
+        self._detail_panel = tk.Frame(self._paned, bg=BG_WINDOW)
+        # Not added to paned yet — shown on first event click
+
         # Scroll bindings
         self._canvas.bind("<MouseWheel>", self._on_scroll)
         self._canvas.bind("<Button-4>", self._on_scroll)
@@ -671,6 +690,9 @@ class Dashboard:
         # Keyboard nav
         self._window.bind("<Left>", lambda e: self._prev_day())
         self._window.bind("<Right>", lambda e: self._next_day())
+
+        # Escape closes the detail panel
+        self._canvas.bind("<Escape>", lambda e: self._hide_detail_panel())
 
         # Redraw on window resize
         self._resize_timer: str | None = None
@@ -1348,6 +1370,9 @@ class Dashboard:
         # Save font scale
         if hasattr(self, "_font_scale") and self._font_scale != 1.0:
             state["font_scale"] = round(self._font_scale, 2)
+        # Save detail panel width
+        if self._detail_panel_width != DETAIL_PANEL_WIDTH:
+            state["detail_panel_width"] = self._detail_panel_width
         # Save geometry
         if self._last_good_geometry:
             state["geometry"] = self._last_good_geometry
@@ -1411,6 +1436,11 @@ class Dashboard:
         if font_scale and isinstance(font_scale, (int, float)):
             self._font_scale = float(font_scale)
             self._scale_fonts(0.0)  # apply without changing the scale factor
+
+        # Restore detail panel width
+        detail_w = state.get("detail_panel_width")
+        if detail_w and isinstance(detail_w, int) and detail_w > 0:
+            self._detail_panel_width = detail_w
 
         # Restore bells
         bells = state.get("bells", [])
@@ -1816,18 +1846,16 @@ class Dashboard:
         self,
         cal_event: CalendarEvent,
         status_val: str,
-        popup: tk.Toplevel,
     ) -> Callable[[], None]:
         """Create a callback for response buttons."""
 
         def cmd() -> None:
             self._update_response(cal_event, status_val)
-            popup.destroy()
 
         return cmd
 
     def _on_left_click(self, event: Any) -> None:
-        """Show event details popup on left-click."""
+        """Show event details in side panel, or collapse on background click."""
         if not self._canvas:
             return
         self._canvas.focus_set()
@@ -1837,19 +1865,34 @@ class Dashboard:
             self._canvas.canvasy(event.y),
         )
         if not item:
+            self._hide_detail_panel()
             return
 
         tags = self._canvas.gettags(item[0])
         evt_tag = next((t for t in tags if t.startswith("evt_")), None)
         if not evt_tag or evt_tag not in self._canvas_event_map:
+            self._hide_detail_panel()
+            return
+
+        # Toggle: clicking the same event again collapses the panel
+        if evt_tag == self._selected_event_tag and self._detail_visible:
+            self._hide_detail_panel()
             return
 
         cal_event = self._canvas_event_map[evt_tag]
+        self._selected_event_tag = evt_tag
         self._show_event_details(cal_event)
 
     def _show_event_details(self, cal_event: CalendarEvent) -> None:
-        """Show event details in a modal popup."""
+        """Show event details in the inline side panel."""
         import webbrowser
+
+        if not self._detail_panel:
+            return
+
+        # Clear previous content
+        for child in self._detail_panel.winfo_children():
+            child.destroy()
 
         summary = cal_event.get("summary", "(no title)")
         start = format_event_time(cal_event.get("start", ""))
@@ -1863,30 +1906,21 @@ class Dashboard:
         attachments = cal_event.get("attachments", [])
         attendees = cal_event.get("attendees", [])
 
-        popup = tk.Toplevel(self._root)
-        popup.title(f"\U0001f4c5 {summary[:50]}")
-        popup.configure(bg=BG_WINDOW)
-        popup.geometry("650x450")
-        popup.transient(self._window)
-        popup.update_idletasks()
-        popup.grab_set()
-
-        # Close on escape or click outside
-        popup.bind("<Escape>", lambda e: popup.destroy())
-        popup.protocol("WM_DELETE_WINDOW", popup.destroy)
+        panel = self._detail_panel
 
         # Title row
         tk.Label(
-            popup,
+            panel,
             text=summary,
             bg=BG_WINDOW,
             fg=FG_ACCENT,
             font=self._font_heading,
             anchor=tk.W,
+            wraplength=DETAIL_PANEL_WIDTH - 16,
         ).pack(fill=tk.X, padx=8, pady=(8, 2))
 
-        # Subtitle row: time + status + action buttons
-        sub = tk.Frame(popup, bg=BG_WINDOW)
+        # Subtitle row: time + status
+        sub = tk.Frame(panel, bg=BG_WINDOW)
         sub.pack(fill=tk.X, padx=8, pady=(0, 4))
 
         tk.Label(
@@ -1898,7 +1932,10 @@ class Dashboard:
             anchor=tk.W,
         ).pack(side=tk.LEFT)
 
-        # Action buttons on subtitle row
+        # Action buttons row (separate row for narrow panel)
+        btn_frame = tk.Frame(panel, bg=BG_WINDOW)
+        btn_frame.pack(fill=tk.X, padx=8, pady=(0, 4))
+
         is_organizer = cal_event.get("organizer_self", False)
         buttons: list[tuple[str, str, str]] = []
         if is_organizer:
@@ -1911,15 +1948,12 @@ class Dashboard:
         for label, status_val, color in buttons:
             if status_val == "delete":
 
-                def _del_cmd(
-                    evt: CalendarEvent = cal_event,
-                    p: tk.Toplevel = popup,
-                ) -> None:
+                def _del_cmd(evt: CalendarEvent = cal_event) -> None:
                     self._delete_event(evt)
-                    p.destroy()
+                    self._hide_detail_panel()
 
                 tk.Button(
-                    sub,
+                    btn_frame,
                     text=label,
                     bg=color,
                     fg=COLOR_WHITE,
@@ -1929,10 +1963,10 @@ class Dashboard:
                     pady=1,
                     cursor="hand2",
                     command=_del_cmd,
-                ).pack(side=tk.RIGHT, padx=1)
+                ).pack(side=tk.LEFT, padx=1)
             else:
                 btn = tk.Button(
-                    sub,
+                    btn_frame,
                     text=label,
                     bg=color if response != status_val else "#3a3a3a",
                     fg="#ffffff" if response != status_val else COLOR_WINDOW_BORDER,
@@ -1941,14 +1975,14 @@ class Dashboard:
                     padx=6,
                     pady=1,
                     cursor="hand2" if response != status_val else "",
-                    command=self._make_response_cmd(cal_event, status_val, popup),
+                    command=self._make_response_cmd(cal_event, status_val),
                 )
-                btn.pack(side=tk.RIGHT, padx=1)
+                btn.pack(side=tk.LEFT, padx=1)
                 if response == status_val:
                     btn.configure(state=tk.DISABLED)
 
         # Content area
-        content_frame = tk.Frame(popup, bg=BG_OUTPUT)
+        content_frame = tk.Frame(panel, bg=BG_OUTPUT)
         content_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
 
         text = tk.Text(
@@ -2052,6 +2086,37 @@ class Dashboard:
                     text.insert(tk.END, "\n")
 
         text.configure(state=tk.DISABLED)
+
+        # Show the panel if not already visible
+        self._show_detail_panel()
+
+    def _show_detail_panel(self) -> None:
+        """Add the detail panel to the PanedWindow if not already visible."""
+        if self._detail_visible or not self._paned or not self._detail_panel:
+            return
+        self._paned.add(
+            self._detail_panel,
+            width=self._detail_panel_width,
+            stretch="never",
+        )
+        self._detail_visible = True
+
+    def _hide_detail_panel(self) -> None:
+        """Remove the detail panel from the PanedWindow."""
+        if not self._detail_visible or not self._paned or not self._detail_panel:
+            return
+        # Remember the current panel width before collapsing
+        try:
+            sash_x = self._paned.sash_coord(0)[0]
+            paned_width = self._paned.winfo_width()
+            panel_width = paned_width - sash_x - self._paned.cget("sashwidth")
+            if panel_width > 0:
+                self._detail_panel_width = panel_width
+        except (tk.TclError, IndexError):
+            pass
+        self._paned.forget(self._detail_panel)
+        self._detail_visible = False
+        self._selected_event_tag = None
 
     def _delete_event(self, cal_event: CalendarEvent) -> None:
         """Delete an event via GWS CLI (organizer only), then refresh."""
@@ -2196,6 +2261,7 @@ class Dashboard:
 
     def _prev_day(self) -> None:
         self._dismiss_context_menu()
+        self._hide_detail_panel()
         self._current_date -= timedelta(days=1)
         self._update_date_label()
         self._render_current_day()
@@ -2203,6 +2269,7 @@ class Dashboard:
 
     def _next_day(self) -> None:
         self._dismiss_context_menu()
+        self._hide_detail_panel()
         self._current_date += timedelta(days=1)
         self._update_date_label()
         self._render_current_day()
@@ -2210,6 +2277,7 @@ class Dashboard:
 
     def _go_today(self) -> None:
         self._dismiss_context_menu()
+        self._hide_detail_panel()
         self._current_date = date.today()
         self._update_date_label()
         self._render_current_day()
