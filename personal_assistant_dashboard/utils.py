@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from personal_assistant_dashboard.models import CalendarEvent
 
 
@@ -129,3 +131,50 @@ def filter_dismissed_missed_meetings(
     if not dismissed_ids or not missed_meetings:
         return missed_meetings
     return [e for e in missed_meetings if e.get("id", "") not in dismissed_ids]
+
+
+_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
+
+
+def _first_sentence(text: str, max_len: int = 120) -> str:
+    """Return the first sentence of text, flattened and truncated to max_len."""
+    normalized = " ".join(text.split())
+    if not normalized:
+        return ""
+    match = re.search(r"[.!?](?:\s|$)", normalized)
+    first = normalized[: match.end()].strip() if match else normalized
+    if len(first) > max_len:
+        first = first[: max_len - 3].rstrip() + "..."
+    return first
+
+
+def list_local_skills(skills_dir: Path) -> list[tuple[str, str]]:
+    """Return (name, first-sentence description) pairs for all SKILL.md files.
+
+    Parses YAML frontmatter from each ``SKILL.md`` under ``skills_dir``. Skips
+    files with missing/invalid frontmatter or without a name+description pair.
+    Returns an empty list if ``skills_dir`` does not exist.
+    """
+    if not skills_dir.is_dir():
+        return []
+    results: list[tuple[str, str]] = []
+    for skill_md in sorted(skills_dir.glob("**/SKILL.md")):
+        try:
+            content = skill_md.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        match = _FRONTMATTER_RE.match(content)
+        if not match:
+            continue
+        try:
+            data = yaml.safe_load(match.group(1))
+        except yaml.YAMLError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        name = str(data.get("name", "") or "").strip()
+        desc = str(data.get("description", "") or "").strip()
+        if not name or not desc:
+            continue
+        results.append((name, _first_sentence(desc)))
+    return results
