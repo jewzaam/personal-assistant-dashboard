@@ -40,11 +40,18 @@ class SessionData:
     five_hour_resets_at: int | None
     seven_day_pct: int
     seven_day_resets_at: int | None
+    mtime: float = 0.0  # filesystem mtime of the source JSON file
 
 
 @dataclass
 class AggregateData:
-    """Aggregated metrics across multiple sessions."""
+    """Aggregated metrics across sessions.
+
+    Sums (cost, tokens, lines) are cumulative across all sessions for the day.
+    Rate limit values come from the most recently-modified session file
+    because rate limits are a point-in-time snapshot; aggregating across
+    stale files produces incorrect results once a window rolls over.
+    """
 
     session_count: int
     total_cost_usd: float
@@ -52,22 +59,29 @@ class AggregateData:
     total_output_tokens: int
     total_lines_added: int
     total_lines_removed: int
-    max_five_hour_pct: int
-    max_seven_day_pct: int
-    earliest_five_hour_reset: int | None
-    earliest_seven_day_reset: int | None
+    current_context_pct: int
+    current_five_hour_pct: int
+    current_five_hour_reset: int | None
+    current_seven_day_pct: int
+    current_seven_day_reset: int | None
 
 
 def parse_session_file(path: Path) -> SessionData | None:
     """Parse a single session-tracker JSON file.
 
-    Returns None if the file can't be read or parsed.
+    Returns None if the file can't be read or parsed. The SessionData's
+    mtime field is populated from the file's filesystem mtime.
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("Skipping %s: %s", path.name, e)
         return None
+
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
 
     model = data.get("model", {})
     cost = data.get("cost", {})
@@ -93,6 +107,7 @@ def parse_session_file(path: Path) -> SessionData | None:
         five_hour_resets_at=five_h.get("resets_at"),
         seven_day_pct=int(seven_d.get("used_percentage") or 0),
         seven_day_resets_at=seven_d.get("resets_at"),
+        mtime=mtime,
     )
 
 
@@ -138,7 +153,13 @@ def load_sessions(
 
 
 def aggregate(sessions: list[SessionData]) -> AggregateData:
-    """Compute aggregate metrics from a list of sessions."""
+    """Compute aggregate metrics from a list of sessions.
+
+    Cost and token totals are summed across all sessions. Rate limit
+    percentages and context % come from the session with the latest file
+    mtime, because those are point-in-time values — older files contain
+    stale snapshots from before window rollovers.
+    """
     if not sessions:
         return AggregateData(
             session_count=0,
@@ -147,18 +168,14 @@ def aggregate(sessions: list[SessionData]) -> AggregateData:
             total_output_tokens=0,
             total_lines_added=0,
             total_lines_removed=0,
-            max_five_hour_pct=0,
-            max_seven_day_pct=0,
-            earliest_five_hour_reset=None,
-            earliest_seven_day_reset=None,
+            current_context_pct=0,
+            current_five_hour_pct=0,
+            current_five_hour_reset=None,
+            current_seven_day_pct=0,
+            current_seven_day_reset=None,
         )
 
-    five_h_resets = [
-        s.five_hour_resets_at for s in sessions if s.five_hour_resets_at is not None
-    ]
-    seven_d_resets = [
-        s.seven_day_resets_at for s in sessions if s.seven_day_resets_at is not None
-    ]
+    newest = max(sessions, key=lambda s: s.mtime)
 
     return AggregateData(
         session_count=len(sessions),
@@ -167,10 +184,11 @@ def aggregate(sessions: list[SessionData]) -> AggregateData:
         total_output_tokens=sum(s.total_output_tokens for s in sessions),
         total_lines_added=sum(s.lines_added for s in sessions),
         total_lines_removed=sum(s.lines_removed for s in sessions),
-        max_five_hour_pct=max(s.five_hour_pct for s in sessions),
-        max_seven_day_pct=max(s.seven_day_pct for s in sessions),
-        earliest_five_hour_reset=min(five_h_resets) if five_h_resets else None,
-        earliest_seven_day_reset=min(seven_d_resets) if seven_d_resets else None,
+        current_context_pct=newest.context_used_pct,
+        current_five_hour_pct=newest.five_hour_pct,
+        current_five_hour_reset=newest.five_hour_resets_at,
+        current_seven_day_pct=newest.seven_day_pct,
+        current_seven_day_reset=newest.seven_day_resets_at,
     )
 
 
@@ -204,7 +222,13 @@ def format_duration_compact(ms: int) -> str:
 
 
 def format_reset_time(resets_at: int | None) -> str:
-    """Format a reset timestamp as time remaining."""
+    """Format a reset timestamp as time remaining.
+
+    Precision:
+    - < 1 minute: "Ns"
+    - < 1 hour: "MmSs" (e.g. "20m13s")
+    - >= 1 hour: "HhMm" (e.g. "3h4m")
+    """
     if resets_at is None:
         return ""
     remaining = resets_at - int(time.time())
@@ -214,7 +238,8 @@ def format_reset_time(resets_at: int | None) -> str:
         return f"{remaining}s"
     minutes = remaining // 60
     if minutes < 60:
-        return f"{minutes}m"
+        seconds = remaining % 60
+        return f"{minutes}m{seconds}s"
     hours = minutes // 60
     remaining_m = minutes % 60
     return f"{hours}h{remaining_m}m"

@@ -191,6 +191,7 @@ class TestAggregate:
             "five_hour_resets_at": 1775797200,
             "seven_day_pct": 60,
             "seven_day_resets_at": 1775858400,
+            "mtime": 1000.0,
         }
         defaults.update(overrides)
         return SessionData(**defaults)  # type: ignore[arg-type]
@@ -210,53 +211,66 @@ class TestAggregate:
         assert result.total_output_tokens == 50
         assert result.total_lines_added == 10
         assert result.total_lines_removed == 2
-        assert result.max_five_hour_pct == 30
-        assert result.max_seven_day_pct == 60
-        assert result.earliest_five_hour_reset == 1775797200
-        assert result.earliest_seven_day_reset == 1775858400
+        assert result.current_context_pct == 5
+        assert result.current_five_hour_pct == 30
+        assert result.current_seven_day_pct == 60
+        assert result.current_five_hour_reset == 1775797200
+        assert result.current_seven_day_reset == 1775858400
 
-    def test_multiple_sessions_sums_and_maxes(self) -> None:
-        s1 = self._make_session(
-            session_id="s1",
+    def test_rate_limits_come_from_newest_session(self) -> None:
+        """Rate limits should come from the latest-mtime session, not max.
+
+        An older session can show higher percentages from before a window
+        reset. The newest file represents the current state.
+        """
+        old = self._make_session(
+            session_id="old",
             total_cost_usd=0.10,
             total_input_tokens=100,
             total_output_tokens=50,
             lines_added=10,
             lines_removed=2,
-            five_hour_pct=30,
-            seven_day_pct=60,
+            context_used_pct=40,
+            five_hour_pct=95,  # pre-reset, near full
+            seven_day_pct=80,
             five_hour_resets_at=1775797200,
             seven_day_resets_at=1775858400,
+            mtime=1000.0,
         )
-        s2 = self._make_session(
-            session_id="s2",
+        new = self._make_session(
+            session_id="new",
             total_cost_usd=0.25,
             total_input_tokens=200,
             total_output_tokens=100,
             lines_added=5,
             lines_removed=3,
-            five_hour_pct=50,
+            context_used_pct=15,
+            five_hour_pct=20,  # fresh window
             seven_day_pct=40,
-            five_hour_resets_at=1775800000,
-            seven_day_resets_at=1775850000,
+            five_hour_resets_at=1775815200,
+            seven_day_resets_at=1775876400,
+            mtime=2000.0,
         )
-        result = aggregate([s1, s2])
+        result = aggregate([old, new])
+        # Sums are cumulative across all sessions
         assert result.session_count == 2
         assert result.total_cost_usd == pytest.approx(0.35)
         assert result.total_input_tokens == 300
         assert result.total_output_tokens == 150
         assert result.total_lines_added == 15
         assert result.total_lines_removed == 5
-        assert result.max_five_hour_pct == 50
-        assert result.max_seven_day_pct == 60
-        assert result.earliest_five_hour_reset == 1775797200
-        assert result.earliest_seven_day_reset == 1775850000
+        # Rate limits come from the newest session, not the max
+        assert result.current_context_pct == 15
+        assert result.current_five_hour_pct == 20
+        assert result.current_seven_day_pct == 40
+        assert result.current_five_hour_reset == 1775815200
+        assert result.current_seven_day_reset == 1775876400
 
-    def test_none_resets_at_excluded(self) -> None:
+    def test_none_resets_at_preserved(self) -> None:
         s = self._make_session(five_hour_resets_at=None, seven_day_resets_at=None)
         result = aggregate([s])
-        assert result.earliest_five_hour_reset is None
-        assert result.earliest_seven_day_reset is None
+        assert result.current_five_hour_reset is None
+        assert result.current_seven_day_reset is None
 
 
 class TestFormatHelpers:
@@ -310,3 +324,14 @@ class TestFormatHelpers:
     def test_format_reset_time_past(self) -> None:
         result = format_reset_time(1000)
         assert result == "0s"
+
+    def test_format_reset_time_under_hour_has_seconds(self) -> None:
+        future = int(time.time()) + 1213  # 20m13s
+        result = format_reset_time(future)
+        assert "m" in result and result.endswith("s")
+        assert "h" not in result
+
+    def test_format_reset_time_over_hour_no_seconds(self) -> None:
+        future = int(time.time()) + 3700  # 1h1m
+        result = format_reset_time(future)
+        assert "h" in result and result.endswith("m")
