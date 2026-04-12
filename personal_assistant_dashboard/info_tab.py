@@ -7,8 +7,10 @@ with one row per session plus an aggregate summary.
 
 import logging
 import tkinter as tk
+from collections.abc import Callable
 from datetime import date, datetime, timezone
 from tkinter import ttk
+from typing import Any
 
 from personal_assistant_dashboard.config import (
     BG_WINDOW,
@@ -49,6 +51,19 @@ _COLUMNS = [
     ("lines", "Lines", 70, tk.E),
 ]
 
+# Sort key extractors: column id → function(SessionData) → sortable value
+_SortKey = Callable[[SessionData], Any]
+_SORT_KEYS: dict[str, _SortKey] = {
+    "project": lambda s: _project_name(s.cwd).lower(),
+    "model": lambda s: s.model_display_name.lower(),
+    "cost": lambda s: s.total_cost_usd,
+    "tok_in": lambda s: s.total_input_tokens,
+    "tok_out": lambda s: s.total_output_tokens,
+    "ctx_pct": lambda s: s.context_used_pct,
+    "duration": lambda s: s.total_duration_ms,
+    "lines": lambda s: s.lines_added + s.lines_removed,
+}
+
 # Percentage thresholds for color coding
 _THRESHOLD_MID = 60
 _THRESHOLD_HIGH = 90
@@ -70,6 +85,10 @@ class InfoTab:
         self._console_log = console_log
         self._cwd_filter = cwd_filter
         self._refresh_timer: str | None = None
+        self._sessions: list[SessionData] = []
+        self._agg: AggregateData | None = None
+        self._sort_col: str | None = None
+        self._sort_reverse: bool = False
 
         self._build()
         self._schedule_refresh()
@@ -139,8 +158,12 @@ class InfoTab:
             style="Info.Treeview",
             selectmode="none",
         )
+
+        def _make_sort_cmd(c: str) -> Callable[[], None]:
+            return lambda: self._on_heading_click(c)
+
         for col_id, heading, width, anchor in _COLUMNS:
-            self._tree.heading(col_id, text=heading)
+            self._tree.heading(col_id, text=heading, command=_make_sort_cmd(col_id))
             self._tree.column(  # type: ignore[call-overload]
                 col_id, width=width, anchor=anchor, minwidth=40
             )
@@ -187,14 +210,39 @@ class InfoTab:
 
     def _refresh(self) -> None:
         """Reload session data and update the display."""
-        sessions = load_sessions(date.today(), cwd_filter=self._cwd_filter)
-        agg = aggregate(sessions)
-        self._update_summary(agg)
-        self._update_table(sessions, agg)
+        self._sessions = load_sessions(date.today(), cwd_filter=self._cwd_filter)
+        self._agg = aggregate(self._sessions)
+        self._update_summary(self._agg)
+        self._sort_and_render()
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
         self._status_label.configure(
-            text=f"Last updated: {now}  \u2022  {agg.session_count} session(s)"
+            text=f"Last updated: {now}  \u2022  {self._agg.session_count} session(s)"
         )
+
+    def _on_heading_click(self, col_id: str) -> None:
+        """Sort by the clicked column, toggling direction on repeat click."""
+        if self._sort_col == col_id:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_col = col_id
+            self._sort_reverse = False
+        self._sort_and_render()
+
+    def _sort_and_render(self) -> None:
+        """Sort sessions by current sort column and rebuild the table."""
+        sessions = list(self._sessions)
+        if self._sort_col and self._sort_col in _SORT_KEYS:
+            key_fn = _SORT_KEYS[self._sort_col]
+            sessions.sort(key=key_fn, reverse=self._sort_reverse)
+        # Update heading text to show sort indicator
+        for col_id, heading, _w, _a in _COLUMNS:
+            if col_id == self._sort_col:
+                arrow = " \u25bc" if self._sort_reverse else " \u25b2"
+                self._tree.heading(col_id, text=heading + arrow)
+            else:
+                self._tree.heading(col_id, text=heading)
+        if self._agg is not None:
+            self._update_table(sessions, self._agg)
 
     def _update_summary(self, agg: AggregateData) -> None:
         """Update the aggregate summary label."""
