@@ -28,6 +28,7 @@ from personal_assistant_dashboard.session_tracker import (
     aggregate,
     format_cost,
     format_duration_compact,
+    format_reset_time,
     format_tokens,
     load_sessions,
 )
@@ -44,8 +45,6 @@ _COLUMNS = [
     ("tok_in", "Tok In", 60, tk.E),
     ("tok_out", "Tok Out", 60, tk.E),
     ("ctx_pct", "Ctx %", 50, tk.E),
-    ("five_h", "5h %", 50, tk.E),
-    ("seven_d", "7d %", 50, tk.E),
     ("duration", "Dur", 50, tk.E),
     ("lines", "Lines", 70, tk.E),
 ]
@@ -77,9 +76,12 @@ class InfoTab:
 
     def _build(self) -> None:
         """Build the tab UI."""
-        # Aggregate summary at top
+        # Header: aggregate summary (left) + refresh button (right)
+        header = tk.Frame(self._parent, bg=BG_WINDOW)
+        header.pack(fill=tk.X)
+
         self._summary_label = tk.Label(
-            self._parent,
+            header,
             text="Loading...",
             bg=BG_WINDOW,
             fg=FG_TEXT,
@@ -88,7 +90,20 @@ class InfoTab:
             padx=PAD,
             pady=PAD,
         )
-        self._summary_label.pack(fill=tk.X)
+        self._summary_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        refresh_btn = tk.Button(
+            header,
+            text="\u21bb",  # ↻
+            bg=BG_WINDOW,
+            fg=FG_TEXT,
+            font=FONT_NAME_HEADING,
+            borderwidth=0,
+            command=self._manual_refresh,
+            cursor="hand2",
+            padx=PAD,
+        )
+        refresh_btn.pack(side=tk.RIGHT)
 
         # Treeview table
         col_ids = [c[0] for c in _COLUMNS]
@@ -113,8 +128,12 @@ class InfoTab:
             foreground=[("selected", FG_TEXT)],
         )
 
+        # Container frame: tree + vertical scrollbar side-by-side
+        tree_container = tk.Frame(self._parent, bg=BG_WINDOW)
+        tree_container.pack(fill=tk.BOTH, expand=True, padx=PAD)
+
         self._tree = ttk.Treeview(
-            self._parent,
+            tree_container,
             columns=col_ids,
             show="headings",
             style="Info.Treeview",
@@ -133,37 +152,25 @@ class InfoTab:
         self._tree.tag_configure("aggregate", foreground=FG_TEXT)
 
         scrollbar = tk.Scrollbar(
-            self._parent, orient=tk.VERTICAL, command=self._tree.yview
+            tree_container,
+            orient=tk.VERTICAL,
+            command=self._tree.yview,
+            width=16,
         )
         self._tree.configure(yscrollcommand=scrollbar.set)
-        self._tree.pack(fill=tk.BOTH, expand=True, padx=PAD)
+        self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Bottom bar: last-updated + refresh button
-        bottom = tk.Frame(self._parent, bg=BG_WINDOW)
-        bottom.pack(fill=tk.X, padx=PAD, pady=(0, PAD))
-
+        # Bottom bar: last-updated status
         self._status_label = tk.Label(
-            bottom,
+            self._parent,
             text="",
             bg=BG_WINDOW,
             fg=FG_DIM,
             font=FONT_NAME_BODY,
             anchor=tk.W,
         )
-        self._status_label.pack(side=tk.LEFT)
-
-        refresh_btn = tk.Button(
-            bottom,
-            text="\u21bb",  # ↻
-            bg=BG_WINDOW,
-            fg=FG_TEXT,
-            font=FONT_NAME_BODY,
-            borderwidth=0,
-            command=self._manual_refresh,
-            cursor="hand2",
-        )
-        refresh_btn.pack(side=tk.RIGHT)
+        self._status_label.pack(fill=tk.X, padx=PAD, pady=(0, PAD))
 
     def _schedule_refresh(self) -> None:
         """Schedule the next auto-refresh."""
@@ -195,17 +202,27 @@ class InfoTab:
             self._summary_label.configure(text="No sessions found today")
             return
 
+        # Format labels as <time-until-reset>: NN% to match the CLI
+        # statusline. Fall back to "5h"/"7d" if the reset timestamp is
+        # missing from the data.
+        five_h_reset = format_reset_time(agg.current_five_hour_reset)
+        seven_d_reset = format_reset_time(agg.current_seven_day_reset)
+        five_h_label = five_h_reset or "5h"
+        seven_d_label = seven_d_reset or "7d"
+
+        # Match the column order: Cost, Tokens, then rate limits.
+        # Context % is per-session (shown in the table), not global.
         parts = [
             format_cost(agg.total_cost_usd),
             f"{format_tokens(agg.total_input_tokens)} in / "
             f"{format_tokens(agg.total_output_tokens)} out",
-            f"5h: {agg.max_five_hour_pct}%",
-            f"7d: {agg.max_seven_day_pct}%",
+            f"{five_h_label}: {agg.current_five_hour_pct}%",
+            f"{seven_d_label}: {agg.current_seven_day_pct}%",
         ]
         self._summary_label.configure(text="  \u2022  ".join(parts))
 
-        # Color the summary based on worst rate limit
-        worst = max(agg.max_five_hour_pct, agg.max_seven_day_pct)
+        # Color the summary based on the worst current rate limit
+        worst = max(agg.current_five_hour_pct, agg.current_seven_day_pct)
         self._summary_label.configure(fg=_pct_color(worst))
 
     def _update_table(self, sessions: list[SessionData], agg: AggregateData) -> None:
@@ -220,14 +237,12 @@ class InfoTab:
             "",
             tk.END,
             values=(
+                "TOTAL",
                 "",
-                f"TOTAL ({agg.session_count})",
                 format_cost(agg.total_cost_usd),
                 format_tokens(agg.total_input_tokens),
                 format_tokens(agg.total_output_tokens),
                 "",
-                f"{agg.max_five_hour_pct}%",
-                f"{agg.max_seven_day_pct}%",
                 "",
                 f"+{agg.total_lines_added}/-{agg.total_lines_removed}",
             ),
@@ -242,8 +257,7 @@ class InfoTab:
                 if s.model_display_name != "unknown"
                 else "?"
             )
-            worst_pct = max(s.five_hour_pct, s.seven_day_pct, s.context_used_pct)
-            tag = _pct_tag(worst_pct)
+            tag = _pct_tag(s.context_used_pct)
 
             self._tree.insert(
                 "",
@@ -255,8 +269,6 @@ class InfoTab:
                     format_tokens(s.total_input_tokens),
                     format_tokens(s.total_output_tokens),
                     f"{s.context_used_pct}%",
-                    f"{s.five_hour_pct}%",
-                    f"{s.seven_day_pct}%",
                     format_duration_compact(s.total_duration_ms),
                     f"+{s.lines_added}/-{s.lines_removed}",
                 ),
