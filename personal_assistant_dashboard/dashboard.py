@@ -254,10 +254,6 @@ class Dashboard:
             console_log=self.log_console,
             notify_tab=self._notify_tab,
         )
-        help_lines = ["Built-in commands:"]
-        for cmd, desc in self._BUILTIN_COMMANDS.items():
-            help_lines.append(f"  {cmd}  — {desc}")
-        self._chat_tab.load_history("\n".join(help_lines))
 
         # Pages tab — discovers HTML files in the working directory
         pages_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
@@ -439,7 +435,12 @@ class Dashboard:
         self._root.after(GEOMETRY_CAPTURE_DELAY_MS, self._capture_geometry)
         # Always start calendar data refresh (bells need fresh data)
         self._start_cal_refresh()
-        # Chat agent wakes on first user message — no startup greeting
+        # Chat agent wakes on first user message — no startup greeting.
+        # If there's no prior chat history, simulate the user typing "help"
+        # and hitting Send so the built-in command handler shows the help.
+        if not self._chat_tab.load_history():
+            self._quick_chat_input.insert("1.0", "help")
+            self._on_quick_chat_send()
 
     def _schedule(self, fn: Any, *args: Any) -> None:
         """Schedule a callback on the main thread from a background thread."""
@@ -995,7 +996,22 @@ class Dashboard:
         """
         lower = text.strip().lower()
         if lower == "help":
-            lines = ["Built-in commands:"]
+            from personal_assistant_dashboard.utils import list_local_skills
+
+            lines: list[str] = []
+            for title, skills_dir in (
+                ("Global skills:", Path.home() / ".claude" / "skills"),
+                ("Local skills:", WORK_DIR / ".claude" / "skills"),
+            ):
+                lines.append(title)
+                skills = list_local_skills(skills_dir)
+                if skills:
+                    for name, desc in skills:
+                        lines.append(f"  /{name}  — {desc}")
+                else:
+                    lines.append("  (none)")
+                lines.append("")
+            lines.append("Built-in commands:")
             for cmd, desc in self._BUILTIN_COMMANDS.items():
                 lines.append(f"  {cmd}  — {desc}")
             if hasattr(self, "_chat_tab"):
@@ -1003,7 +1019,6 @@ class Dashboard:
             return True
         if lower == "session_id":
             from personal_assistant_dashboard.chat_client import ChatClient
-            from personal_assistant_dashboard.config import WORK_DIR
 
             sid = ChatClient._find_last_session(WORK_DIR)
             msg = sid if sid else "No active session"
@@ -1054,8 +1069,15 @@ class Dashboard:
                 if self._notebook.tab(tab_id, "text") == "Chat":
                     self._notebook.select(tab_id)
                     break
+        # Dashboard-local commands don't go to Claude, so we don't log them
+        # to the chat log either — the reply isn't logged, and on restart we'd
+        # replay a bare "You: <cmd>" with no response.
+        text_lower = text.strip().lower()
+        is_local = text_lower in self._BUILTIN_COMMANDS or any(
+            text_lower.startswith(p) for p in self._QUICK_CAPTURE_PREFIXES
+        )
         if hasattr(self, "_chat_tab"):
-            self._chat_tab._append_user(text)
+            self._chat_tab._append_user(text, log=not is_local)
 
         # Built-in commands and quick-capture — don't send to Claude
         if self._try_builtin_command(text):
@@ -1429,9 +1451,10 @@ class Dashboard:
         if self._last_good_geometry:
             state["geometry"] = self._last_good_geometry
         logger.debug("SAVE: final state geometry=%r", state.get("geometry", "MISSING"))
-        # Save active bells
+        # Save active bells. Exclude Console — its text widget isn't persisted,
+        # so restoring a Console bell produces a bell with no backing content.
         if hasattr(self, "_notified_tabs"):
-            all_bells = self._notified_tabs | self._persistent_tabs
+            all_bells = (self._notified_tabs | self._persistent_tabs) - {"Console"}
             if all_bells:
                 state["bells"] = sorted(all_bells)
         state_file = self._state_path / "ui_state.json"

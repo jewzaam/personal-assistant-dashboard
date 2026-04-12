@@ -11,6 +11,7 @@ from personal_assistant_dashboard.utils import (
     filter_dismissed_missed_meetings,
     format_event_time,
     get_meeting_url,
+    list_local_skills,
 )
 
 # -- format_event_time --------------------------------------------------------
@@ -192,3 +193,80 @@ def test_filter_dismissed_missing_id_field():
     result = filter_dismissed_missed_meetings(meetings, dismissed)
     assert len(result) == 1
     assert result[0]["summary"] == "No ID event"
+
+
+# -- list_local_skills --------------------------------------------------------
+
+
+def _write_skill(base, name, body):
+    skill_dir = base / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
+
+
+def test_list_local_skills_missing_dir(tmp_path):
+    assert list_local_skills(tmp_path / "nope") == []
+
+
+def test_list_local_skills_empty_dir(tmp_path):
+    assert list_local_skills(tmp_path) == []
+
+
+def test_list_local_skills_single_line_description(tmp_path):
+    body = (
+        "---\n"
+        "name: foo\n"
+        "description: Do the foo thing quickly. Extra context here.\n"
+        "---\n\n# Foo\n"
+    )
+    _write_skill(tmp_path, "foo", body)
+    result = list_local_skills(tmp_path)
+    assert result == [("foo", "Do the foo thing quickly.")]
+
+
+def test_list_local_skills_folded_description(tmp_path):
+    body = (
+        "---\n"
+        "name: bar\n"
+        "description: >\n"
+        "  First sentence of bar spans\n"
+        "  two lines. Second sentence is discarded.\n"
+        "---\n"
+    )
+    _write_skill(tmp_path, "bar", body)
+    result = list_local_skills(tmp_path)
+    assert result == [("bar", "First sentence of bar spans two lines.")]
+
+
+def test_list_local_skills_truncates_long_sentence(tmp_path):
+    long_desc = "word " * 60  # 300 chars, no terminator
+    body = f"---\nname: long\ndescription: {long_desc}\n---\n"
+    _write_skill(tmp_path, "long", body)
+    result = list_local_skills(tmp_path)
+    assert len(result) == 1
+    assert result[0][0] == "long"
+    assert result[0][1].endswith("...")
+    assert len(result[0][1]) <= 120
+
+
+def test_list_local_skills_skips_missing_frontmatter(tmp_path):
+    _write_skill(tmp_path, "nometa", "# Just a header\n\nNo frontmatter here.\n")
+    assert list_local_skills(tmp_path) == []
+
+
+def test_list_local_skills_skips_invalid_yaml(tmp_path):
+    _write_skill(tmp_path, "bad", "---\nname: bad\n  not: valid: yaml:\n---\n")
+    assert list_local_skills(tmp_path) == []
+
+
+def test_list_local_skills_skips_missing_fields(tmp_path):
+    _write_skill(tmp_path, "noname", "---\ndescription: has desc\n---\n")
+    _write_skill(tmp_path, "nodesc", "---\nname: nodesc\n---\n")
+    assert list_local_skills(tmp_path) == []
+
+
+def test_list_local_skills_sorted_and_nested(tmp_path):
+    _write_skill(tmp_path, "zeta", "---\nname: zeta\ndescription: Z thing.\n---\n")
+    _write_skill(tmp_path, "alpha", "---\nname: alpha\ndescription: A thing.\n---\n")
+    result = list_local_skills(tmp_path)
+    assert [name for name, _ in result] == ["alpha", "zeta"]

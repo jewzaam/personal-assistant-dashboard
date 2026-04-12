@@ -160,12 +160,14 @@ class ChatTab:
 
     # -- history replay -------------------------------------------------------
 
-    def load_history(self, help_text: str) -> None:
-        """Replay recent messages from the last chat log, or show help."""
+    def load_history(self) -> bool:
+        """Replay recent messages from the last chat log.
+
+        Returns True if history was replayed, False if none was found.
+        """
         messages = self._load_last_chat_log()
         if not messages:
-            self._append_system(help_text)
-            return
+            return False
         for role, ts, text in messages:
             self._display_history_entry(role, ts, text)
         try:
@@ -175,6 +177,7 @@ class ChatTab:
             self._messages.see(tk.END)
         except tk.TclError:
             pass
+        return True
 
     def _load_last_chat_log(self) -> list[tuple[str, str, str]]:
         """Parse the last N message pairs from the most recent chat log."""
@@ -480,8 +483,13 @@ class ChatTab:
         hour = now.hour % 12 or 12
         return now.strftime(f"%a, %b {day}, %Y {hour}:%M %p {tz_abbr}")
 
-    def _append_user(self, text: str) -> None:
-        """Insert a user message into the display."""
+    def _append_user(self, text: str, *, log: bool = True) -> None:
+        """Insert a user message into the display.
+
+        Set ``log=False`` for inputs handled locally (built-in commands,
+        quick-capture) so the chat log only holds messages that had a
+        corresponding logged assistant reply.
+        """
         ts = self._format_timestamp()
         try:
             self._messages.config(state=tk.NORMAL)
@@ -492,7 +500,8 @@ class ChatTab:
             self._scroll_to_end()
         except tk.TclError:
             pass
-        self._log_user(text)
+        if log:
+            self._log_user(text)
 
     def _append_system(self, text: str) -> None:
         """Insert a Dashboard message into the display (no logging)."""
