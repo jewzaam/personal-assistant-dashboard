@@ -42,7 +42,9 @@ def _load_config(path: Path = _CONFIG_PATH) -> tuple[str, int] | None:
     return (str(host), int(port))
 
 
-def _session_response_to_row(resp: dict[str, Any]) -> dict[str, Any]:
+def _session_response_to_row(
+    resp: dict[str, Any], *, is_active: bool = True
+) -> dict[str, Any]:
     """Convert an AgentPulse SessionResponse dict to an info-tab row.
 
     Reads available fields from the response; falls back to zero/empty
@@ -64,6 +66,7 @@ def _session_response_to_row(resp: dict[str, Any]) -> dict[str, Any]:
         "lines_added": resp.get("lines_added") or 0,
         "lines_removed": resp.get("lines_removed") or 0,
         "started_at": started_at,
+        "is_active": is_active,
     }
 
 
@@ -188,22 +191,31 @@ class AgentPulseClient:
             backoff = _next_backoff(backoff)
 
     def _rest_fetch(self) -> None:
-        """Fetch active sessions via REST and replace internal state."""
-        url = f"http://{self._host}:{self._port}/api/v1/sessions?active=true"
+        """Fetch active and closed sessions via REST and replace state."""
+        active = self._fetch_session_list(active=True)
+        closed = self._fetch_session_list(active=False)
+        # Merge: active takes precedence over closed
+        merged = dict(closed)
+        merged.update(active)
+        with self._lock:
+            self._sessions = merged
+        self._notify_ui()
+
+    def _fetch_session_list(self, *, active: bool) -> dict[str, dict[str, Any]]:
+        """Fetch sessions by active status. Returns {session_id: row}."""
+        param = "true" if active else "false"
+        url = f"http://{self._host}:{self._port}" f"/api/v1/sessions?active={param}"
         try:
             with urllib.request.urlopen(url, timeout=5) as resp:
                 data = json.loads(resp.read())
         except Exception:
-            logger.debug("AgentPulse REST fetch failed")
-            return
-        rows = {
-            s["session_id"]: _session_response_to_row(s)
+            logger.debug("AgentPulse REST fetch (active=%s) failed", active)
+            return {}
+        return {
+            s["session_id"]: _session_response_to_row(s, is_active=active)
             for s in data
             if isinstance(s, dict) and "session_id" in s
         }
-        with self._lock:
-            self._sessions = rows
-        self._notify_ui()
 
     def _rest_fetch_limits(self) -> None:
         """Fetch usage limits via REST. Safe to call frequently (server caches)."""
@@ -238,12 +250,18 @@ class AgentPulseClient:
 
         elif msg_type == "session_ended":
             with self._lock:
-                removed = self._sessions.pop(session_id, None)
-            logger.debug(
-                "session_ended sid=%s removed=%s",
-                session_id[:8],
-                removed is not None,
-            )
+                if session_id in self._sessions:
+                    self._sessions[session_id]["is_active"] = False
+            # Fetch final state to capture last cost/token values
+            url = f"http://{self._host}:{self._port}" f"/api/v1/sessions/{session_id}"
+            try:
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    data = json.loads(resp.read())
+                row = _session_response_to_row(data, is_active=False)
+                with self._lock:
+                    self._sessions[session_id] = row
+            except Exception:
+                logger.debug("Failed to fetch ended session %s", session_id[:8])
 
         elif msg_type == "hook_event":
             with self._lock:
