@@ -322,13 +322,18 @@ class Dashboard:
         info_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(info_frame, text="\u2139")
 
+        from personal_assistant_dashboard.agentpulse_client import AgentPulseClient
         from personal_assistant_dashboard.info_tab import InfoTab
 
+        self._agentpulse_client = AgentPulseClient(self._root, lambda: None)
         self._info_tab = InfoTab(
             info_frame,
             self._root,
+            client=self._agentpulse_client,
             console_log=self.log_console,
         )
+        # Now that InfoTab exists, point the client callback at its refresh
+        self._agentpulse_client._on_update = self._info_tab._refresh
         self._info_tab_id = str(info_frame)
 
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -435,6 +440,9 @@ class Dashboard:
         self._root.after(GEOMETRY_CAPTURE_DELAY_MS, self._capture_geometry)
         # Always start calendar data refresh (bells need fresh data)
         self._start_cal_refresh()
+        # Start AgentPulse streaming client
+        if hasattr(self, "_agentpulse_client"):
+            self._agentpulse_client.start()
         # Chat agent wakes on first user message — no startup greeting.
         # If there's no prior chat history, simulate the user typing "help"
         # and hitting Send so the built-in command handler shows the help.
@@ -1567,6 +1575,8 @@ class Dashboard:
             self._settings_tab.on_destroy()
         if hasattr(self, "_info_tab"):
             self._info_tab.destroy()
+        if hasattr(self, "_agentpulse_client"):
+            self._agentpulse_client.stop()
         if restart:
             import os
             import sys
