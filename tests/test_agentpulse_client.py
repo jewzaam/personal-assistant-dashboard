@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from personal_assistant_dashboard.agentpulse_client import (
     AgentPulseClient,
@@ -105,17 +105,20 @@ class TestHandleWsMessage:
         client._port = 17385
         return client
 
-    def test_session_ended_removes_session(self) -> None:
+    def test_session_ended_marks_inactive(self) -> None:
         client = self._make_client()
         client._sessions["s1"] = {"session_id": "s1", "cwd": "/tmp"}
         msg = {"type": "session_ended", "session_id": "s1", "timestamp": 1.0}
-        client._handle_ws_message(msg)
-        assert "s1" not in client._sessions
+        with patch("urllib.request.urlopen", side_effect=OSError("not available")):
+            client._handle_ws_message(msg)
+        assert "s1" in client._sessions
+        assert client._sessions["s1"]["is_active"] is False
 
     def test_session_ended_ignores_unknown(self) -> None:
         client = self._make_client()
         msg = {"type": "session_ended", "session_id": "unknown", "timestamp": 1.0}
-        client._handle_ws_message(msg)
+        with patch("urllib.request.urlopen", side_effect=OSError("not found")):
+            client._handle_ws_message(msg)
         assert "unknown" not in client._sessions
 
     def test_hook_event_updates_last_event(self) -> None:

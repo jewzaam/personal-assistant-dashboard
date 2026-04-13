@@ -4,7 +4,7 @@
 
 LOG_FILE := pa-dashboard.log
 
-run: $(PYTHON)  ## Start the app (use DEBUG=1 for debug mode)
+run: $(PYTHON) install-dev  ## Start the app (use DEBUG=1 for debug mode)
 	@PA_DIR=$$(python3 -c "import json,pathlib; print(pathlib.Path(json.load(open(pathlib.Path.home()/'.claude'/'personal-assistant-config.json'))['pa_workspace']).expanduser())") && \
 	if [ "$$(cd "$$PA_DIR" 2>/dev/null && pwd)" = "$$(pwd)" ]; then echo "ERROR: pa_workspace must not be the project repo"; exit 1; fi && \
 	mkdir -p "$$PA_DIR" && \

@@ -253,6 +253,7 @@ class InfoTab:
         self._tree.tag_configure("pct_ok", foreground=COLOR_SUCCESS)
         self._tree.tag_configure("pct_mid", foreground=COLOR_WARNING)
         self._tree.tag_configure("pct_high", foreground=COLOR_ERROR)
+        self._tree.tag_configure("closed", foreground=FG_DIM)
         self._tree.tag_configure("aggregate", foreground=FG_TEXT)
 
         scrollbar = tk.Scrollbar(
@@ -283,11 +284,13 @@ class InfoTab:
         self._refresh_timer = self._root.after(30_000, self._schedule_duration_refresh)
 
     def _recompute_durations(self) -> None:
-        """Update total_duration_ms for all sessions from started_at."""
+        """Update total_duration_ms for active sessions from started_at."""
         import time
 
         now = time.time()
         for s in self._sessions:
+            if not s.get("is_active", True):
+                continue  # Closed sessions keep their final duration
             started_at = s.get("started_at", 0)
             if started_at:
                 started_at_s = started_at / 1000.0
@@ -304,10 +307,13 @@ class InfoTab:
         self._update_summary()
         self._sort_and_render()
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        count = len(self._sessions)
-        self._status_label.configure(
-            text=f"Last updated: {now}  \u2022  {count} session(s)"
-        )
+        active_count = sum(1 for s in self._sessions if s.get("is_active", True))
+        closed_count = len(self._sessions) - active_count
+        if closed_count:
+            count_str = f"{active_count} active, {closed_count} closed"
+        else:
+            count_str = f"{active_count} session(s)"
+        self._status_label.configure(text=f"Last updated: {now}  \u2022  {count_str}")
 
     def _on_heading_click(self, col_id: str) -> None:
         """Sort by the clicked column, toggling direction on repeat click."""
@@ -398,7 +404,8 @@ class InfoTab:
             model = s.get("model_display_name", "")
             model_short = model.split()[0] if model else "\u2014"
             ctx_pct = s.get("context_used_pct", 0)
-            tag = _pct_tag(ctx_pct)
+            active = s.get("is_active", True)
+            tag = "closed" if not active else _pct_tag(ctx_pct)
             ctx_str = f"{ctx_pct}%" if ctx_pct else "\u2014"
             cost = s.get("total_cost_usd", 0.0)
             tok_in = s.get("total_input_tokens", 0)
