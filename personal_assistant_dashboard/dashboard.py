@@ -169,6 +169,9 @@ class Dashboard:
         # on XWayland but winfo stays accurate).
         self._frame_dx: int = 0
         self._frame_dy: int = 0
+        self._input_history: list[str] = []
+        self._history_index: int = 0
+        self._history_stash: str = ""
 
     def show(self) -> None:
         if self._window and self._window.winfo_exists():
@@ -388,6 +391,8 @@ class Dashboard:
         self._quick_chat_input.bind("<Return>", self._on_quick_chat_send)
         self._quick_chat_input.bind("<Shift-Return>", lambda e: None)  # allow newline
         self._quick_chat_input.bind("<Control-BackSpace>", self._on_ctrl_backspace)
+        self._quick_chat_input.bind("<Up>", self._on_history_prev)
+        self._quick_chat_input.bind("<Down>", self._on_history_next)
 
         self._quick_send_btn = tk.Button(
             btn_frame,
@@ -1009,6 +1014,7 @@ class Dashboard:
         "session_id": "Show the current chat session ID",
         "plan:": "Append a plan item to plans.md",
         "action:": "Append an action item to actions.md",
+        "!<cmd>": "Run a shell command locally (not sent to agent)",
     }
 
     def _try_builtin_command(self, text: str) -> bool:
@@ -1050,6 +1056,40 @@ class Dashboard:
             return True
         return False
 
+    def _try_shell_command(self, text: str) -> bool:
+        """Run !-prefixed text as a local shell command.
+
+        Returns True if the text was handled (caller should not send to chat).
+        The caller is responsible for displaying the user message first.
+        """
+        if not text.startswith("!"):
+            return False
+        cmd = text[1:].strip()
+        if not cmd:
+            return False
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                cwd=str(WORK_DIR),
+                timeout=30,
+            )
+            output = result.stdout
+            if result.stderr:
+                output += result.stderr
+            output = output.rstrip()
+            if result.returncode != 0:
+                output += f"\n[exit {result.returncode}]"
+        except subprocess.TimeoutExpired:
+            output = "[timed out after 30s]"
+        except OSError as exc:
+            output = f"[error: {exc}]"
+        if hasattr(self, "_chat_tab"):
+            self._chat_tab._append_system(output if output else "[no output]")
+        return True
+
     def _try_quick_capture(self, text: str) -> bool:
         """Intercept plan:/action: prefixes and append to the workspace file.
 
@@ -1085,6 +1125,9 @@ class Dashboard:
         if not text:
             return "break"
         self._quick_chat_input.delete("1.0", tk.END)
+        self._input_history.append(text)
+        self._history_index = len(self._input_history)
+        self._history_stash = ""
 
         # Switch to Chat tab and show user message immediately
         if self._notebook:
@@ -1096,14 +1139,18 @@ class Dashboard:
         # to the chat log either — the reply isn't logged, and on restart we'd
         # replay a bare "You: <cmd>" with no response.
         text_lower = text.strip().lower()
-        is_local = text_lower in self._BUILTIN_COMMANDS or any(
-            text_lower.startswith(p) for p in self._QUICK_CAPTURE_PREFIXES
+        is_local = (
+            text_lower in self._BUILTIN_COMMANDS
+            or any(text_lower.startswith(p) for p in self._QUICK_CAPTURE_PREFIXES)
+            or text.startswith("!")
         )
         if hasattr(self, "_chat_tab"):
             self._chat_tab._append_user(text, log=not is_local)
 
-        # Built-in commands and quick-capture — don't send to Claude
+        # Built-in commands, shell escape, and quick-capture — don't send to Claude
         if self._try_builtin_command(text):
+            return "break"
+        if self._try_shell_command(text):
             return "break"
         if self._try_quick_capture(text):
             return "break"
@@ -1111,6 +1158,33 @@ class Dashboard:
         if hasattr(self, "_chat_tab"):
             self._chat_tab.send_message(text, displayed=True)
         return "break"
+
+    def _on_history_prev(self, _event: Any = None) -> str | None:
+        """Navigate to the previous input history entry."""
+        if not self._input_history:
+            return "break"
+        if self._history_index == len(self._input_history):
+            self._history_stash = self._quick_chat_input.get("1.0", tk.END).strip()
+        if self._history_index > 0:
+            self._history_index -= 1
+            self._replace_input(self._input_history[self._history_index])
+        return "break"
+
+    def _on_history_next(self, _event: Any = None) -> str | None:
+        """Navigate to the next input history entry."""
+        if self._history_index >= len(self._input_history):
+            return "break"
+        self._history_index += 1
+        if self._history_index == len(self._input_history):
+            self._replace_input(self._history_stash)
+        else:
+            self._replace_input(self._input_history[self._history_index])
+        return "break"
+
+    def _replace_input(self, text: str) -> None:
+        """Replace the chat input contents with the given text."""
+        self._quick_chat_input.delete("1.0", tk.END)
+        self._quick_chat_input.insert("1.0", text)
 
     def _on_quick_chat_clear(self) -> None:
         """Clear the chat conversation."""
