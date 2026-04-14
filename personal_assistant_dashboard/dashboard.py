@@ -162,6 +162,13 @@ class Dashboard:
         self._unshaded_geometry: str = ""
         self._last_good_geometry: str = ""
         self._shade_in_progress = False
+        # Frame offset: difference between winfo_rootx/y (client area)
+        # and geometry() position (WM frame).  Computed once after the
+        # first reliable geometry() call so we can derive frame coords
+        # from winfo_rootx/y after a user drag (geometry() goes stale
+        # on XWayland but winfo stays accurate).
+        self._frame_dx: int = 0
+        self._frame_dy: int = 0
 
     def show(self) -> None:
         if self._window and self._window.winfo_exists():
@@ -872,32 +879,41 @@ class Dashboard:
         else:
             self._shade()
 
+    def _winfo_frame_geometry(self) -> tuple[int, int, int, int]:
+        """Return (w, h, frame_x, frame_y) using winfo for position.
+
+        geometry() goes stale after user drags on XWayland, but
+        winfo_rootx/y stays accurate.  Convert client-area coords
+        back to WM-frame coords using the saved frame offset.
+        """
+        assert self._window is not None
+        geom = self._window.geometry()
+        import re
+
+        m = re.match(r"(\d+)x(\d+)", geom)
+        w = int(m.group(1)) if m else 860
+        h = int(m.group(2)) if m else 820
+        frame_x = self._window.winfo_rootx() - self._frame_dx
+        frame_y = self._window.winfo_rooty() - self._frame_dy
+        return w, h, frame_x, frame_y
+
     def _shade(self) -> None:
         """Collapse window to just the tab strip."""
         if self._shaded or not self._window:
             return
         self._shaded = True
-        # geometry() returns "WxH+X+Y" in WM coordinates — consistent
-        # for round-tripping. winfo_x/y can differ by title bar height.
-        self._unshaded_geometry = self._window.geometry()
+        w, h, x, y = self._winfo_frame_geometry()
+        self._unshaded_geometry = f"{w}x{h}+{x}+{y}"
         self._last_good_geometry = self._unshaded_geometry
-        # Parse width and position from geometry string
-        import re
-
-        m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", self._unshaded_geometry)
-        if m:
-            w, _h, x, y = m.groups()
-            # Remember which tab was active before shading
-            self._pre_shade_tab = self._notebook.select()  # type: ignore[union-attr]
-            # Select the Info tab so all real tabs show notification dots
-            # Unbind tab-changed to prevent immediate unshade
-            self._notebook.unbind("<<NotebookTabChanged>>")  # type: ignore[union-attr]
-            self._notebook.select(self._info_tab_id)  # type: ignore[union-attr]
-            self._root.after(100, self._rebind_tab_changed)
-            self._window.minsize(
-                width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT_SHADED
-            )
-            self._window.geometry(f"{w}x{SHADED_HEIGHT}+{x}+{y}")
+        # Remember which tab was active before shading
+        self._pre_shade_tab = self._notebook.select()  # type: ignore[union-attr]
+        # Select the Info tab so all real tabs show notification dots
+        # Unbind tab-changed to prevent immediate unshade
+        self._notebook.unbind("<<NotebookTabChanged>>")  # type: ignore[union-attr]
+        self._notebook.select(self._info_tab_id)  # type: ignore[union-attr]
+        self._root.after(100, self._rebind_tab_changed)
+        self._window.minsize(width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT_SHADED)
+        self._window.geometry(f"{w}x{SHADED_HEIGHT}+{x}+{y}")
         if hasattr(self, "_quick_chat_frame"):
             self._quick_chat_frame.pack_forget()
 
@@ -907,23 +923,22 @@ class Dashboard:
             return
         self._shaded = False
         self._window.minsize(width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT)
-        if self._unshaded_geometry:
-            import re
-
-            m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", self._unshaded_geometry)
-            if m:
-                w, h, _old_x, _old_y = m.groups()
-                # Use current position (user may have dragged while shaded)
-                cur = self._window.geometry()
-                cm = re.match(r"\d+x\d+\+(-?\d+)\+(-?\d+)", cur)
-                cx, cy = cm.groups() if cm else (_old_x, _old_y)
-                self._window.geometry(f"{w}x{h}+{cx}+{cy}")
         # Forget notebook so _pack_main_layout re-packs in the correct order
         # (chat BOTTOM first, then notebook). Can't forget it in _shade because
         # the tab strip must remain visible for middle-click unshade.
         if self._notebook:
             self._notebook.pack_forget()
         self._pack_main_layout()
+        if self._unshaded_geometry:
+            import re
+
+            m = re.match(r"(\d+)x(\d+)", self._unshaded_geometry)
+            if m:
+                w, h = m.groups()
+                # Current position via winfo (accurate after drags).
+                cx = self._window.winfo_rootx() - self._frame_dx
+                cy = self._window.winfo_rooty() - self._frame_dy
+                self._window.geometry(f"{w}x{h}+{cx}+{cy}")
         # Restore the tab that was active before shading
         if hasattr(self, "_pre_shade_tab") and self._pre_shade_tab:
             self._notebook.select(self._pre_shade_tab)  # type: ignore[union-attr]
@@ -1227,16 +1242,16 @@ class Dashboard:
         if not self._window:
             return
         try:
+            w, h, x, y = self._winfo_frame_geometry()
             if self._shaded and self._unshaded_geometry:
                 import re
 
+                # Saved WxH from pre-shade + current position.
                 m = re.match(r"(\d+)x(\d+)", self._unshaded_geometry)
                 if m:
-                    x = self._window.winfo_x()
-                    y = self._window.winfo_y()
                     self._last_good_geometry = f"{m.group(1)}x{m.group(2)}+{x}+{y}"
             else:
-                self._last_good_geometry = self._window.geometry()
+                self._last_good_geometry = f"{w}x{h}+{x}+{y}"
         except Exception as exc:
             logger.info("CAPTURE failed: %s", exc)
             return
@@ -1550,6 +1565,21 @@ class Dashboard:
                     self._window.geometry(adjusted)
                     geometry = adjusted
             self._last_good_geometry = geometry
+            # Compute frame offset while geometry() is still accurate.
+            # winfo_rootx/y gives client-area position; geometry() gives
+            # WM-frame position.  The delta is the frame border/title.
+            self._window.update_idletasks()
+            import re as _re
+
+            _gm = _re.match(r"\d+x\d+\+(-?\d+)\+(-?\d+)", geometry)
+            if _gm:
+                self._frame_dx = self._window.winfo_rootx() - int(_gm.group(1))
+                self._frame_dy = self._window.winfo_rooty() - int(_gm.group(2))
+                logger.debug(
+                    "RESTORE: frame offset dx=%d dy=%d",
+                    self._frame_dx,
+                    self._frame_dy,
+                )
             logger.debug("RESTORE: applied geometry %s", geometry)
 
     def _shutdown(self, *, restart: bool = False) -> None:
