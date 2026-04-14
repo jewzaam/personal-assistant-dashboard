@@ -80,7 +80,8 @@ The rename dropped meeting transcript pipeline dependencies, collapsed Assistant
 
 ## Platform notes
 
-- **Wayland/Mutter:** `winfo_x()`/`winfo_y()` return stale values. Window geometry is tracked via `_grow_up_bottom_y` field. Uses `dock` window type hint. Rejects `(0,0)` position with `height<=1`.
+- **Wayland/Mutter geometry:** `geometry()` returns stale position after user drags (XWayland doesn't send `ConfigureNotify`). `winfo_rootx()`/`winfo_rooty()` stay accurate. All position reads go through `_winfo_frame_geometry()` which converts `winfo_rootx/y` to WM-frame coordinates via a one-time offset (`_frame_dx`/`_frame_dy`). See [docs/wayland-geometry.md](docs/wayland-geometry.md) for full details.
+- **Window decorations:** Motif hints via `xprop` remove decorations while keeping keyboard focus. Fallback: `overrideredirect(True)`. Neither `-type dock` (breaks focus) nor `-type splash` (breaks clipboard) is used.
 - **Click handling:** Single-click defers 200ms, double-click cancels it (Linux Tkinter fires `<ButtonRelease-1>` before `<Double-1>`).
 - **Canvas focus:** Calendar canvas uses `takefocus=True` with explicit click-to-focus binding.
 
