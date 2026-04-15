@@ -43,7 +43,11 @@ class ScopeStatus:
     @property
     def summary(self) -> str:
         if not self.available:
-            return f"GWS CLI unavailable: {self.error}"
+            return (
+                f"GWS CLI unavailable: {self.error}"
+                f" — run:\n  gws auth logout\n"
+                f"  {self.reauth_command}"
+            )
         if not self.missing_required:
             return "All required scopes granted"
         missing = ", ".join(self.missing_required.values())
@@ -85,7 +89,7 @@ def check_scopes() -> ScopeStatus:
         return status
 
     if not data.get("token_valid"):
-        status.error = "token expired — run: gws auth login"
+        status.error = "token expired"
         return status
 
     status.available = True
