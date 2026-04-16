@@ -918,6 +918,19 @@ class Dashboard:
             return
         self._shaded = True
         w, h, x, y = self._winfo_frame_geometry()
+        logger.debug(
+            "SHADE: winfo_frame=(%d,%d,%d,%d) rootx=%d rooty=%d "
+            "geometry=%r dx=%d dy=%d",
+            w,
+            h,
+            x,
+            y,
+            self._window.winfo_rootx(),
+            self._window.winfo_rooty(),
+            self._window.geometry(),
+            self._frame_dx,
+            self._frame_dy,
+        )
         self._unshaded_geometry = f"{w}x{h}+{x}+{y}"
         self._last_good_geometry = self._unshaded_geometry
         # Remember which tab was active before shading
@@ -949,15 +962,18 @@ class Dashboard:
             self._notebook.pack_forget()
         self._pack_main_layout()
         if self._unshaded_geometry:
-            import re
-
-            m = re.match(r"(\d+)x(\d+)", self._unshaded_geometry)
-            if m:
-                w, h = m.groups()
-                # Current position via winfo (accurate after drags).
-                cx = self._window.winfo_rootx() - self._frame_dx
-                cy = self._window.winfo_rooty() - self._frame_dy
-                self._window.geometry(f"{w}x{h}+{cx}+{cy}")
+            # Use the full saved geometry — it has the correct position
+            # from before shade.  Don't re-derive position from winfo
+            # because the WM may have repositioned the shaded window
+            # (e.g., snapping the 36px-tall window to a different edge).
+            logger.debug(
+                "UNSHADE: restoring %r rootx=%d rooty=%d geometry=%r",
+                self._unshaded_geometry,
+                self._window.winfo_rootx(),
+                self._window.winfo_rooty(),
+                self._window.geometry(),
+            )
+            self._window.geometry(self._unshaded_geometry)
         # Restore the tab that was active before shading
         if hasattr(self, "_pre_shade_tab") and self._pre_shade_tab:
             self._notebook.select(self._pre_shade_tab)  # type: ignore[union-attr]
