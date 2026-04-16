@@ -300,9 +300,34 @@ class InfoTab:
         """Handle manual refresh button click — triggers REST re-fetch."""
         self._client.refresh()
 
+    @staticmethod
+    def _active_today(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Filter to sessions active or started today (local time).
+
+        AgentPulse computes total_duration_ms as now - started_at for all
+        sessions (active or not), so we cannot derive ended_time from it.
+        Filter on started_at instead: sessions started today are shown,
+        plus any still-active session regardless of start date.
+        """
+        today_start_epoch_ms = int(
+            datetime.now()
+            .replace(hour=0, minute=0, second=0, microsecond=0)
+            .timestamp()
+            * 1000
+        )
+        result: list[dict[str, Any]] = []
+        for s in sessions:
+            if s.get("is_active", True):
+                result.append(s)
+                continue
+            started_at_ms = s.get("started_at", 0)
+            if started_at_ms >= today_start_epoch_ms:
+                result.append(s)
+        return result
+
     def _refresh(self) -> None:
         """Reload session data from the client and update the display."""
-        self._sessions = self._client.get_sessions()
+        self._sessions = self._active_today(self._client.get_sessions())
         self._recompute_durations()
         self._update_summary()
         self._sort_and_render()
