@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -109,11 +110,13 @@ def _get_user_resource_id() -> str | None:
     return None
 
 
-def _find_conference_names(meeting_code: str) -> list[str]:
-    """Find all conference record names for a meeting code.
+def _find_conference_records(
+    meeting_code: str,
+) -> list[dict[str, Any]]:
+    """Find all conference records for a meeting code.
 
-    Returns all records (active and ended) so we can check attendance
-    even after the Meet session has concluded.
+    Returns full record dicts (including startTime/endTime) so callers
+    can filter by time window.
     """
     try:
         result = run_cmd(
@@ -140,8 +143,7 @@ def _find_conference_names(meeting_code: str) -> list[str]:
             result.stderr[:80],
         )
         return []
-    records = _parse_ndjson(result.stdout, "conferenceRecords")
-    return [r["name"] for r in records if "name" in r]
+    return _parse_ndjson(result.stdout, "conferenceRecords")
 
 
 def _user_in_conference(conference_name: str, user_id: str) -> bool:
@@ -183,13 +185,57 @@ def _user_in_conference(conference_name: str, user_id: str) -> bool:
     return False
 
 
+def _conferences_for_event(
+    records: list[dict[str, Any]],
+    event: CalendarEvent,
+) -> list[str]:
+    """Return conference record names that overlap the calendar event's window.
+
+    Recurring meetings reuse the same meeting code, so a daily standup has
+    hundreds of conference records.  Only records whose startTime falls
+    within a window around the calendar event's start are relevant for
+    today's instance.  A 30-minute buffer before the event start accounts
+    for early joiners (the conference startTime is when the first person
+    joined, which can be before the scheduled time).
+    """
+    event_start_str = event.get("start", "")
+    if not event_start_str:
+        return [r["name"] for r in records if "name" in r]
+    try:
+        event_start = datetime.fromisoformat(event_start_str)
+    except ValueError:
+        return [r["name"] for r in records if "name" in r]
+
+    window_start = event_start - timedelta(minutes=30)
+
+    names: list[str] = []
+    for rec in records:
+        name = rec.get("name")
+        if not name:
+            continue
+        conf_start_str = rec.get("startTime")
+        if not conf_start_str:
+            names.append(name)
+            continue
+        try:
+            conf_start = datetime.fromisoformat(conf_start_str)
+        except ValueError:
+            names.append(name)
+            continue
+        # Conference started within 30min before event or after → same instance
+        if conf_start >= window_start:
+            names.append(name)
+    return names
+
+
 def find_attended_event_ids(events: list[CalendarEvent]) -> set[str]:
     """Return event IDs for meetings the user has joined (or is still in).
 
-    For each event with a Google Meet hangout_link, finds all conference
-    records for that meeting code (active or ended) and checks whether the
-    user was a participant in any of them. This means leaving a meeting
-    early will NOT re-trigger the alert.
+    For each event with a Google Meet hangout_link, finds conference
+    records that overlap the event's time window and checks whether the
+    user was a participant. This means leaving a meeting early will NOT
+    re-trigger the alert, but attendance in a previous instance of a
+    recurring meeting is correctly ignored.
     """
     events_by_code: dict[str, list[CalendarEvent]] = {}
     for event in events:
@@ -210,12 +256,13 @@ def find_attended_event_ids(events: list[CalendarEvent]) -> set[str]:
 
     attended_ids: set[str] = set()
     for code, code_events in events_by_code.items():
-        conf_names = _find_conference_names(code)
-        if not conf_names:
+        all_records = _find_conference_records(code)
+        if not all_records:
             continue
-        for conf_name in conf_names:
-            if _user_in_conference(conf_name, user_id):
-                for evt in code_events:
+        for evt in code_events:
+            conf_names = _conferences_for_event(all_records, evt)
+            for conf_name in conf_names:
+                if _user_in_conference(conf_name, user_id):
                     event_id = evt.get("id", "")
                     if event_id:
                         attended_ids.add(event_id)
@@ -223,6 +270,6 @@ def find_attended_event_ids(events: list[CalendarEvent]) -> set[str]:
                             "User attended meeting: %s",
                             evt.get("summary"),
                         )
-                break  # Found attendance, no need to check older records
+                    break  # Found attendance for this event instance
 
     return attended_ids

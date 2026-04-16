@@ -10,13 +10,16 @@ import pytest
 
 from personal_assistant_dashboard.collectors import meet_collector
 from personal_assistant_dashboard.collectors.meet_collector import (
+    _conferences_for_event,
     _extract_meeting_code,
-    _find_conference_names,
+    _find_conference_records,
     _get_user_resource_id,
     _parse_ndjson,
     _user_in_conference,
     find_attended_event_ids,
 )
+
+_MOD = "personal_assistant_dashboard.collectors.meet_collector"
 
 
 @pytest.fixture(autouse=True)
@@ -73,7 +76,7 @@ class TestExtractMeetingCode:
 
 
 class TestGetUserResourceId:
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    @patch(f"{_MOD}.run_cmd")
     def test_returns_id(self, mock_cmd):
         mock_cmd.return_value = _mock_result(
             stdout=json.dumps(
@@ -85,7 +88,7 @@ class TestGetUserResourceId:
         )
         assert _get_user_resource_id() == "12345"
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    @patch(f"{_MOD}.run_cmd")
     def test_caches_result(self, mock_cmd):
         mock_cmd.return_value = _mock_result(
             stdout=json.dumps({"resourceName": "people/99999"})
@@ -94,85 +97,124 @@ class TestGetUserResourceId:
         _get_user_resource_id()
         assert mock_cmd.call_count == 1
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    @patch(f"{_MOD}.run_cmd")
     def test_failure_returns_none(self, mock_cmd):
         mock_cmd.return_value = _mock_result(returncode=1)
         assert _get_user_resource_id() is None
 
 
-class TestFindConferenceNames:
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+class TestFindConferenceRecords:
+    @patch(f"{_MOD}.run_cmd")
     def test_returns_all_records(self, mock_cmd):
-        mock_cmd.return_value = _mock_result(
-            stdout=json.dumps(
-                {
-                    "conferenceRecords": [
-                        {
-                            "name": "conferenceRecords/active",
-                            "startTime": "2026-04-07T10:00:00Z",
-                        },
-                        {
-                            "name": "conferenceRecords/ended",
-                            "startTime": "2026-04-07T09:00:00Z",
-                            "endTime": "2026-04-07T09:30:00Z",
-                        },
-                    ]
-                }
-            )
-        )
-        result = _find_conference_names("abc-defg-hij")
-        assert result == [
-            "conferenceRecords/active",
-            "conferenceRecords/ended",
+        records = [
+            {
+                "name": "conferenceRecords/active",
+                "startTime": "2026-04-07T10:00:00Z",
+            },
+            {
+                "name": "conferenceRecords/ended",
+                "startTime": "2026-04-07T09:00:00Z",
+                "endTime": "2026-04-07T09:30:00Z",
+            },
         ]
-
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
-    def test_ended_conference_included(self, mock_cmd):
-        """Ended conferences must be included — the user may have left early."""
         mock_cmd.return_value = _mock_result(
-            stdout=json.dumps(
-                {
-                    "conferenceRecords": [
-                        {
-                            "name": "conferenceRecords/ended",
-                            "startTime": "2026-04-07T10:00:00Z",
-                            "endTime": "2026-04-07T10:30:00Z",
-                        },
-                    ]
-                }
-            )
+            stdout=json.dumps({"conferenceRecords": records})
         )
-        result = _find_conference_names("abc-defg-hij")
-        assert result == ["conferenceRecords/ended"]
+        result = _find_conference_records("abc-defg-hij")
+        assert len(result) == 2
+        assert result[0]["name"] == "conferenceRecords/active"
+        assert result[1]["name"] == "conferenceRecords/ended"
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    @patch(f"{_MOD}.run_cmd")
     def test_no_records(self, mock_cmd):
         mock_cmd.return_value = _mock_result(stdout=json.dumps({}))
-        assert _find_conference_names("abc-defg-hij") == []
+        assert _find_conference_records("abc-defg-hij") == []
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    @patch(f"{_MOD}.run_cmd")
     def test_api_failure(self, mock_cmd):
         mock_cmd.return_value = _mock_result(returncode=1, stderr="error")
-        assert _find_conference_names("abc-defg-hij") == []
+        assert _find_conference_records("abc-defg-hij") == []
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    @patch(f"{_MOD}.run_cmd")
     def test_page_all_flag_passed(self, mock_cmd):
         mock_cmd.return_value = _mock_result(stdout=json.dumps({}))
-        _find_conference_names("abc-defg-hij")
+        _find_conference_records("abc-defg-hij")
         cmd_args = mock_cmd.call_args[0][0]
         assert "--page-all" in cmd_args
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
-    def test_ndjson_multiple_pages(self, mock_cmd):
-        page1 = json.dumps({"conferenceRecords": [{"name": "conferenceRecords/a"}]})
-        page2 = json.dumps({"conferenceRecords": [{"name": "conferenceRecords/b"}]})
-        mock_cmd.return_value = _mock_result(stdout=f"{page1}\n{page2}")
-        result = _find_conference_names("abc-defg-hij")
-        assert result == ["conferenceRecords/a", "conferenceRecords/b"]
+
+class TestConferencesForEvent:
+    def test_filters_by_event_start(self):
+        """Only conferences within 30min before event start are included."""
+        records = [
+            {"name": "conf/yesterday", "startTime": "2026-04-15T13:15:00Z"},
+            {"name": "conf/today", "startTime": "2026-04-16T13:15:00Z"},
+        ]
+        # 09:15 EDT = 13:15 UTC
+        event = {"start": "2026-04-16T09:15:00-04:00"}
+        names = _conferences_for_event(records, event)
+        assert names == ["conf/today"]
+
+    def test_includes_early_joiner(self):
+        """Conference started 5 min before event — early joiner, same instance."""
+        records = [
+            {"name": "conf/early", "startTime": "2026-04-16T13:10:00Z"},
+        ]
+        # Event at 09:15 EDT = 13:15 UTC, conference started 13:10 UTC
+        event = {"start": "2026-04-16T09:15:00-04:00"}
+        names = _conferences_for_event(records, event)
+        assert names == ["conf/early"]
+
+    def test_excludes_conference_before_buffer(self):
+        """Conference started 31+ min before event — outside buffer."""
+        records = [
+            {"name": "conf/old", "startTime": "2026-04-16T12:44:00Z"},
+        ]
+        # Event at 09:15 EDT = 13:15 UTC, buffer starts at 12:45 UTC
+        event = {"start": "2026-04-16T09:15:00-04:00"}
+        names = _conferences_for_event(records, event)
+        assert names == []
+
+    def test_includes_active_conference(self):
+        """Conference without endTime (still active) is included."""
+        records = [
+            {"name": "conf/active", "startTime": "2026-04-16T13:00:00Z"},
+        ]
+        event = {"start": "2026-04-16T09:00:00-04:00"}
+        names = _conferences_for_event(records, event)
+        assert names == ["conf/active"]
+
+    def test_no_start_time_included(self):
+        """Records without startTime are always included (safety fallback)."""
+        records = [{"name": "conf/unknown"}]
+        event = {"start": "2026-04-16T09:00:00-04:00"}
+        names = _conferences_for_event(records, event)
+        assert names == ["conf/unknown"]
+
+    def test_no_event_start_returns_all(self):
+        """If event has no start, return all records."""
+        records = [
+            {"name": "conf/a", "startTime": "2026-04-15T09:00:00Z"},
+            {"name": "conf/b", "startTime": "2026-04-16T09:00:00Z"},
+        ]
+        event = {"summary": "No start field"}
+        names = _conferences_for_event(records, event)
+        assert names == ["conf/a", "conf/b"]
+
+    def test_excludes_previous_day_recurring(self):
+        """Recurring meeting: yesterday's conference excluded from today's event."""
+        records = [
+            {"name": "conf/mon", "startTime": "2026-04-14T13:15:00Z"},
+            {"name": "conf/tue", "startTime": "2026-04-15T13:15:00Z"},
+            {"name": "conf/wed", "startTime": "2026-04-16T13:15:00Z"},
+        ]
+        event = {"start": "2026-04-16T09:15:00-04:00"}  # Wed 9:15 EDT = 13:15 UTC
+        names = _conferences_for_event(records, event)
+        assert names == ["conf/wed"]
 
 
 class TestUserInConference:
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    @patch(f"{_MOD}.run_cmd")
     def test_user_present(self, mock_cmd):
         mock_cmd.return_value = _mock_result(
             stdout=json.dumps(
@@ -191,7 +233,7 @@ class TestUserInConference:
         )
         assert _user_in_conference("conferenceRecords/abc", "12345") is True
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    @patch(f"{_MOD}.run_cmd")
     def test_user_not_present(self, mock_cmd):
         mock_cmd.return_value = _mock_result(
             stdout=json.dumps(
@@ -209,19 +251,19 @@ class TestUserInConference:
         )
         assert _user_in_conference("conferenceRecords/abc", "12345") is False
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    @patch(f"{_MOD}.run_cmd")
     def test_empty_participants(self, mock_cmd):
         mock_cmd.return_value = _mock_result(stdout=json.dumps({}))
         assert _user_in_conference("conferenceRecords/abc", "12345") is False
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    @patch(f"{_MOD}.run_cmd")
     def test_page_all_flag_passed(self, mock_cmd):
         mock_cmd.return_value = _mock_result(stdout=json.dumps({}))
         _user_in_conference("conferenceRecords/abc", "12345")
         cmd_args = mock_cmd.call_args[0][0]
         assert "--page-all" in cmd_args
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector.run_cmd")
+    @patch(f"{_MOD}.run_cmd")
     def test_ndjson_user_on_second_page(self, mock_cmd):
         page1 = json.dumps(
             {
@@ -245,146 +287,140 @@ class TestFindAttendedEventIds:
     """End-to-end tests for the missed-meeting suppression logic.
 
     These mock the internal helpers to verify the orchestration in
-    find_attended_event_ids — particularly that ended conferences
-    are checked and that attendance in ANY record suppresses the alert.
+    find_attended_event_ids — particularly that only conference records
+    overlapping the event window are checked, and that attendance in a
+    previous recurring instance does NOT suppress the alert.
     """
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector._user_in_conference")
-    @patch(
-        "personal_assistant_dashboard.collectors.meet_collector._find_conference_names"
-    )
-    @patch(
-        "personal_assistant_dashboard.collectors.meet_collector._get_user_resource_id"
-    )
-    def test_attended_active_conference(self, mock_user_id, mock_confs, mock_in_conf):
+    @patch(f"{_MOD}._user_in_conference")
+    @patch(f"{_MOD}._find_conference_records")
+    @patch(f"{_MOD}._get_user_resource_id")
+    def test_attended_active_conference(self, mock_user_id, mock_recs, mock_in_conf):
         mock_user_id.return_value = "12345"
-        mock_confs.return_value = ["conferenceRecords/abc"]
+        mock_recs.return_value = [
+            {"name": "conferenceRecords/abc", "startTime": "2026-04-16T13:15:00Z"},
+        ]
         mock_in_conf.return_value = True
         events = [
             {
                 "id": "evt1",
                 "summary": "Standup",
+                "start": "2026-04-16T09:15:00-04:00",
                 "hangout_link": "https://meet.google.com/abc-defg-hij",
             }
         ]
         assert find_attended_event_ids(events) == {"evt1"}
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector._user_in_conference")
-    @patch(
-        "personal_assistant_dashboard.collectors.meet_collector._find_conference_names"
-    )
-    @patch(
-        "personal_assistant_dashboard.collectors.meet_collector._get_user_resource_id"
-    )
-    def test_attended_ended_conference(self, mock_user_id, mock_confs, mock_in_conf):
+    @patch(f"{_MOD}._user_in_conference")
+    @patch(f"{_MOD}._find_conference_records")
+    @patch(f"{_MOD}._get_user_resource_id")
+    def test_attended_ended_conference(self, mock_user_id, mock_recs, mock_in_conf):
         """User left early — conference ended but user was a participant."""
         mock_user_id.return_value = "12345"
-        mock_confs.return_value = ["conferenceRecords/ended"]
+        mock_recs.return_value = [
+            {
+                "name": "conferenceRecords/ended",
+                "startTime": "2026-04-16T13:15:00Z",
+                "endTime": "2026-04-16T13:45:00Z",
+            },
+        ]
         mock_in_conf.return_value = True
         events = [
             {
                 "id": "evt1",
                 "summary": "Standup",
+                "start": "2026-04-16T09:15:00-04:00",
                 "hangout_link": "https://meet.google.com/abc-defg-hij",
             }
         ]
         assert find_attended_event_ids(events) == {"evt1"}
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector._user_in_conference")
-    @patch(
-        "personal_assistant_dashboard.collectors.meet_collector._find_conference_names"
-    )
-    @patch(
-        "personal_assistant_dashboard.collectors.meet_collector._get_user_resource_id"
-    )
-    def test_attended_second_conference_record(
-        self, mock_user_id, mock_confs, mock_in_conf
+    @patch(f"{_MOD}._user_in_conference")
+    @patch(f"{_MOD}._find_conference_records")
+    @patch(f"{_MOD}._get_user_resource_id")
+    def test_previous_day_attendance_ignored(
+        self, mock_user_id, mock_recs, mock_in_conf
     ):
-        """User wasn't in first record but was in second — still suppressed."""
+        """Recurring meeting: yesterday's attendance must not suppress today's alert."""
         mock_user_id.return_value = "12345"
-        mock_confs.return_value = [
-            "conferenceRecords/first",
-            "conferenceRecords/second",
+        mock_recs.return_value = [
+            {
+                "name": "conferenceRecords/yesterday",
+                "startTime": "2026-04-15T13:15:00Z",
+            },
+            {"name": "conferenceRecords/today", "startTime": "2026-04-16T13:15:00Z"},
         ]
-        mock_in_conf.side_effect = [False, True]
+        # User attended yesterday but not today
+        mock_in_conf.side_effect = (
+            lambda name, uid: name == "conferenceRecords/yesterday"
+        )
         events = [
             {
                 "id": "evt1",
+                "start": "2026-04-16T09:15:00-04:00",
                 "hangout_link": "https://meet.google.com/abc-defg-hij",
             }
         ]
-        assert find_attended_event_ids(events) == {"evt1"}
+        # Yesterday's record is filtered out by time, today's has no attendance
+        assert find_attended_event_ids(events) == set()
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector._user_in_conference")
-    @patch(
-        "personal_assistant_dashboard.collectors.meet_collector._find_conference_names"
-    )
-    @patch(
-        "personal_assistant_dashboard.collectors.meet_collector._get_user_resource_id"
-    )
-    def test_not_in_any_conference(self, mock_user_id, mock_confs, mock_in_conf):
+    @patch(f"{_MOD}._user_in_conference")
+    @patch(f"{_MOD}._find_conference_records")
+    @patch(f"{_MOD}._get_user_resource_id")
+    def test_not_in_any_conference(self, mock_user_id, mock_recs, mock_in_conf):
         """User never joined — alert should fire."""
         mock_user_id.return_value = "12345"
-        mock_confs.return_value = [
-            "conferenceRecords/first",
-            "conferenceRecords/second",
+        mock_recs.return_value = [
+            {"name": "conferenceRecords/first", "startTime": "2026-04-16T13:15:00Z"},
         ]
         mock_in_conf.return_value = False
         events = [
             {
                 "id": "evt1",
+                "start": "2026-04-16T09:15:00-04:00",
                 "hangout_link": "https://meet.google.com/abc-defg-hij",
             }
         ]
         assert find_attended_event_ids(events) == set()
 
-    @patch(
-        "personal_assistant_dashboard.collectors.meet_collector._get_user_resource_id"
-    )
+    @patch(f"{_MOD}._get_user_resource_id")
     def test_no_meet_links(self, mock_user_id):
         events = [{"id": "evt1", "summary": "No meet"}]
         assert find_attended_event_ids(events) == set()
         mock_user_id.assert_not_called()
 
-    @patch(
-        "personal_assistant_dashboard.collectors.meet_collector._find_conference_names"
-    )
-    @patch(
-        "personal_assistant_dashboard.collectors.meet_collector._get_user_resource_id"
-    )
-    def test_no_conference_records(self, mock_user_id, mock_confs):
+    @patch(f"{_MOD}._find_conference_records")
+    @patch(f"{_MOD}._get_user_resource_id")
+    def test_no_conference_records(self, mock_user_id, mock_recs):
         """No conference records at all — meeting never started on Meet."""
         mock_user_id.return_value = "12345"
-        mock_confs.return_value = []
+        mock_recs.return_value = []
         events = [
             {
                 "id": "evt1",
+                "start": "2026-04-16T09:15:00-04:00",
                 "hangout_link": "https://meet.google.com/abc-defg-hij",
             }
         ]
         assert find_attended_event_ids(events) == set()
 
-    @patch("personal_assistant_dashboard.collectors.meet_collector._user_in_conference")
-    @patch(
-        "personal_assistant_dashboard.collectors.meet_collector._find_conference_names"
-    )
-    @patch(
-        "personal_assistant_dashboard.collectors.meet_collector._get_user_resource_id"
-    )
+    @patch(f"{_MOD}._user_in_conference")
+    @patch(f"{_MOD}._find_conference_records")
+    @patch(f"{_MOD}._get_user_resource_id")
     def test_stops_checking_after_first_match(
-        self, mock_user_id, mock_confs, mock_in_conf
+        self, mock_user_id, mock_recs, mock_in_conf
     ):
-        """Once attendance is found, skip remaining conference records."""
+        """Once attendance is found for an event, skip remaining records."""
         mock_user_id.return_value = "12345"
-        mock_confs.return_value = [
-            "conferenceRecords/first",
-            "conferenceRecords/second",
-            "conferenceRecords/third",
+        mock_recs.return_value = [
+            {"name": "conferenceRecords/first", "startTime": "2026-04-16T13:15:00Z"},
+            {"name": "conferenceRecords/second", "startTime": "2026-04-16T13:30:00Z"},
         ]
         mock_in_conf.return_value = True
         events = [
             {
                 "id": "evt1",
+                "start": "2026-04-16T09:15:00-04:00",
                 "hangout_link": "https://meet.google.com/abc-defg-hij",
             }
         ]
