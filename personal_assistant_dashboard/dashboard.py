@@ -118,9 +118,11 @@ class Dashboard:
         *,
         state_path: Path = DEFAULT_STATE_PATH,
         on_quit: Callable[[], None] | None = None,
+        dpi_scale: float = 1.0,
     ):
         self._root = root
         self._state_path = state_path
+        self._dpi_scale = dpi_scale
         self._on_quit_cb = on_quit or root.quit
         self._window: tk.Toplevel | None = None
         self._canvas: tk.Canvas | None = None
@@ -173,6 +175,12 @@ class Dashboard:
         self._history_index: int = 0
         self._history_stash: str = ""
 
+    def _s(self, px: int) -> int:
+        """Scale a pixel value by the DPI scale factor."""
+        if self._dpi_scale == 1.0:
+            return px
+        return round(px * self._dpi_scale)
+
     def show(self) -> None:
         if self._window and self._window.winfo_exists():
             self._window.deiconify()
@@ -195,10 +203,12 @@ class Dashboard:
     def _build(self) -> None:
         self._window = tk.Toplevel(self._root)
         self._window.title("PA — Dashboard")
-        self._window.geometry("900x820")
+        self._window.geometry(f"{self._s(900)}x{self._s(820)}")
         self._window.configure(bg=BG_WINDOW)
         self._window.protocol("WM_DELETE_WINDOW", self._shutdown)
-        self._window.minsize(width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT)
+        self._window.minsize(
+            width=self._s(MIN_WINDOW_WIDTH), height=self._s(MIN_WINDOW_HEIGHT)
+        )
 
         # Remove title bar decorations (Linux only — Motif hints preserve focus)
         if platform.system() == "Linux":
@@ -240,7 +250,7 @@ class Dashboard:
             "Dark.TNotebook.Tab",
             background=COLOR_TAB_BG,
             foreground=FG_DIM,
-            padding=(16, 3),
+            padding=(self._s(16), 3),
             font=self._font_body,
             borderwidth=0,
         )
@@ -298,8 +308,8 @@ class Dashboard:
             fg=FG_TEXT,
             font=self._font_body,
             wrap=tk.WORD,
-            padx=PAD,
-            pady=PAD,
+            padx=self._s(PAD),
+            pady=self._s(PAD),
             state=tk.DISABLED,
             highlightthickness=0,
             borderwidth=0,
@@ -364,7 +374,7 @@ class Dashboard:
             font=self._font_input,
             height=2,
             wrap=tk.WORD,
-            padx=PAD,
+            padx=self._s(PAD),
             pady=4,
             highlightthickness=1,
             highlightbackground=BORDER_COLOR,
@@ -404,7 +414,7 @@ class Dashboard:
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
-            padx=8,
+            padx=self._s(8),
         )
         self._quick_send_btn.pack(side=tk.TOP, fill=tk.X, pady=(0, 2))
 
@@ -418,7 +428,7 @@ class Dashboard:
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
-            padx=8,
+            padx=self._s(8),
         ).pack(side=tk.TOP, fill=tk.X)
 
         # Wire the Send button to ChatTab for Send/Stop toggling
@@ -477,7 +487,7 @@ class Dashboard:
         """
         if hasattr(self, "_quick_chat_frame"):
             self._quick_chat_frame.pack(
-                side=tk.BOTTOM, fill=tk.X, padx=PAD, pady=(4, 0)
+                side=tk.BOTTOM, fill=tk.X, padx=self._s(PAD), pady=(4, 0)
             )
         if self._notebook:
             self._notebook.pack(fill=tk.BOTH, expand=True)
@@ -552,7 +562,7 @@ class Dashboard:
         assert self._window is not None
         # Top bar: nav + legend + refresh
         top_bar = tk.Frame(cal_tab, bg=BG_WINDOW)
-        top_bar.pack(fill=tk.X, pady=(0, PAD))
+        top_bar.pack(fill=tk.X, pady=(0, self._s(PAD)))
 
         # Date navigation: < date >
         nav = tk.Frame(top_bar, bg=BG_WINDOW)
@@ -568,7 +578,7 @@ class Dashboard:
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
-            padx=8,
+            padx=self._s(8),
         ).pack(side=tk.LEFT)
 
         self._date_label = tk.Label(
@@ -593,7 +603,7 @@ class Dashboard:
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
-            padx=8,
+            padx=self._s(8),
         ).pack(side=tk.LEFT)
 
         tk.Button(
@@ -606,8 +616,8 @@ class Dashboard:
             relief=tk.FLAT,
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
-            padx=8,
-        ).pack(side=tk.LEFT, padx=(8, 0))
+            padx=self._s(8),
+        ).pack(side=tk.LEFT, padx=(self._s(8), 0))
 
         tk.Button(
             nav,
@@ -631,7 +641,7 @@ class Dashboard:
             font=self._font_body,
             cursor="hand2",
         )
-        self._scope_indicator.pack(side=tk.RIGHT, padx=(0, 8))
+        self._scope_indicator.pack(side=tk.RIGHT, padx=(0, self._s(8)))
         self._scope_indicator.bind("<Button-1>", lambda e: self._show_scope_details())
 
         # Status (right side, before scope dot)
@@ -642,17 +652,17 @@ class Dashboard:
             fg=FG_DIM,
             font=self._font_body,
             anchor=tk.E,
-        ).pack(side=tk.RIGHT, padx=(0, 8))
+        ).pack(side=tk.RIGHT, padx=(0, self._s(8)))
 
         # Legend (right side, before status)
         legend = tk.Frame(top_bar, bg=BG_WINDOW)
-        legend.pack(side=tk.RIGHT, padx=(0, 8))
+        legend.pack(side=tk.RIGHT, padx=(0, self._s(8)))
         for label_text, color in [
             ("meeting", COLOR_NORMAL),
             ("1:1", COLOR_ONEONE),
             ("conflict", COLOR_CONFLICT),
         ]:
-            swatch = tk.Frame(legend, bg=color, width=10, height=10)
+            swatch = tk.Frame(legend, bg=color, width=self._s(10), height=self._s(10))
             swatch.pack(side=tk.LEFT, padx=(0, 2))
             swatch.pack_propagate(False)
             tk.Label(
@@ -661,7 +671,7 @@ class Dashboard:
                 bg=BG_WINDOW,
                 fg=FG_DIM,
                 font=self._font_body,
-            ).pack(side=tk.LEFT, padx=(0, 8))
+            ).pack(side=tk.LEFT, padx=(0, self._s(8)))
 
         # Calendar area — PanedWindow for canvas + detail panel
         self._calendar_frame = tk.Frame(cal_tab, bg=BG_WINDOW)
@@ -758,9 +768,9 @@ class Dashboard:
         self._notified_tabs: set[str] = set()  # transient bells
         self._persistent_tabs: set[str] = set()  # persistent bells
         # Pumpkin orange background image sized to fill a tab
-        self._notify_bg = tk.PhotoImage(width=100, height=28)
-        for x in range(100):
-            for y in range(28):
+        self._notify_bg = tk.PhotoImage(width=self._s(100), height=self._s(28))
+        for x in range(self._s(100)):
+            for y in range(self._s(28)):
                 self._notify_bg.put(COLOR_NOTIFICATION_BELL, (x, y))
 
     def _notify_tab(self, tab_name: str) -> None:
@@ -917,8 +927,10 @@ class Dashboard:
         self._notebook.unbind("<<NotebookTabChanged>>")  # type: ignore[union-attr]
         self._notebook.select(self._info_tab_id)  # type: ignore[union-attr]
         self._root.after(100, self._rebind_tab_changed)
-        self._window.minsize(width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT_SHADED)
-        self._window.geometry(f"{w}x{SHADED_HEIGHT}+{x}+{y}")
+        self._window.minsize(
+            width=self._s(MIN_WINDOW_WIDTH), height=self._s(MIN_WINDOW_HEIGHT_SHADED)
+        )
+        self._window.geometry(f"{w}x{self._s(SHADED_HEIGHT)}+{x}+{y}")
         if hasattr(self, "_quick_chat_frame"):
             self._quick_chat_frame.pack_forget()
 
@@ -927,7 +939,9 @@ class Dashboard:
         if not self._shaded or not self._window:
             return
         self._shaded = False
-        self._window.minsize(width=MIN_WINDOW_WIDTH, height=MIN_WINDOW_HEIGHT)
+        self._window.minsize(
+            width=self._s(MIN_WINDOW_WIDTH), height=self._s(MIN_WINDOW_HEIGHT)
+        )
         # Forget notebook so _pack_main_layout re-packs in the correct order
         # (chat BOTTOM first, then notebook). Can't forget it in _shade because
         # the tab strip must remain visible for middle-click unshade.
@@ -1544,9 +1558,20 @@ class Dashboard:
         # Save detail panel width
         if self._detail_panel_width != DETAIL_PANEL_WIDTH:
             state["detail_panel_width"] = self._detail_panel_width
-        # Save geometry
+        # Save geometry — unscale W and H for resolution independence
         if self._last_good_geometry:
-            state["geometry"] = self._last_good_geometry
+            if self._dpi_scale != 1.0:
+                import re as _re
+
+                m = _re.match(r"(\d+)x(\d+)\+(.+)", self._last_good_geometry)
+                if m:
+                    uw = round(int(m.group(1)) / self._dpi_scale)
+                    uh = round(int(m.group(2)) / self._dpi_scale)
+                    state["geometry"] = f"{uw}x{uh}+{m.group(3)}"
+                else:
+                    state["geometry"] = self._last_good_geometry
+            else:
+                state["geometry"] = self._last_good_geometry
         logger.debug("SAVE: final state geometry=%r", state.get("geometry", "MISSING"))
         # Save active bells. Exclude Console — its text widget isn't persisted,
         # so restoring a Console bell produces a bell with no backing content.
@@ -1619,8 +1644,17 @@ class Dashboard:
         for tab_name in bells:
             self._notify_tab(tab_name)
 
-        # Restore window geometry (position + size)
+        # Restore window geometry (position + size).  Saved values are
+        # unscaled — re-scale W and H for the current display.
         geometry = state.get("geometry")
+        if geometry and self._dpi_scale != 1.0:
+            import re as _re_geom
+
+            m = _re_geom.match(r"(\d+)x(\d+)\+(.+)", geometry)
+            if m:
+                sw = self._s(int(m.group(1)))
+                sh = self._s(int(m.group(2)))
+                geometry = f"{sw}x{sh}+{m.group(3)}"
         logger.debug("RESTORE: geometry from state=%r", geometry)
         if geometry and self._window:
             self._window.geometry(geometry)
@@ -1760,7 +1794,7 @@ class Dashboard:
         popup = tk.Toplevel(self._root)
         popup.title("GWS Scope Status")
         popup.configure(bg=BG_WINDOW)
-        popup.geometry("700x400")
+        popup.geometry(f"{self._s(700)}x{self._s(400)}")
         frame = tk.Frame(popup, bg=BG_OUTPUT)
         frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         text = tk.Text(
@@ -1769,8 +1803,8 @@ class Dashboard:
             fg=FG_TEXT,
             font=self._font_body,
             wrap=tk.WORD,
-            padx=8,
-            pady=8,
+            padx=self._s(8),
+            pady=self._s(8),
             highlightthickness=0,
         )
         scrollbar = tk.Scrollbar(frame, command=text.yview)
@@ -1816,14 +1850,16 @@ class Dashboard:
 
         # Already showing tooltip for this event — just move it
         if evt_tag == self._tooltip_tag and self._tooltip:
-            self._tooltip.geometry(f"+{event.x_root + 12}+{event.y_root + 12}")
+            self._tooltip.geometry(
+                f"+{event.x_root + self._s(12)}+{event.y_root + self._s(12)}"
+            )
             return
 
         # Same event, timer already pending — update position
         if evt_tag == self._tooltip_tag:
             self._tooltip_pending_pos = (
-                event.x_root + 12,
-                event.y_root + 12,
+                event.x_root + self._s(12),
+                event.y_root + self._s(12),
             )
             return
 
@@ -1831,8 +1867,8 @@ class Dashboard:
         self._hide_tooltip()
         self._tooltip_tag = evt_tag
         self._tooltip_pending_pos = (
-            event.x_root + 12,
-            event.y_root + 12,
+            event.x_root + self._s(12),
+            event.y_root + self._s(12),
         )
         self._tooltip_timer = self._root.after(
             TOOLTIP_DELAY_MS, self._show_tooltip, evt_tag
@@ -1864,7 +1900,7 @@ class Dashboard:
             font=self._font_body,
             padx=6,
             pady=3,
-            wraplength=400,
+            wraplength=self._s(400),
         ).pack()
         self._tooltip = tip
 
@@ -2012,7 +2048,7 @@ class Dashboard:
         popup = tk.Toplevel(self._root)
         popup.title(f"Summary — {title}")
         popup.configure(bg=BG_WINDOW)
-        popup.geometry("700x500")
+        popup.geometry(f"{self._s(700)}x{self._s(500)}")
 
         text = tk.Text(
             popup,
@@ -2020,8 +2056,8 @@ class Dashboard:
             fg=FG_TEXT,
             font=self._font_body,
             wrap=tk.WORD,
-            padx=PAD,
-            pady=PAD,
+            padx=self._s(PAD),
+            pady=self._s(PAD),
             highlightthickness=0,
         )
         scrollbar = tk.Scrollbar(popup, command=text.yview)
@@ -2107,12 +2143,12 @@ class Dashboard:
             fg=FG_ACCENT,
             font=self._font_heading,
             anchor=tk.W,
-            wraplength=DETAIL_PANEL_WIDTH - 16,
-        ).pack(fill=tk.X, padx=8, pady=(8, 2))
+            wraplength=self._s(DETAIL_PANEL_WIDTH) - self._s(16),
+        ).pack(fill=tk.X, padx=self._s(8), pady=(self._s(8), 2))
 
         # Subtitle row: time + status
         sub = tk.Frame(panel, bg=BG_WINDOW)
-        sub.pack(fill=tk.X, padx=8, pady=(0, 4))
+        sub.pack(fill=tk.X, padx=self._s(8), pady=(0, 4))
 
         tk.Label(
             sub,
@@ -2125,7 +2161,7 @@ class Dashboard:
 
         # Action buttons row (separate row for narrow panel)
         btn_frame = tk.Frame(panel, bg=BG_WINDOW)
-        btn_frame.pack(fill=tk.X, padx=8, pady=(0, 4))
+        btn_frame.pack(fill=tk.X, padx=self._s(8), pady=(0, 4))
 
         is_organizer = cal_event.get("organizer_self", False)
         buttons: list[tuple[str, str, str]] = []
@@ -2174,7 +2210,9 @@ class Dashboard:
 
         # Content area
         content_frame = tk.Frame(panel, bg=BG_OUTPUT)
-        content_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        content_frame.pack(
+            fill=tk.BOTH, expand=True, padx=self._s(8), pady=(0, self._s(8))
+        )
 
         text = tk.Text(
             content_frame,
@@ -2182,8 +2220,8 @@ class Dashboard:
             fg=FG_TEXT,
             font=self._font_body,
             wrap=tk.WORD,
-            padx=8,
-            pady=8,
+            padx=self._s(8),
+            pady=self._s(8),
             highlightthickness=0,
             cursor="arrow",
         )
@@ -2287,7 +2325,7 @@ class Dashboard:
             return
         self._paned.add(
             self._detail_panel,
-            width=self._detail_panel_width,
+            width=self._s(self._detail_panel_width),
             stretch="never",
         )
         self._detail_visible = True
@@ -2302,7 +2340,12 @@ class Dashboard:
             paned_width = self._paned.winfo_width()
             panel_width = paned_width - sash_x - self._paned.cget("sashwidth")
             if panel_width > 0:
-                self._detail_panel_width = panel_width
+                # Store unscaled so persistence is resolution-independent
+                self._detail_panel_width = (
+                    round(panel_width / self._dpi_scale)
+                    if self._dpi_scale != 1.0
+                    else panel_width
+                )
         except (tk.TclError, IndexError):
             pass
         self._paned.forget(self._detail_panel)
@@ -2480,7 +2523,7 @@ class Dashboard:
         popup = tk.Toplevel(self._root)
         popup.title("Go to date")
         popup.configure(bg=BG_WINDOW)
-        popup.geometry("340x320")
+        popup.geometry(f"{self._s(340)}x{self._s(320)}")
         popup.transient(self._window)
         popup.update_idletasks()
         popup.grab_set()
@@ -2493,7 +2536,7 @@ class Dashboard:
 
         # Header: < Month Year >
         header = tk.Frame(popup, bg=BG_WINDOW)
-        header.pack(fill=tk.X, padx=PAD, pady=(PAD, 4))
+        header.pack(fill=tk.X, padx=self._s(PAD), pady=(self._s(PAD), 4))
 
         month_label = tk.Label(
             header, bg=BG_WINDOW, fg=FG_TEXT, font=self._font_heading
@@ -2539,7 +2582,7 @@ class Dashboard:
 
         # Day-of-week headers
         dow_frame = tk.Frame(popup, bg=BG_WINDOW)
-        dow_frame.pack(fill=tk.X, padx=PAD)
+        dow_frame.pack(fill=tk.X, padx=self._s(PAD))
         for day_name in ["S", "M", "T", "W", "T", "F", "S"]:
             tk.Label(
                 dow_frame,
@@ -2553,7 +2596,9 @@ class Dashboard:
 
         # Grid of days
         grid_frame = tk.Frame(popup, bg=BG_WINDOW)
-        grid_frame.pack(fill=tk.BOTH, expand=True, padx=PAD, pady=(0, PAD))
+        grid_frame.pack(
+            fill=tk.BOTH, expand=True, padx=self._s(PAD), pady=(0, self._s(PAD))
+        )
 
         def _pick(d: date) -> None:
             popup.destroy()
@@ -2905,13 +2950,13 @@ class Dashboard:
             now = datetime.now().astimezone()
             now_hour_f = now.hour + now.minute / 60
             if earliest <= now_hour_f <= latest:
-                now_y_pos = (now_hour_f - earliest) * HOUR_HEIGHT
+                now_y_pos = (now_hour_f - earliest) * self._s(HOUR_HEIGHT)
 
         # Hour and half-hour grid
         for hour in range(earliest, latest + 1):
-            y = (hour - earliest) * HOUR_HEIGHT
+            y = (hour - earliest) * self._s(HOUR_HEIGHT)
             self._canvas.create_line(
-                TIME_LABEL_WIDTH,
+                self._s(TIME_LABEL_WIDTH),
                 y,
                 canvas_width,
                 y,
@@ -2919,19 +2964,19 @@ class Dashboard:
             )
             # Half-hour line
             if hour < latest:
-                half_y = y + HOUR_HEIGHT // 2
+                half_y = y + self._s(HOUR_HEIGHT) // 2
                 self._canvas.create_line(
-                    TIME_LABEL_WIDTH,
+                    self._s(TIME_LABEL_WIDTH),
                     half_y,
                     canvas_width,
                     half_y,
                     fill=COLOR_GRID_LINE_HALF,
                 )
             # Skip hour label if now-line is within font height range
-            if now_y_pos is not None and abs(y - now_y_pos) < 22:
+            if now_y_pos is not None and abs(y - now_y_pos) < self._s(22):
                 continue
             self._canvas.create_text(
-                TIME_LABEL_WIDTH - 5,
+                self._s(TIME_LABEL_WIDTH) - 5,
                 y + 2,
                 text=f"{hour:02d}:00",
                 fill=COLOR_HOUR_TEXT,
@@ -2944,14 +2989,14 @@ class Dashboard:
             now = datetime.now().astimezone()
             now_hour = now.hour + now.minute / 60
             if earliest <= now_hour <= latest:
-                now_y = (now_hour - earliest) * HOUR_HEIGHT
+                now_y = (now_hour - earliest) * self._s(HOUR_HEIGHT)
                 # Background behind time label to cover hour text
                 now_text = now.strftime("%H:%M")
                 self._canvas.create_rectangle(
                     0,
-                    now_y - 22,
-                    TIME_LABEL_WIDTH - 2,
-                    now_y + 10,
+                    now_y - self._s(22),
+                    self._s(TIME_LABEL_WIDTH) - 2,
+                    now_y + self._s(10),
                     fill=BG_OUTPUT,
                     outline="",
                 )
@@ -2966,7 +3011,7 @@ class Dashboard:
                     dash=(4, 2),
                 )
                 self._canvas.create_text(
-                    TIME_LABEL_WIDTH - 5,
+                    self._s(TIME_LABEL_WIDTH) - 5,
                     now_y,
                     text=now_text,
                     fill=COLOR_NOW_LINE,
@@ -2994,11 +3039,12 @@ class Dashboard:
         earliest, latest = _day_time_range(day_events)
         total_hours = latest - earliest
         canvas_height = max(
-            total_hours * HOUR_HEIGHT + CANVAS_EXTRA_HEIGHT, CANVAS_MIN_HEIGHT
+            total_hours * self._s(HOUR_HEIGHT) + self._s(CANVAS_EXTRA_HEIGHT),
+            self._s(CANVAS_MIN_HEIGHT),
         )
 
         self._canvas.update_idletasks()
-        canvas_width = max(self._canvas.winfo_width(), CANVAS_MIN_WIDTH)
+        canvas_width = max(self._canvas.winfo_width(), self._s(CANVAS_MIN_WIDTH))
 
         self._canvas.configure(scrollregion=(0, 0, canvas_width, canvas_height))
 
@@ -3008,25 +3054,27 @@ class Dashboard:
         self._canvas_event_map.clear()
         positioned = _layout_events(day_events, earliest)
 
-        available_width = canvas_width - EVENT_LEFT_MARGIN - EVENT_RIGHT_MARGIN
+        available_width = (
+            canvas_width - self._s(EVENT_LEFT_MARGIN) - self._s(EVENT_RIGHT_MARGIN)
+        )
 
         for pos in positioned:
             event = pos["event"]
-            y1 = pos["y"]
-            y2 = pos["y2"]
+            y1 = self._s(pos["y"])
+            y2 = self._s(pos["y2"])
             col = pos["col"]
             num_cols = pos["num_cols"]
 
             col_width = available_width / max(num_cols, 1)
-            x1 = EVENT_LEFT_MARGIN + col * col_width + 1
+            x1 = self._s(EVENT_LEFT_MARGIN) + col * col_width + 1
             x2 = x1 + col_width - 2
 
             # Track original height for padding decisions
             original_height = y2 - y1
             block_height = original_height
-            if block_height < MIN_BLOCK_HEIGHT:
-                y2 = y1 + MIN_BLOCK_HEIGHT
-                block_height = MIN_BLOCK_HEIGHT
+            if block_height < self._s(MIN_BLOCK_HEIGHT):
+                y2 = y1 + self._s(MIN_BLOCK_HEIGHT)
+                block_height = self._s(MIN_BLOCK_HEIGHT)
 
             event_id = event.get("id", "")
             is_conflict = event_id in conflict_ids
@@ -3090,14 +3138,17 @@ class Dashboard:
                 label += f" {attendee_info}"
 
             max_chars = max(
-                int((x2 - x1 - TEXT_PADDING_PIXELS) / CHAR_WIDTH_PIXELS),
+                int(
+                    (x2 - x1 - self._s(TEXT_PADDING_PIXELS))
+                    / self._s(CHAR_WIDTH_PIXELS)
+                ),
                 MIN_TRUNCATION_CHARS,
             )
             if len(label) > max_chars:
                 label = label[: max_chars - 1] + "\u2026"
 
             # Remove top padding for short events (15-min = ~15px original)
-            text_pad = 0 if original_height < HOUR_HEIGHT // 2 else 4
+            text_pad = 0 if original_height < self._s(HOUR_HEIGHT) // 2 else 4
 
             # Warning indicator — left of time
             text_x = x1 + 4
@@ -3112,7 +3163,7 @@ class Dashboard:
                     anchor=tk.NW,
                     tags=tag,
                 )
-                text_x += 16
+                text_x += self._s(16)
             elif response == "needsAction":
                 self._canvas.create_text(
                     text_x,
@@ -3123,7 +3174,7 @@ class Dashboard:
                     anchor=tk.NW,
                     tags=tag,
                 )
-                text_x += 16
+                text_x += self._s(16)
 
             self._canvas.create_text(
                 text_x,
@@ -3149,8 +3200,8 @@ class Dashboard:
         # No events message
         if not day_events:
             self._canvas.create_text(
-                400,
-                100,
+                self._s(400),
+                self._s(100),
                 text="No events",
                 fill=FG_DIM,
                 font=self._font_heading,

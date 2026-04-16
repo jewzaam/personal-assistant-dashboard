@@ -135,13 +135,18 @@ def _cmd_gui(args: argparse.Namespace) -> None:
 
     import tkinter as tk
     from personal_assistant_dashboard.dashboard import Dashboard
+    from personal_assistant_dashboard.dpi import apply_dpi_scaling
 
     state_path = getattr(args, "state_path", state_repo.DEFAULT_STATE_PATH)
 
     root = tk.Tk()
     root.withdraw()
 
-    dashboard = Dashboard(root, state_path=state_path, on_quit=root.quit)
+    dpi_scale = apply_dpi_scaling(root, override=getattr(args, "scale", None))
+
+    dashboard = Dashboard(
+        root, state_path=state_path, on_quit=root.quit, dpi_scale=dpi_scale
+    )
     dashboard.show()
 
     # Auto-refresh and scope check on launch
@@ -247,6 +252,12 @@ def main() -> None:
     gui_parser = subparsers.add_parser("gui", help="launch the dashboard")
     gui_parser.add_argument(
         "--log-file", type=str, default=None, help="write log output to file"
+    )
+    gui_parser.add_argument(
+        "--scale",
+        type=float,
+        default=None,
+        help="DPI scale factor (default: auto-detect, or set PA_DASHBOARD_SCALE)",
     )
     _add_repo_path_arg(gui_parser)
     gui_parser.set_defaults(func=_cmd_gui)
