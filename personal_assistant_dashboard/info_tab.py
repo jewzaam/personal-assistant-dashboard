@@ -302,12 +302,9 @@ class InfoTab:
 
     @staticmethod
     def _active_today(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Filter to sessions active or started today (local time).
+        """Filter to sessions active or touched today (local time).
 
-        AgentPulse computes total_duration_ms as now - started_at for all
-        sessions (active or not), so we cannot derive ended_time from it.
-        Filter on started_at instead: sessions started today are shown,
-        plus any still-active session regardless of start date.
+        Includes any session that is active, started today, or ended today.
         """
         today_start_epoch_ms = int(
             datetime.now()
@@ -321,7 +318,10 @@ class InfoTab:
                 result.append(s)
                 continue
             started_at_ms = s.get("started_at", 0)
+            ended_at_ms = s.get("ended_at", 0)
             if started_at_ms >= today_start_epoch_ms:
+                result.append(s)
+            elif ended_at_ms >= today_start_epoch_ms:
                 result.append(s)
         return result
 

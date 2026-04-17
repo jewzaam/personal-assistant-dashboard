@@ -54,6 +54,9 @@ def _session_response_to_row(
     # AgentPulse reports started_at in epoch milliseconds
     started_at_s = started_at / 1000.0 if started_at else 0
     elapsed_ms = max(0, int((time.time() - started_at_s) * 1000)) if started_at else 0
+    # ended_at comes from API in epoch seconds; convert to ms for consistency
+    ended_at_s = resp.get("ended_at") or 0
+    ended_at_ms = int(ended_at_s * 1000) if ended_at_s else 0
     return {
         "session_id": resp.get("session_id", ""),
         "cwd": resp.get("cwd", ""),
@@ -66,6 +69,7 @@ def _session_response_to_row(
         "lines_added": resp.get("lines_added") or 0,
         "lines_removed": resp.get("lines_removed") or 0,
         "started_at": started_at,
+        "ended_at": ended_at_ms,
         "is_active": is_active,
     }
 
