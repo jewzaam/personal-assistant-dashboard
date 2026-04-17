@@ -72,6 +72,17 @@ class TestSessionResponseToRow:
         assert row["context_used_pct"] == 0
         assert row["lines_added"] == 0
         assert row["lines_removed"] == 0
+        assert row["ended_at"] == 0
+
+    def test_converts_ended_at_to_ms(self) -> None:
+        resp = {
+            "session_id": "abc-123",
+            "cwd": "/tmp",
+            "started_at": 1712900000000,
+            "ended_at": 1712903600.123,
+        }
+        row = _session_response_to_row(resp)
+        assert row["ended_at"] == 1712903600123
 
     def test_computes_duration_ms(self) -> None:
         import time
@@ -113,6 +124,30 @@ class TestHandleWsMessage:
             client._handle_ws_message(msg)
         assert "s1" in client._sessions
         assert client._sessions["s1"]["is_active"] is False
+
+    def test_session_ended_preserves_ended_at(self) -> None:
+        client = self._make_client()
+        client._sessions["s1"] = {"session_id": "s1", "cwd": "/tmp"}
+        ended_at_s = 1776444202.739
+        rest_resp = json.dumps(
+            {
+                "session_id": "s1",
+                "cwd": "/tmp",
+                "started_at": 1776440000000,
+                "ended_at": ended_at_s,
+            }
+        ).encode()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = rest_resp
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            client._handle_ws_message(
+                {"type": "session_ended", "session_id": "s1", "timestamp": 1.0}
+            )
+        s = client._sessions["s1"]
+        assert s["is_active"] is False
+        assert s["ended_at"] == int(ended_at_s * 1000)
 
     def test_session_ended_ignores_unknown(self) -> None:
         client = self._make_client()
