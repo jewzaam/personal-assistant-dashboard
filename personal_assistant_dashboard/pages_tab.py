@@ -170,7 +170,7 @@ class PagesTab:
                 on_link_click=self._on_link_click,
             )
             self._html_frame.pack(fill=tk.BOTH, expand=True, padx=PAD, pady=PAD)
-        except ImportError:
+        except (ImportError, OSError, tk.TclError):
             fallback = tk.Text(
                 self._parent,
                 bg=BG_OUTPUT,
@@ -184,7 +184,8 @@ class PagesTab:
             fallback.configure(state=tk.NORMAL)
             fallback.insert(
                 "1.0",
-                "tkinterweb not installed. " "Run: pip install tkinterweb[recommended]",
+                "Tkhtml not available for this Tcl/Tk version. "
+                "HTML rendering is disabled.",
             )
             fallback.configure(state=tk.DISABLED)
 
