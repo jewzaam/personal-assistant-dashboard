@@ -193,6 +193,80 @@ class TestCollapseByProcess:
         assert result[0]["total_cost_usd"] == 2.0
 
 
+class TestDropEmptyInactive:
+    """Test InfoTab._drop_empty_inactive static method."""
+
+    def test_drops_inactive_with_all_zero_metrics(self) -> None:
+        sessions = [
+            {
+                "session_id": "empty",
+                "is_active": False,
+                "total_cost_usd": 0.0,
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "lines_added": 0,
+                "lines_removed": 0,
+            }
+        ]
+        assert InfoTab._drop_empty_inactive(sessions) == []
+
+    def test_keeps_active_even_when_empty(self) -> None:
+        """Active sessions are always shown — they may still be warming up."""
+        sessions = [
+            {
+                "session_id": "warming",
+                "is_active": True,
+                "total_cost_usd": 0.0,
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "lines_added": 0,
+                "lines_removed": 0,
+            }
+        ]
+        assert len(InfoTab._drop_empty_inactive(sessions)) == 1
+
+    def test_keeps_inactive_with_cost(self) -> None:
+        sessions = [
+            {"session_id": "s", "is_active": False, "total_cost_usd": 0.01},
+        ]
+        assert len(InfoTab._drop_empty_inactive(sessions)) == 1
+
+    def test_keeps_inactive_with_input_tokens(self) -> None:
+        sessions = [
+            {"session_id": "s", "is_active": False, "total_input_tokens": 100},
+        ]
+        assert len(InfoTab._drop_empty_inactive(sessions)) == 1
+
+    def test_keeps_inactive_with_output_tokens(self) -> None:
+        sessions = [
+            {"session_id": "s", "is_active": False, "total_output_tokens": 50},
+        ]
+        assert len(InfoTab._drop_empty_inactive(sessions)) == 1
+
+    def test_keeps_inactive_with_lines(self) -> None:
+        sessions = [
+            {"session_id": "added", "is_active": False, "lines_added": 1},
+            {"session_id": "removed", "is_active": False, "lines_removed": 1},
+        ]
+        assert len(InfoTab._drop_empty_inactive(sessions)) == 2
+
+    def test_context_pct_alone_is_not_enough(self) -> None:
+        """Context % is not a data-bearing metric — inactive row still drops."""
+        sessions = [
+            {
+                "session_id": "ctx-only",
+                "is_active": False,
+                "context_used_pct": 42,
+                "total_cost_usd": 0.0,
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "lines_added": 0,
+                "lines_removed": 0,
+            }
+        ]
+        assert InfoTab._drop_empty_inactive(sessions) == []
+
+
 class TestOrderSessions:
     """Test InfoTab._order_sessions: active rows always above inactive."""
 
