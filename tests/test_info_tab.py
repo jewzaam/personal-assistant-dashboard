@@ -6,7 +6,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from personal_assistant_dashboard.info_tab import InfoTab
+from personal_assistant_dashboard.info_tab import InfoTab, _process_key
 
 
 class TestActiveToday:
@@ -78,3 +78,182 @@ class TestActiveToday:
         ]
         result = InfoTab._active_today(sessions)
         assert len(result) == 0
+
+
+class TestCollapseByProcess:
+    """Test InfoTab._collapse_by_process static method."""
+
+    def test_groups_sessions_by_pid_and_source_system(self) -> None:
+        """Two sessions with the same (source_system, pid) collapse into one."""
+        sessions = [
+            {
+                "session_id": "older",
+                "pid": 1234,
+                "source_system": "host-a",
+                "started_at": 1000,
+                "last_event_at": 5.0,
+                "total_cost_usd": 1.00,
+                "total_input_tokens": 100,
+                "total_output_tokens": 200,
+                "cwd": "/tmp",
+            },
+            {
+                "session_id": "newer",
+                "pid": 1234,
+                "source_system": "host-a",
+                "started_at": 2000,
+                "last_event_at": 10.0,
+                "total_cost_usd": 2.50,
+                "total_input_tokens": 500,
+                "total_output_tokens": 800,
+                "cwd": "/tmp",
+            },
+        ]
+        result = InfoTab._collapse_by_process(sessions)
+        assert len(result) == 1
+        collapsed = result[0]
+        # Keeps newest session's cumulative counters (avoids double-counting)
+        assert collapsed["session_id"] == "newer"
+        assert collapsed["total_cost_usd"] == 2.50
+        assert collapsed["total_input_tokens"] == 500
+        assert collapsed["total_output_tokens"] == 800
+        # Adopts earliest started_at so the row represents process uptime
+        assert collapsed["started_at"] == 1000
+
+    def test_different_pids_stay_separate(self) -> None:
+        sessions = [
+            {
+                "session_id": "a",
+                "pid": 1,
+                "source_system": "h",
+                "started_at": 1,
+                "last_event_at": 1.0,
+            },
+            {
+                "session_id": "b",
+                "pid": 2,
+                "source_system": "h",
+                "started_at": 2,
+                "last_event_at": 2.0,
+            },
+        ]
+        result = InfoTab._collapse_by_process(sessions)
+        assert len(result) == 2
+
+    def test_same_pid_different_source_system_stays_separate(self) -> None:
+        """PID reuse across hosts must not collapse into a single row."""
+        sessions = [
+            {
+                "session_id": "a",
+                "pid": 1234,
+                "source_system": "host-a",
+                "started_at": 1,
+                "last_event_at": 1.0,
+            },
+            {
+                "session_id": "b",
+                "pid": 1234,
+                "source_system": "host-b",
+                "started_at": 2,
+                "last_event_at": 2.0,
+            },
+        ]
+        result = InfoTab._collapse_by_process(sessions)
+        assert len(result) == 2
+
+    def test_missing_pid_sessions_kept_individually(self) -> None:
+        """Sessions without a pid can't be grouped; each stays on its own row."""
+        sessions = [
+            {"session_id": "a", "pid": 0, "source_system": "h", "started_at": 1},
+            {"session_id": "b", "pid": 0, "source_system": "h", "started_at": 2},
+        ]
+        result = InfoTab._collapse_by_process(sessions)
+        assert len(result) == 2
+
+    def test_fallback_to_started_at_when_last_event_at_missing(self) -> None:
+        sessions = [
+            {
+                "session_id": "older",
+                "pid": 9,
+                "source_system": "h",
+                "started_at": 100,
+                "total_cost_usd": 1.0,
+            },
+            {
+                "session_id": "newer",
+                "pid": 9,
+                "source_system": "h",
+                "started_at": 200,
+                "total_cost_usd": 2.0,
+            },
+        ]
+        result = InfoTab._collapse_by_process(sessions)
+        assert len(result) == 1
+        assert result[0]["session_id"] == "newer"
+        assert result[0]["total_cost_usd"] == 2.0
+
+
+class TestOrderSessions:
+    """Test InfoTab._order_sessions: active rows always above inactive."""
+
+    def test_active_always_above_inactive(self) -> None:
+        sessions = [
+            {"session_id": "inactive-cheap", "is_active": False, "total_cost_usd": 0.1},
+            {
+                "session_id": "active-expensive",
+                "is_active": True,
+                "total_cost_usd": 5.0,
+            },
+            {
+                "session_id": "inactive-expensive",
+                "is_active": False,
+                "total_cost_usd": 9.0,
+            },
+            {"session_id": "active-cheap", "is_active": True, "total_cost_usd": 0.5},
+        ]
+        # Sort by cost descending — active group sits on top even though the
+        # single most expensive row is inactive.
+        result = InfoTab._order_sessions(sessions, "cost", reverse=True)
+        ids = [s["session_id"] for s in result]
+        assert ids == [
+            "active-expensive",
+            "active-cheap",
+            "inactive-expensive",
+            "inactive-cheap",
+        ]
+
+    def test_secondary_sort_applies_within_each_group(self) -> None:
+        sessions = [
+            {"session_id": "a-low", "is_active": True, "total_cost_usd": 1.0},
+            {"session_id": "a-high", "is_active": True, "total_cost_usd": 3.0},
+            {"session_id": "i-low", "is_active": False, "total_cost_usd": 0.5},
+            {"session_id": "i-high", "is_active": False, "total_cost_usd": 10.0},
+        ]
+        result = InfoTab._order_sessions(sessions, "cost", reverse=False)
+        ids = [s["session_id"] for s in result]
+        assert ids == ["a-low", "a-high", "i-low", "i-high"]
+
+    def test_no_sort_column_still_groups_active_first(self) -> None:
+        sessions = [
+            {"session_id": "i1", "is_active": False},
+            {"session_id": "a1", "is_active": True},
+            {"session_id": "i2", "is_active": False},
+            {"session_id": "a2", "is_active": True},
+        ]
+        result = InfoTab._order_sessions(sessions, None, reverse=False)
+        ids = [s["session_id"] for s in result]
+        # Relative order within each group preserved (stable sort)
+        assert ids == ["a1", "a2", "i1", "i2"]
+
+
+class TestProcessKey:
+    """Test _process_key helper used by the PK column."""
+
+    def test_formats_pid_plus_host(self) -> None:
+        assert _process_key({"pid": 4242, "source_system": "dev-box"}) == "4242+dev-box"
+
+    def test_pid_only_when_host_missing(self) -> None:
+        assert _process_key({"pid": 4242, "source_system": ""}) == "4242"
+
+    def test_em_dash_when_pid_missing(self) -> None:
+        assert _process_key({"pid": 0, "source_system": "h"}) == "\u2014"
