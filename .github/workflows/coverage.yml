@@ -27,7 +27,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y python3-tk
 
       - name: Install dependencies
-        run: make install-dev
+        run: make install-dev PY_SYS=python
 
       - name: Check coverage
         run: make coverage

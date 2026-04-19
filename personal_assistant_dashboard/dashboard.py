@@ -352,8 +352,6 @@ class Dashboard:
             client=self._agentpulse_client,
             console_log=self.log_console,
         )
-        # Now that InfoTab exists, point the client callback at its refresh
-        self._agentpulse_client._on_update = self._info_tab._refresh
         self._info_tab_id = str(info_frame)
 
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -365,6 +363,15 @@ class Dashboard:
         self._quick_chat_frame = tk.Frame(main, bg=BG_WINDOW)
         self._pack_main_layout()
         self._build_checkpoint_overlay()
+
+        # Now that InfoTab and the top-bar overlay both exist, wire the
+        # AgentPulse callback to refresh both on every update.
+        def _on_agentpulse_update() -> None:
+            self._info_tab._refresh()
+            self._update_topbar_usage()
+
+        self._agentpulse_client._on_update = _on_agentpulse_update
+        self._update_topbar_usage()
 
         self._quick_chat_input = tk.Text(
             self._quick_chat_frame,
@@ -496,14 +503,26 @@ class Dashboard:
         """Overlay usage label + checkpoint button on the notebook tab strip."""
         frame = tk.Frame(self._notebook, bg=BG_WINDOW)
 
+        self._topbar_usage_text = ""
+        self._topbar_usage_var = tk.StringVar(value="")
+        self._topbar_usage_label = tk.Label(
+            frame,
+            textvariable=self._topbar_usage_var,
+            bg=BG_WINDOW,
+            fg=FG_TEXT,
+            font=self._font_body,
+        )
+        self._topbar_usage_label.pack(side=tk.LEFT, padx=(0, 8))
+
         self._checkpoint_status_var = tk.StringVar(value="")
-        tk.Label(
+        status_label = tk.Label(
             frame,
             textvariable=self._checkpoint_status_var,
             bg=BG_WINDOW,
             fg=FG_DIM,
             font=self._font_body,
-        ).pack(side=tk.LEFT, padx=(0, 4))
+        )
+        status_label.pack(side=tk.LEFT, padx=(0, 4))
 
         tk.Button(
             frame,
@@ -523,6 +542,82 @@ class Dashboard:
 
         frame.place(relx=1.0, x=-4, y=2, anchor="ne")
         self._checkpoint_frame = frame
+
+        # Middle-click on overlay surfaces (frame/labels) should toggle
+        # shade just like the notebook tab strip. Binding on Button only
+        # is intentionally skipped to avoid interfering with clicks on it.
+        for w in (frame, self._topbar_usage_label, status_label):
+            w.bind("<Button-2>", self._on_shade_toggle)
+
+        # Recompute usage label visibility whenever the notebook is resized.
+        if self._notebook is not None:
+            self._notebook.bind("<Configure>", self._on_notebook_configure, add="+")
+
+    def _on_notebook_configure(self, event: Any) -> None:
+        """Notebook resize — re-render the top-bar usage label."""
+        if event.widget is self._notebook:
+            self._render_topbar_usage()
+
+    def _notebook_tabs_end_x(self) -> int:
+        """Return the rightmost pixel occupied by notebook tabs.
+
+        Samples ``notebook.index("@x,y")`` across the width of the tab
+        strip and returns the largest x that still resolves to a tab.
+        Returns 0 if no tabs are detected or notebook is absent.
+        """
+        nb = self._notebook
+        if nb is None:
+            return 0
+        width = nb.winfo_width()
+        last_x = 0
+        for x in range(0, max(width, 1), 4):
+            try:
+                nb.index(f"@{x},5")
+            except tk.TclError:
+                continue
+            last_x = x
+        return last_x
+
+    def _update_topbar_usage(self) -> None:
+        """Refresh the cost + 5h limit text next to the Checkpoint button.
+
+        Reads the already-filtered session list from the info tab so the
+        figure matches what's shown in the info tab header. The 5h limit
+        is only appended when ``fetch_limits`` is enabled in the
+        AgentPulse config.
+        """
+        from personal_assistant_dashboard.info_tab import (
+            _format_cost,
+            _format_limit,
+        )
+
+        if not hasattr(self, "_topbar_usage_var"):
+            return
+        sessions = getattr(self._info_tab, "_sessions", [])
+        if not sessions:
+            self._topbar_usage_text = ""
+        else:
+            total_cost = sum(s.get("total_cost_usd", 0.0) for s in sessions)
+            parts = [_format_cost(total_cost)]
+            if self._agentpulse_client.fetch_limits_enabled:
+                limits = self._agentpulse_client.get_limits()
+                parts.append(_format_limit(limits.get("five_hour")))
+            self._topbar_usage_text = "  \u2022  ".join(parts)
+        self._render_topbar_usage()
+
+    def _render_topbar_usage(self) -> None:
+        """Show the desired usage text, or hide it if tabs would overlap."""
+        if not hasattr(self, "_topbar_usage_var"):
+            return
+        # Show the desired text, then measure. If the overlay frame's
+        # left edge would collide with the rightmost tab, hide the text
+        # so the tab labels stay visible.
+        self._topbar_usage_var.set(self._topbar_usage_text)
+        self._checkpoint_frame.update_idletasks()
+        frame_x = self._checkpoint_frame.winfo_x()
+        tabs_end = self._notebook_tabs_end_x()
+        if frame_x < tabs_end + 4:
+            self._topbar_usage_var.set("")
 
     def _checkpoint(self) -> None:
         """Run git checkpoint in a background thread."""

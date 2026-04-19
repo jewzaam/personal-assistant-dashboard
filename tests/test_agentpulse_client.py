@@ -24,7 +24,19 @@ class TestLoadConfig:
         cfg = tmp_path / "config.json"
         cfg.write_text(json.dumps({"host": "10.0.0.1", "port": 9999}))
         result = _load_config(cfg)
-        assert result == ("10.0.0.1", 9999)
+        assert result == ("10.0.0.1", 9999, True)
+
+    def test_reads_fetch_limits_flag(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({"host": "h", "port": 1, "fetch_limits": False}))
+        result = _load_config(cfg)
+        assert result == ("h", 1, False)
+
+    def test_fetch_limits_defaults_true(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({"host": "h", "port": 1}))
+        result = _load_config(cfg)
+        assert result == ("h", 1, True)
 
     def test_returns_none_when_missing(self, tmp_path: Path) -> None:
         result = _load_config(tmp_path / "nope.json")
