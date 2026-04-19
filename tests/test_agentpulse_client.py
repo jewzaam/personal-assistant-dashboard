@@ -85,6 +85,23 @@ class TestSessionResponseToRow:
         assert row["lines_added"] == 0
         assert row["lines_removed"] == 0
         assert row["ended_at"] == 0
+        assert row["pid"] == 0
+        assert row["source_system"] == ""
+        assert row["last_event_at"] == 0.0
+
+    def test_captures_process_identity_fields(self) -> None:
+        resp = {
+            "session_id": "abc-123",
+            "cwd": "/tmp",
+            "started_at": 1712900000000,
+            "pid": 4242,
+            "source_system": "workstation",
+            "last_event_at": 1712900500.5,
+        }
+        row = _session_response_to_row(resp)
+        assert row["pid"] == 4242
+        assert row["source_system"] == "workstation"
+        assert row["last_event_at"] == 1712900500.5
 
     def test_converts_ended_at_to_ms(self) -> None:
         resp = {
@@ -181,6 +198,7 @@ class TestHandleWsMessage:
         client._handle_ws_message(msg)
         assert client._sessions["s1"]["last_event"] == "PostToolUse"
         assert client._sessions["s1"]["last_tool"] == "Bash"
+        assert client._sessions["s1"]["last_event_at"] == 2.0
 
     def test_hook_event_updates_statusline_fields(self) -> None:
         client = self._make_client()

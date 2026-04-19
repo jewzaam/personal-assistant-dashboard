@@ -62,6 +62,8 @@ def _session_response_to_row(
     return {
         "session_id": resp.get("session_id", ""),
         "cwd": resp.get("cwd", ""),
+        "pid": resp.get("pid") or 0,
+        "source_system": resp.get("source_system") or "",
         "model_display_name": resp.get("model_name") or "",
         "total_cost_usd": resp.get("cost_usd") or 0.0,
         "total_input_tokens": resp.get("total_input_tokens") or 0,
@@ -72,6 +74,7 @@ def _session_response_to_row(
         "lines_removed": resp.get("lines_removed") or 0,
         "started_at": started_at,
         "ended_at": ended_at_ms,
+        "last_event_at": resp.get("last_event_at") or 0.0,
         "is_active": is_active,
     }
 
@@ -276,6 +279,9 @@ class AgentPulseClient:
                     s = self._sessions[session_id]
                     s["last_event"] = msg.get("event_name")
                     s["last_tool"] = msg.get("tool_name")
+                    ts = msg.get("timestamp")
+                    if ts is not None:
+                        s["last_event_at"] = ts
                     self._apply_statusline_fields(s, msg)
 
         elif msg_type == "statusline_update":
