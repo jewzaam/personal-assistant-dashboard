@@ -305,6 +305,35 @@ class InfoTab:
         return result
 
     @staticmethod
+    def _drop_empty_inactive(
+        sessions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Hide inactive sessions that carry no usage data.
+
+        An inactive row is dropped when cost, input tokens, output tokens,
+        lines added, and lines removed are all zero. Context % is
+        deliberately excluded — a session may have had context use
+        without actually doing billable work, and that isn't worth
+        surfacing after the fact. Active sessions are always kept so
+        they remain visible while still warming up.
+        """
+        result: list[dict[str, Any]] = []
+        for s in sessions:
+            if s.get("is_active", True):
+                result.append(s)
+                continue
+            has_data = (
+                (s.get("total_cost_usd") or 0.0) > 0
+                or (s.get("total_input_tokens") or 0) > 0
+                or (s.get("total_output_tokens") or 0) > 0
+                or (s.get("lines_added") or 0) > 0
+                or (s.get("lines_removed") or 0) > 0
+            )
+            if has_data:
+                result.append(s)
+        return result
+
+    @staticmethod
     def _active_today(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Filter to sessions active or touched today (local time).
 
@@ -332,7 +361,8 @@ class InfoTab:
     def _refresh(self) -> None:
         """Reload session data from the client and update the display."""
         filtered = self._active_today(self._client.get_sessions())
-        self._sessions = self._collapse_by_process(filtered)
+        collapsed = self._collapse_by_process(filtered)
+        self._sessions = self._drop_empty_inactive(collapsed)
         self._update_summary()
         self._sort_and_render()
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
