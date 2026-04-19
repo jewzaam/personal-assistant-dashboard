@@ -26,10 +26,11 @@ _BACKOFF_CAP = 30.0
 _INITIAL_BACKOFF = 1.0
 
 
-def _load_config(path: Path = _CONFIG_PATH) -> tuple[str, int] | None:
-    """Read host and port from the AgentPulse config file.
+def _load_config(path: Path = _CONFIG_PATH) -> tuple[str, int, bool] | None:
+    """Read host, port, and fetch_limits flag from the AgentPulse config file.
 
-    Returns (host, port) or None if the file is missing/invalid.
+    Returns (host, port, fetch_limits) or None if the file is missing/invalid.
+    fetch_limits defaults to True when absent.
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -39,7 +40,8 @@ def _load_config(path: Path = _CONFIG_PATH) -> tuple[str, int] | None:
     port = data.get("port")
     if not host or not port:
         return None
-    return (str(host), int(port))
+    fetch_limits = bool(data.get("fetch_limits", True))
+    return (str(host), int(port), fetch_limits)
 
 
 def _session_response_to_row(
@@ -100,8 +102,9 @@ class AgentPulseClient:
         if config is None:
             self._host: str | None = None
             self._port: int | None = None
+            self.fetch_limits_enabled: bool = False
         else:
-            self._host, self._port = config
+            self._host, self._port, self.fetch_limits_enabled = config
 
     def start(self) -> None:
         """Launch the background connection thread."""

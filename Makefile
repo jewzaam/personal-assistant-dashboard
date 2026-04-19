@@ -12,6 +12,11 @@ else
     PYTHON ?= $(VENV_DIR)/bin/python
 endif
 
+# Interpreter used to bootstrap the venv. Override in CI to pin the venv
+# to the matrix Python (e.g. `make install-dev PY_SYS=python`) so CI
+# doesn't fall back to the container's system python3.
+PY_SYS ?= python3
+
 $(info venv: $(VENV_DIR))
 
 check: format lint typecheck test coverage  ## Run format, lint, typecheck, test, coverage (default)
@@ -22,7 +27,7 @@ help:  ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 $(PYTHON):
-	python3 -m venv $(VENV_DIR)
+	$(PY_SYS) -m venv $(VENV_DIR)
 
 install: $(PYTHON)  ## Install package
 	$(PYTHON) -m pip install .
