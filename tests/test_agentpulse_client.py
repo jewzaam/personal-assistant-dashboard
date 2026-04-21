@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from personal_assistant_dashboard.agentpulse_client import (
     AgentPulseClient,
     _next_backoff,
@@ -53,6 +55,41 @@ class TestSessionResponseToRow:
         assert row["pid"] == 4242
         assert row["source_system"] == "workstation"
         assert row["last_event_at"] == 1712900500.5
+
+    def test_subtracts_prior_cost_from_total(self) -> None:
+        """total_cost_usd is cost_usd - prior_cost_usd (current-run cost)."""
+        resp = {
+            "session_id": "s1",
+            "cwd": "/tmp",
+            "started_at": 1712900000000,
+            "cost_usd": 17.25,
+            "prior_cost_usd": 15.00,
+        }
+        row = _session_response_to_row(resp)
+        assert row["total_cost_usd"] == pytest.approx(2.25)
+
+    def test_clamps_negative_cost_to_zero(self) -> None:
+        """If prior > total (shouldn't happen), clamp to 0 instead of negative."""
+        resp = {
+            "session_id": "s1",
+            "cwd": "/tmp",
+            "started_at": 1712900000000,
+            "cost_usd": 1.0,
+            "prior_cost_usd": 5.0,
+        }
+        row = _session_response_to_row(resp)
+        assert row["total_cost_usd"] == 0.0
+
+    def test_missing_prior_cost_treats_as_zero(self) -> None:
+        """Older AgentPulse without prior_cost_usd still works."""
+        resp = {
+            "session_id": "s1",
+            "cwd": "/tmp",
+            "started_at": 1712900000000,
+            "cost_usd": 2.50,
+        }
+        row = _session_response_to_row(resp)
+        assert row["total_cost_usd"] == pytest.approx(2.50)
 
     def test_converts_ended_at_to_ms(self) -> None:
         resp = {
@@ -181,6 +218,27 @@ class TestHandleWsMessage:
         assert s["model_display_name"] == "Opus"
         assert s["total_input_tokens"] == 50000
         assert s["total_output_tokens"] == 12000
+
+    def test_hook_event_subtracts_prior_cost_from_displayed(self) -> None:
+        """WS messages carrying prior_cost_usd apply the same subtraction
+        as the REST path so restart-seeded sessions don't double-count."""
+        client = self._make_client()
+        client._sessions["s1"] = {
+            "session_id": "s1",
+            "cwd": "/tmp",
+            "total_cost_usd": 0.0,
+        }
+        msg = {
+            "type": "hook_event",
+            "session_id": "s1",
+            "event_name": "Notification",
+            "tool_name": "Bash",
+            "cost_usd": 17.25,
+            "prior_cost_usd": 15.00,
+            "timestamp": 2.0,
+        }
+        client._handle_ws_message(msg)
+        assert client._sessions["s1"]["total_cost_usd"] == pytest.approx(2.25)
 
     def test_hook_event_ignores_unknown_session(self) -> None:
         client = self._make_client()

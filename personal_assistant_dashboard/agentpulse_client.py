@@ -36,6 +36,14 @@ def _session_response_to_row(
 
     Reads available fields from the response; falls back to zero/empty
     defaults for fields that are null or absent.
+
+    ``total_cost_usd`` is reported as ``cost_usd - prior_cost_usd`` so
+    the InfoTab shows what the current dashboard run has spent.
+    AgentPulse's stored ``cost_usd`` is lifetime-cumulative (includes
+    the seed merged from prior runs at restart); ``prior_cost_usd`` is
+    the portion AgentPulse had before the current process first
+    contacted it. Clamped to zero in case the server ever reports a
+    prior greater than total.
     """
     started_at = resp.get("started_at", 0)
     # AgentPulse reports started_at in epoch milliseconds
@@ -44,13 +52,16 @@ def _session_response_to_row(
     # ended_at comes from API in epoch seconds; convert to ms for consistency
     ended_at_s = resp.get("ended_at") or 0
     ended_at_ms = int(ended_at_s * 1000) if ended_at_s else 0
+    cost_usd = resp.get("cost_usd") or 0.0
+    prior_cost_usd = resp.get("prior_cost_usd") or 0.0
+    current_cost = max(0.0, cost_usd - prior_cost_usd)
     return {
         "session_id": resp.get("session_id", ""),
         "cwd": resp.get("cwd", ""),
         "pid": resp.get("pid") or 0,
         "source_system": resp.get("source_system") or "",
         "model_display_name": resp.get("model_name") or "",
-        "total_cost_usd": resp.get("cost_usd") or 0.0,
+        "total_cost_usd": current_cost,
         "total_input_tokens": resp.get("total_input_tokens") or 0,
         "total_output_tokens": resp.get("total_output_tokens") or 0,
         "context_used_pct": resp.get("context_used_pct") or 0,
@@ -286,9 +297,17 @@ class AgentPulseClient:
 
     @staticmethod
     def _apply_statusline_fields(session: dict[str, Any], msg: dict[str, Any]) -> None:
-        """Copy statusline fields from a WS message into a session row."""
+        """Copy statusline fields from a WS message into a session row.
+
+        ``total_cost_usd`` is stored as ``cost_usd - prior_cost_usd`` so
+        the InfoTab displays only the current run's cost (matching the
+        REST-fetch path in ``_session_response_to_row``).
+        """
+        cost_usd = msg.get("cost_usd")
+        if cost_usd is not None:
+            prior = msg.get("prior_cost_usd") or 0.0
+            session["total_cost_usd"] = max(0.0, cost_usd - prior)
         for src, dst in (
-            ("cost_usd", "total_cost_usd"),
             ("context_used_pct", "context_used_pct"),
             ("model_name", "model_display_name"),
             ("total_input_tokens", "total_input_tokens"),
