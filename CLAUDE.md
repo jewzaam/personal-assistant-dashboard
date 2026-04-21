@@ -35,7 +35,7 @@ Coverage target: 80% on non-UI code. UI modules (`dashboard.py`, `*_tab.py`, `co
 
 - **`dashboard.py`** — main Tkinter window, tab management, window geometry
 - **`chat_tab.py`** — Chat tab with Claude Agent SDK streaming
-- **`chat_client.py`** — `ClaudeSDKClient` wrapper in background asyncio thread
+- **`chat_client.py`** — `ClaudeSDKClient` wrapper in background asyncio thread. Each `ResultMessage` is forwarded to AgentPulse's `/statusline/claude` endpoint via a queued single-writer worker thread (see `agentpulse_statusline.py`). Forwarding is seeded with AgentPulse's stored totals on first successful contact so restart-with-resume preserves lifetime cost.
 - **`pages_tab.py`** — discovers `*.html` files in workspace, renders with `tkinterweb`
 - **`settings_tab.py`** — settings editor with git checkpoint
 - **`config.py`** — constants (colors, fonts, timeouts)
@@ -47,6 +47,8 @@ Coverage target: 80% on non-UI code. UI modules (`dashboard.py`, `*_tab.py`, `co
 - **`usage_poller.py`** — Anthropic 5-hour quota polling with caching/backoff
 - **`gws_auth.py`** — GWS CLI OAuth scope checking
 - **`startup.py`** — XDG autostart `.desktop` file management
+- **`agentpulse_config.py`** — shared loader for `~/.claude/agentpulse/config.json`, used by both AgentPulse consumers.
+- **`agentpulse_statusline.py`** — forwards Chat tab SDK session usage (cost, tokens, context %) to AgentPulse's `/statusline/claude` endpoint. Cumulative per-process accumulator mirrors the CLI's statusline semantics; merge-seed-on-first-contact preserves lifetime totals across dashboard restarts.
 
 ## Configuration
 

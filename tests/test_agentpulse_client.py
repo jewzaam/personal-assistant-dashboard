@@ -4,62 +4,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from personal_assistant_dashboard.agentpulse_client import (
     AgentPulseClient,
-    _load_config,
     _next_backoff,
     _session_response_to_row,
 )
-
-# -- _load_config -------------------------------------------------------------
-
-
-class TestLoadConfig:
-    """Test _load_config helper."""
-
-    def test_reads_host_and_port(self, tmp_path: Path) -> None:
-        cfg = tmp_path / "config.json"
-        cfg.write_text(json.dumps({"host": "10.0.0.1", "port": 9999}))
-        result = _load_config(cfg)
-        assert result == ("10.0.0.1", 9999, True)
-
-    def test_reads_fetch_limits_flag(self, tmp_path: Path) -> None:
-        cfg = tmp_path / "config.json"
-        cfg.write_text(json.dumps({"host": "h", "port": 1, "fetch_limits": False}))
-        result = _load_config(cfg)
-        assert result == ("h", 1, False)
-
-    def test_fetch_limits_defaults_true(self, tmp_path: Path) -> None:
-        cfg = tmp_path / "config.json"
-        cfg.write_text(json.dumps({"host": "h", "port": 1}))
-        result = _load_config(cfg)
-        assert result == ("h", 1, True)
-
-    def test_returns_none_when_missing(self, tmp_path: Path) -> None:
-        result = _load_config(tmp_path / "nope.json")
-        assert result is None
-
-    def test_returns_none_on_invalid_json(self, tmp_path: Path) -> None:
-        cfg = tmp_path / "config.json"
-        cfg.write_text("not json")
-        result = _load_config(cfg)
-        assert result is None
-
-    def test_returns_none_when_host_missing(self, tmp_path: Path) -> None:
-        cfg = tmp_path / "config.json"
-        cfg.write_text(json.dumps({"port": 9999}))
-        result = _load_config(cfg)
-        assert result is None
-
-    def test_returns_none_when_port_missing(self, tmp_path: Path) -> None:
-        cfg = tmp_path / "config.json"
-        cfg.write_text(json.dumps({"host": "127.0.0.1"}))
-        result = _load_config(cfg)
-        assert result is None
-
 
 # -- _session_response_to_row -------------------------------------------------
 

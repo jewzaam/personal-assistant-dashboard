@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from personal_assistant_dashboard.chat_client import (
     SYSTEM_PROMPT,
@@ -39,7 +41,12 @@ _MODEL = "claude-sonnet-4-5-20250514"
 
 
 def _make_client(**overrides: object) -> ChatClient:
-    """Create a ChatClient with mock callbacks, without starting it."""
+    """Create a ChatClient with mock callbacks, without starting it.
+
+    AgentPulse forwarding is disabled by default so tests don't depend on
+    (or hit) a running AgentPulse. Individual tests re-enable it by
+    setting ``_agentpulse_endpoint``.
+    """
     defaults = {
         "on_text": MagicMock(),
         "on_tool_use": MagicMock(),
@@ -47,7 +54,9 @@ def _make_client(**overrides: object) -> ChatClient:
         "on_error": MagicMock(),
     }
     defaults.update(overrides)
-    return ChatClient(**defaults)  # type: ignore[arg-type]
+    client = ChatClient(**defaults)  # type: ignore[arg-type]
+    client._agentpulse_endpoint = None
+    return client
 
 
 def test_handle_assistant_message_text_block_skipped():
@@ -262,3 +271,520 @@ def test_stop_when_not_started_is_noop():
 def test_system_prompt_requires_claude_md():
     assert "claude.md" in SYSTEM_PROMPT.lower()
     assert "must" in SYSTEM_PROMPT.lower()
+
+
+# -- statusline forwarding ----------------------------------------------------
+
+
+def _drain_statusline_queue(client, timeout: float = 2.0) -> None:
+    """Wait for all queued statusline tasks to be processed.
+
+    Replaces the old per-message thread-join pattern: the ChatClient now
+    has a single long-lived worker thread draining a queue. Tests call
+    this after _handle_message to ensure the task was picked up and
+    processed before asserting on side effects.
+    """
+    import threading
+
+    if client._statusline_thread is None:
+        return
+    # Use the queue's join() which waits for task_done() to be called
+    # for every put. Run it in a helper thread so the test can time
+    # out rather than hanging forever if the worker wedges.
+    done = threading.Event()
+
+    def _wait() -> None:
+        client._statusline_queue.join()
+        done.set()
+
+    threading.Thread(target=_wait, daemon=True).start()
+    done.wait(timeout=timeout)
+
+
+def _make_result_msg(
+    *,
+    session_id: str = "s1",
+    total_cost_usd: float = 0.05,
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+    model: str = "claude-sonnet-4-6",
+    is_error: bool = False,
+):
+    from claude_agent_sdk import ResultMessage
+
+    return ResultMessage(
+        subtype="result",
+        duration_ms=1000,
+        duration_api_ms=800,
+        is_error=is_error,
+        num_turns=1,
+        session_id=session_id,
+        total_cost_usd=total_cost_usd,
+        usage={"input_tokens": input_tokens, "output_tokens": output_tokens},
+        model_usage={model: {"outputTokens": output_tokens}},
+    )
+
+
+class _FakeSeed:
+    """Replaces ``merge_agentpulse_seed`` with a scripted response."""
+
+    def __init__(self, ok: bool, merged: bool = False, add_cost: float = 0.0):
+        self.ok = ok
+        self.merged = merged
+        self.add_cost = add_cost
+        self.calls = 0
+
+    def __call__(self, acc, host, port, session_id):
+        from personal_assistant_dashboard.agentpulse_statusline import SeedResult
+
+        self.calls += 1
+        if self.ok and self.merged and self.add_cost:
+            acc.total_cost_usd += self.add_cost
+        return SeedResult(ok=self.ok, merged=self.merged)
+
+
+def test_statusline_posts_after_successful_seed():
+    """First ResultMessage accumulates, seed succeeds, POST goes out."""
+    client = _make_client()
+    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    seed = _FakeSeed(ok=True, merged=True, add_cost=1.00)
+    captured: dict[str, object] = {}
+
+    def fake_post(host: str, port: int, payload: dict) -> bool:
+        captured["payload"] = payload
+        return True
+
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+            side_effect=seed,
+        ),
+        patch(
+            "personal_assistant_dashboard.chat_client.post_statusline",
+            side_effect=fake_post,
+        ),
+    ):
+        client._handle_message(_make_result_msg(total_cost_usd=0.05))
+        _drain_statusline_queue(client)
+
+    assert seed.calls == 1
+    assert client._accumulator_seeded is True
+    # Local $0.05 + merged $1.00 = $1.05
+    assert client._accumulator.total_cost_usd == pytest.approx(1.05)
+    assert captured["payload"]["cost"]["total_cost_usd"] == pytest.approx(1.05)
+
+
+def test_statusline_defers_post_when_seed_fails():
+    """Seed failure → accumulator updated locally, no POST goes out."""
+    client = _make_client()
+    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    seed = _FakeSeed(ok=False)
+
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+            side_effect=seed,
+        ),
+        patch("personal_assistant_dashboard.chat_client.post_statusline") as mock_post,
+    ):
+        client._handle_message(_make_result_msg(total_cost_usd=0.05))
+        _drain_statusline_queue(client)
+
+    assert seed.calls == 1
+    assert client._accumulator_seeded is False
+    # Local accumulation preserved
+    assert client._accumulator.total_cost_usd == pytest.approx(0.05)
+    mock_post.assert_not_called()
+
+
+def test_statusline_recovers_after_agentpulse_returns():
+    """Offline → accumulate without posting. Online → seed merges all local
+    totals and POST reflects the combined cumulative."""
+    client = _make_client()
+    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+
+    # First two turns: AgentPulse down, seed fails
+    down_seed = _FakeSeed(ok=False)
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+            side_effect=down_seed,
+        ),
+        patch("personal_assistant_dashboard.chat_client.post_statusline") as mock_post,
+    ):
+        client._handle_message(_make_result_msg(total_cost_usd=0.10))
+        _drain_statusline_queue(client)
+        client._handle_message(_make_result_msg(total_cost_usd=0.20))
+        _drain_statusline_queue(client)
+    assert down_seed.calls == 2
+    assert client._accumulator.total_cost_usd == pytest.approx(0.30)
+    mock_post.assert_not_called()
+    assert client._accumulator_seeded is False
+
+    # Third turn: AgentPulse back up, seed merges $2.00 stored prior
+    up_seed = _FakeSeed(ok=True, merged=True, add_cost=2.00)
+    captured: dict[str, object] = {}
+
+    def fake_post(host: str, port: int, payload: dict) -> bool:
+        captured["payload"] = payload
+        return True
+
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+            side_effect=up_seed,
+        ),
+        patch(
+            "personal_assistant_dashboard.chat_client.post_statusline",
+            side_effect=fake_post,
+        ),
+    ):
+        client._handle_message(_make_result_msg(total_cost_usd=0.05))
+        _drain_statusline_queue(client)
+
+    assert up_seed.calls == 1
+    assert client._accumulator_seeded is True
+    # $0.30 (accumulated offline) + $0.05 (this turn) + $2.00 (merged) = $2.35
+    assert client._accumulator.total_cost_usd == pytest.approx(2.35)
+    assert captured["payload"]["cost"]["total_cost_usd"] == pytest.approx(2.35)
+
+
+def test_statusline_seeds_only_once_per_process():
+    """After a successful seed, subsequent turns don't re-seed."""
+    client = _make_client()
+    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    seed = _FakeSeed(ok=True, merged=False)
+
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+            side_effect=seed,
+        ),
+        patch(
+            "personal_assistant_dashboard.chat_client.post_statusline",
+            return_value=True,
+        ),
+    ):
+        client._handle_message(_make_result_msg(session_id="s1"))
+        _drain_statusline_queue(client)
+        client._handle_message(_make_result_msg(session_id="s1"))
+        _drain_statusline_queue(client)
+        client._handle_message(_make_result_msg(session_id="s1"))
+        _drain_statusline_queue(client)
+
+    assert seed.calls == 1  # seeded once, never again
+
+
+def test_statusline_seed_404_proceeds_with_local_values():
+    """Session not in AgentPulse (404) → seed ok with no merge; POST uses local."""
+    client = _make_client()
+    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    seed = _FakeSeed(ok=True, merged=False)
+    captured: dict[str, object] = {}
+
+    def fake_post(host: str, port: int, payload: dict) -> bool:
+        captured["payload"] = payload
+        return True
+
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+            side_effect=seed,
+        ),
+        patch(
+            "personal_assistant_dashboard.chat_client.post_statusline",
+            side_effect=fake_post,
+        ),
+    ):
+        client._handle_message(_make_result_msg(total_cost_usd=0.07))
+        _drain_statusline_queue(client)
+
+    assert client._accumulator_seeded is True
+    assert client._accumulator.total_cost_usd == pytest.approx(0.07)
+    assert captured["payload"]["cost"]["total_cost_usd"] == pytest.approx(0.07)
+
+
+def test_statusline_skips_forwarding_when_agentpulse_not_configured():
+    """No AgentPulse config → neither seed nor POST attempted."""
+    client = _make_client()
+    assert client._agentpulse_endpoint is None
+
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed"
+        ) as mock_seed,
+        patch("personal_assistant_dashboard.chat_client.post_statusline") as mock_post,
+    ):
+        client._handle_message(_make_result_msg())
+        _drain_statusline_queue(client)
+
+    mock_seed.assert_not_called()
+    mock_post.assert_not_called()
+    # Accumulator untouched when AgentPulse isn't configured at all
+    assert client._accumulator.total_cost_usd == 0.0
+
+
+def test_assistant_message_usage_populates_turn_snapshot_on_post():
+    """Per-call usage captured during the tool loop drives ``used_percentage``."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    client = _make_client()
+    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    seed = _FakeSeed(ok=True, merged=False)
+    captured: dict[str, object] = {}
+
+    def fake_post(host: str, port: int, payload: dict) -> bool:
+        captured["payload"] = payload
+        return True
+
+    # Simulate a tool loop: two main-agent calls, last one wins.
+    client._handle_message(
+        AssistantMessage(
+            content=[TextBlock(text="")],
+            model="claude-opus-4-7",
+            usage={
+                "input_tokens": 5,
+                "cache_read_input_tokens": 30_000,
+                "cache_creation_input_tokens": 1_000,
+            },
+        )
+    )
+    client._handle_message(
+        AssistantMessage(
+            content=[TextBlock(text="")],
+            model="claude-opus-4-7",
+            usage={
+                "input_tokens": 10,
+                "cache_read_input_tokens": 50_000,
+                "cache_creation_input_tokens": 2_000,
+            },
+        )
+    )
+
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+            side_effect=seed,
+        ),
+        patch(
+            "personal_assistant_dashboard.chat_client.post_statusline",
+            side_effect=fake_post,
+        ),
+    ):
+        client._handle_message(_make_result_msg(model="claude-opus-4-7"))
+        _drain_statusline_queue(client)
+
+    ctx = captured["payload"]["context_window"]
+    # (10 + 50_000 + 2_000) / 200_000 * 100 = 26.005 → 26.0
+    assert ctx["used_percentage"] == pytest.approx(26.0)
+    assert ctx["current_usage"]["input_tokens"] == 10
+    assert ctx["current_usage"]["cache_read_input_tokens"] == 50_000
+    # Snapshot consumed — next turn starts fresh.
+    assert client._last_assistant_usage is None
+
+
+def test_subagent_assistant_message_usage_ignored():
+    """AssistantMessages from subagents don't update the main-turn snapshot."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    client = _make_client()
+    # Main-agent call first.
+    client._handle_message(
+        AssistantMessage(
+            content=[TextBlock(text="")],
+            model="claude-opus-4-7",
+            usage={"input_tokens": 1, "cache_read_input_tokens": 100},
+        )
+    )
+    # Subagent call with parent_tool_use_id set — should be ignored.
+    client._handle_message(
+        AssistantMessage(
+            content=[TextBlock(text="")],
+            model="claude-opus-4-7",
+            parent_tool_use_id="task-123",
+            usage={"input_tokens": 999, "cache_read_input_tokens": 999_999},
+        )
+    )
+    assert client._last_assistant_usage == {
+        "input_tokens": 1,
+        "cache_read_input_tokens": 100,
+    }
+
+
+def test_assistant_message_without_usage_leaves_snapshot_untouched():
+    """Early/text-only assistant messages with no usage don't overwrite."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    client = _make_client()
+    client._handle_message(
+        AssistantMessage(
+            content=[TextBlock(text="")],
+            model="claude-opus-4-7",
+            usage={"input_tokens": 42, "cache_read_input_tokens": 4242},
+        )
+    )
+    client._handle_message(
+        AssistantMessage(
+            content=[TextBlock(text="")],
+            model="claude-opus-4-7",
+            usage=None,
+        )
+    )
+    assert client._last_assistant_usage == {
+        "input_tokens": 42,
+        "cache_read_input_tokens": 4242,
+    }
+
+
+def test_error_result_message_does_not_forward():
+    """Error results skip statusline forwarding entirely and signal on_error."""
+    from claude_agent_sdk import ResultMessage
+
+    client = _make_client()
+    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed"
+        ) as mock_seed,
+        patch("personal_assistant_dashboard.chat_client.post_statusline") as mock_post,
+    ):
+        # Send a ResultMessage with is_error=True and errors populated —
+        # both assert_not_called for forwarding AND that on_error fired.
+        msg = ResultMessage(
+            subtype="result",
+            duration_ms=100,
+            duration_api_ms=90,
+            is_error=True,
+            num_turns=1,
+            session_id="s1",
+            errors=["boom"],
+        )
+        client._handle_message(msg)
+        _drain_statusline_queue(client)
+
+    mock_seed.assert_not_called()
+    mock_post.assert_not_called()
+    assert client._accumulator.total_cost_usd == 0.0
+    # UI must see the error — otherwise a silent swallow would regress.
+    client._on_error.assert_called_once_with("boom")
+
+
+def test_seed_failure_logs_warning_once(caplog):
+    """First seed failure emits WARNING; repeats drop to DEBUG."""
+    import logging
+
+    client = _make_client()
+    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    seed = _FakeSeed(ok=False)
+
+    with (
+        caplog.at_level(
+            logging.DEBUG, logger="personal_assistant_dashboard.chat_client"
+        ),
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+            side_effect=seed,
+        ),
+        patch("personal_assistant_dashboard.chat_client.post_statusline"),
+    ):
+        client._handle_message(_make_result_msg())
+        _drain_statusline_queue(client)
+        client._handle_message(_make_result_msg())
+        _drain_statusline_queue(client)
+
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "AgentPulse unreachable" in r.message
+    ]
+    debugs = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.DEBUG and "still unreachable" in r.message
+    ]
+    assert len(warnings) == 1
+    assert len(debugs) >= 1  # second turn logs at DEBUG
+
+
+def test_stop_cleanly_shuts_down_statusline_worker():
+    """stop() joins the worker thread after draining in-flight tasks."""
+    client = _make_client()
+    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    # Must simulate a running state so stop() proceeds past its guard.
+    client._running = True
+    client._loop = MagicMock()
+    client._thread = MagicMock()
+
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+            side_effect=_FakeSeed(ok=True, merged=False),
+        ),
+        patch(
+            "personal_assistant_dashboard.chat_client.post_statusline",
+            return_value=True,
+        ),
+    ):
+        client._handle_message(_make_result_msg())
+        _drain_statusline_queue(client)
+        worker = client._statusline_thread
+        assert worker is not None
+        assert worker.is_alive()
+        client.stop()
+        # Worker thread is joined by stop().
+        assert not worker.is_alive()
+
+
+def test_multiple_back_to_back_results_all_post():
+    """Queue-backed worker processes every turn in order without dropping
+    any (well below the queue cap)."""
+    client = _make_client()
+    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    seed = _FakeSeed(ok=True, merged=False)
+    posts: list[dict] = []
+
+    def fake_post(host: str, port: int, payload: dict) -> bool:
+        posts.append(payload)
+        return True
+
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+            side_effect=seed,
+        ),
+        patch(
+            "personal_assistant_dashboard.chat_client.post_statusline",
+            side_effect=fake_post,
+        ),
+    ):
+        for i in range(4):
+            client._handle_message(_make_result_msg(total_cost_usd=0.01 * (i + 1)))
+        _drain_statusline_queue(client, timeout=5.0)
+
+    # 4 turns should produce 4 POSTs with monotonically increasing cost.
+    assert len(posts) == 4
+    costs = [p["cost"]["total_cost_usd"] for p in posts]
+    assert costs == sorted(costs)
+    # Final cumulative cost: 0.01 + 0.02 + 0.03 + 0.04 = 0.10
+    assert costs[-1] == pytest.approx(0.10)
+
+
+def test_fake_seed_matches_real_merge_signature():
+    """Regression guard: _FakeSeed must match merge_agentpulse_seed's signature.
+
+    Uses inspect.signature to compare — a parameter drift in the real
+    function would fail this test rather than silently pass the mocked
+    ones above.
+    """
+    import inspect
+
+    from personal_assistant_dashboard.agentpulse_statusline import (
+        merge_agentpulse_seed,
+    )
+
+    real_params = list(inspect.signature(merge_agentpulse_seed).parameters)
+    fake = _FakeSeed(ok=True)
+    # _FakeSeed.__call__ has (self, acc, host, port, session_id)
+    fake_params = list(inspect.signature(fake.__call__).parameters)
+    assert fake_params == real_params

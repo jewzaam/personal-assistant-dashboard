@@ -16,32 +16,17 @@ import time
 import tkinter as tk
 import urllib.request
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
+
+from personal_assistant_dashboard.agentpulse_config import (
+    HTTP_TIMEOUT_S,
+    load_agentpulse_config,
+)
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_PATH = Path.home() / ".claude" / "agentpulse" / "config.json"
 _BACKOFF_CAP = 30.0
 _INITIAL_BACKOFF = 1.0
-
-
-def _load_config(path: Path = _CONFIG_PATH) -> tuple[str, int, bool] | None:
-    """Read host, port, and fetch_limits flag from the AgentPulse config file.
-
-    Returns (host, port, fetch_limits) or None if the file is missing/invalid.
-    fetch_limits defaults to True when absent.
-    """
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    host = data.get("host")
-    port = data.get("port")
-    if not host or not port:
-        return None
-    fetch_limits = bool(data.get("fetch_limits", True))
-    return (str(host), int(port), fetch_limits)
 
 
 def _session_response_to_row(
@@ -101,13 +86,15 @@ class AgentPulseClient:
         self._stop_event = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
 
-        config = _load_config()
+        config = load_agentpulse_config()
         if config is None:
             self._host: str | None = None
             self._port: int | None = None
             self.fetch_limits_enabled: bool = False
         else:
-            self._host, self._port, self.fetch_limits_enabled = config
+            self._host = config.host
+            self._port = config.port
+            self.fetch_limits_enabled = config.fetch_limits
 
     def start(self) -> None:
         """Launch the background connection thread."""
@@ -216,7 +203,7 @@ class AgentPulseClient:
         param = "true" if active else "false"
         url = f"http://{self._host}:{self._port}" f"/api/v1/sessions?active={param}"
         try:
-            with urllib.request.urlopen(url, timeout=5) as resp:
+            with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT_S) as resp:
                 data = json.loads(resp.read())
         except Exception:
             logger.debug("AgentPulse REST fetch (active=%s) failed", active)
@@ -231,7 +218,7 @@ class AgentPulseClient:
         """Fetch usage limits via REST. Safe to call frequently (server caches)."""
         url = f"http://{self._host}:{self._port}/api/v1/limits"
         try:
-            with urllib.request.urlopen(url, timeout=5) as resp:
+            with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT_S) as resp:
                 data = json.loads(resp.read())
         except Exception:
             logger.debug("AgentPulse limits fetch failed")
@@ -250,7 +237,7 @@ class AgentPulseClient:
             # Fetch full session from REST to get all fields
             url = f"http://{self._host}:{self._port}" f"/api/v1/sessions/{session_id}"
             try:
-                with urllib.request.urlopen(url, timeout=5) as resp:
+                with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT_S) as resp:
                     data = json.loads(resp.read())
                 row = _session_response_to_row(data)
                 with self._lock:
@@ -265,7 +252,7 @@ class AgentPulseClient:
             # Fetch final state to capture last cost/token values
             url = f"http://{self._host}:{self._port}" f"/api/v1/sessions/{session_id}"
             try:
-                with urllib.request.urlopen(url, timeout=5) as resp:
+                with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT_S) as resp:
                     data = json.loads(resp.read())
                 row = _session_response_to_row(data, is_active=False)
                 with self._lock:
