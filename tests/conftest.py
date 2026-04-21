@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import subprocess
+import urllib.request
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -33,6 +34,29 @@ def _block_subprocess(request: pytest.FixtureRequest) -> object:
         patch.object(subprocess, "check_call", side_effect=_blocked),
         patch.object(subprocess, "check_output", side_effect=_blocked),
     ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _block_urlopen(request: pytest.FixtureRequest) -> object:
+    """Block real HTTP calls globally.
+
+    Any test that needs urlopen must patch it explicitly. This prevents
+    a missed mock from reaching the network (or a local AgentPulse
+    instance) during unit tests.
+    """
+    if "integration" in request.keywords:
+        yield
+        return
+
+    def _blocked(*args: object, **kwargs: object) -> object:
+        target = args[0] if args else kwargs.get("url", "?")
+        raise RuntimeError(
+            f"urllib.request.urlopen blocked by conftest: {target!r}. "
+            "Patch it in the test."
+        )
+
+    with patch.object(urllib.request, "urlopen", side_effect=_blocked):
         yield
 
 

@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import queue
+import socket
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -22,6 +26,15 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
+from personal_assistant_dashboard.agentpulse_statusline import (
+    SessionAccumulator,
+    build_payload,
+    extract_model_name,
+    load_agentpulse_endpoint,
+    merge_agentpulse_seed,
+    post_statusline,
+)
+
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
@@ -34,6 +47,25 @@ filtering logic. Do not answer any user question until you have read it.
 
 Be direct and concise. If you cannot do something, say so clearly.\
 """
+
+
+@dataclass(frozen=True)
+class _StatuslineTask:
+    """Per-turn payload queued for the statusline worker thread."""
+
+    session_id: str
+    total_cost_usd: float | None
+    usage: dict[str, Any] | None
+    duration_ms: int
+    duration_api_ms: int
+    model_name: str
+    turn_snapshot: dict[str, Any] | None
+
+
+# Max queued tasks. In practice one-in-flight is typical; the cap bounds
+# memory under sustained AgentPulse slowness. On overflow the oldest
+# task is dropped (newest has the latest cumulative totals anyway).
+_STATUSLINE_QUEUE_MAX = 8
 
 
 async def _deny_unapproved(
@@ -76,7 +108,52 @@ class ChatClient:
         self._client: ClaudeSDKClient | None = None
         self._running = False
         self._receiving = False
+        # Guards SDK client lifecycle state: _loop, _thread, _client,
+        # _running, _receiving. Held briefly around start/stop and send.
         self._lock = threading.Lock()
+
+        # Per-process usage accumulator. Mirrors the Claude Code CLI: cost
+        # and token totals accumulate across /clear and session resume.
+        # On first successful contact with AgentPulse the accumulator is
+        # seeded with any pre-existing stored totals for the current
+        # session_id so restart-with-resume resumes the full lifetime
+        # cost. ``_accumulator_seeded`` gates posting: while it's False
+        # we keep accumulating locally but never POST, so a down or
+        # recovering AgentPulse can't be overwritten with our incomplete
+        # in-memory view.
+        self._accumulator = SessionAccumulator()
+        # Guards the accumulator and its seeded flag. Separate from
+        # _lock because the statusline worker thread holds this during
+        # record+seed+build_payload and must not compete with SDK
+        # lifecycle operations.
+        self._accumulator_lock = threading.Lock()
+        self._accumulator_seeded = False
+        # Tracks whether we have emitted a warning for the current
+        # AgentPulse outage. Reset on successful seed/POST so a later
+        # outage produces a fresh warning.
+        self._agentpulse_outage_warned = False
+        self._agentpulse_endpoint: tuple[str, int] | None = load_agentpulse_endpoint()
+        if self._agentpulse_endpoint is None:
+            logger.info("AgentPulse statusline forwarding disabled (no config)")
+        # Single long-lived worker thread drains this queue and runs
+        # record+seed+POST sequentially. One worker (not one-per-turn)
+        # bounds concurrency and keeps the accumulator mutation totally
+        # single-threaded. Lazy-started on first forward call so tests
+        # that don't call ``start()`` don't spin up a thread.
+        self._statusline_queue: queue.Queue[_StatuslineTask | None] = queue.Queue(
+            maxsize=_STATUSLINE_QUEUE_MAX
+        )
+        self._statusline_thread: threading.Thread | None = None
+        # Process identity is stable for the dashboard's lifetime;
+        # capture once to avoid redundant syscalls per turn.
+        self._pid = os.getpid()
+        self._source_system = socket.gethostname()
+        # Latest top-level AssistantMessage.usage, captured as the tool
+        # loop runs. ``ResultMessage.usage`` is aggregated across every
+        # API call in the turn (can exceed window size), so for the
+        # current-context snapshot we want the last single-call usage
+        # before the turn ended.
+        self._last_assistant_usage: dict[str, Any] | None = None
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -168,6 +245,18 @@ class ChatClient:
         if loop_ref:
             loop_ref.close()
 
+        # Shut down the statusline worker cleanly so in-flight POSTs
+        # complete before the process exits. Sentinel None tells the
+        # loop to break after draining already-queued tasks.
+        if self._statusline_thread is not None and self._statusline_thread.is_alive():
+            from personal_assistant_dashboard.config import TIMEOUT_THREAD_JOIN_S
+
+            try:
+                self._statusline_queue.put(None, timeout=1)
+            except queue.Full:
+                logger.debug("statusline queue full at stop; forcing shutdown")
+            self._statusline_thread.join(timeout=TIMEOUT_THREAD_JOIN_S)
+
         with self._lock:
             self._loop = None
             self._thread = None
@@ -199,9 +288,12 @@ class ChatClient:
             if not self._receiving:
                 self._receiving = True
                 asyncio.ensure_future(self._receive_loop())
-        except Exception as exc:
+        except Exception:
+            # Log the full exception for diagnostics but surface a
+            # generic, non-sensitive message to the UI — raw SDK stack
+            # traces and internal paths don't help the user.
             logger.exception("failed to send message")
-            self._on_error(str(exc))
+            self._on_error("Failed to send message. See logs for details.")
 
     async def _receive_loop(self) -> None:
         """Consume messages from the SDK client and dispatch to UI."""
@@ -212,15 +304,20 @@ class ChatClient:
                 if not self._running:
                     break
                 self._handle_message(msg)
-        except Exception as exc:
+        except Exception:
             logger.exception("receive loop error")
-            self._on_error(str(exc))
+            self._on_error("Chat connection error. See logs for details.")
         finally:
             self._receiving = False
 
     def _handle_message(self, msg: Any) -> None:
         """Route an SDK message to the appropriate UI callback."""
         if isinstance(msg, AssistantMessage):
+            # Capture main-agent per-call usage for the turn snapshot.
+            # Skip subagent messages — their context is not the main
+            # conversation's current occupancy.
+            if msg.usage and msg.parent_tool_use_id is None:
+                self._last_assistant_usage = dict(msg.usage)
             # Text is already displayed via StreamEvent deltas — only
             # handle non-text blocks here to avoid duplication.
             for block in msg.content:
@@ -240,6 +337,7 @@ class ChatClient:
                 errors = msg.errors or []
                 self._on_error("; ".join(errors) if errors else "Unknown error")
             else:
+                self._forward_statusline(msg)
                 self._on_done()
         elif isinstance(msg, SystemMessage):
             logger.debug("system message: %s", msg)
@@ -262,10 +360,160 @@ class ChatClient:
         asyncio.run_coroutine_threadsafe(self._reconnect(), loop_ref)
 
     async def _reconnect(self) -> None:
-        """Disconnect and reconnect with a brand-new session."""
+        """Disconnect and reconnect with a brand-new session.
+
+        The usage accumulator is intentionally preserved across the
+        reconnect so cost/token totals keep climbing after ``/clear``,
+        matching the Claude Code CLI's statusline behaviour where
+        totals are process-scoped, not session-scoped.
+        """
         try:
             await self._disconnect()
             await self._connect(fresh=True)
         except Exception as exc:
             logger.exception("reconnect failed")
             self._on_error(f"Failed to reconnect: {exc}")
+
+    # -- statusline forwarding ----------------------------------------------
+
+    def _forward_statusline(self, msg: ResultMessage) -> None:
+        """Queue a statusline forward task for the background worker.
+
+        Called from the asyncio loop. The worker thread drains the queue
+        sequentially; one-turn-at-a-time processing keeps the accumulator
+        single-threaded and bounds concurrency under slow AgentPulse. On
+        queue overflow the oldest queued task is dropped (the newest has
+        the latest cumulative totals, so no data is permanently lost).
+        When AgentPulse is not configured this is a no-op.
+        """
+        if self._agentpulse_endpoint is None:
+            self._last_assistant_usage = None
+            return
+        model_name = extract_model_name(msg.model_usage)
+        # Take ownership of the last per-call snapshot observed during
+        # the turn; clear the slot so the next turn starts fresh.
+        turn_snapshot = self._last_assistant_usage
+        self._last_assistant_usage = None
+        task = _StatuslineTask(
+            session_id=msg.session_id,
+            total_cost_usd=msg.total_cost_usd,
+            usage=dict(msg.usage) if msg.usage else None,
+            duration_ms=msg.duration_ms,
+            duration_api_ms=msg.duration_api_ms,
+            model_name=model_name,
+            turn_snapshot=turn_snapshot,
+        )
+        self._ensure_statusline_worker()
+        try:
+            self._statusline_queue.put_nowait(task)
+        except queue.Full:
+            # Drop oldest and retry. Newest task has the latest
+            # cumulative totals — nothing of value is lost.
+            try:
+                self._statusline_queue.get_nowait()
+                self._statusline_queue.task_done()
+            except queue.Empty:
+                pass
+            try:
+                self._statusline_queue.put_nowait(task)
+            except queue.Full:
+                logger.debug(
+                    "statusline queue full after drop; dropping turn session=%s",
+                    msg.session_id,
+                )
+
+    def _ensure_statusline_worker(self) -> None:
+        """Start the statusline worker thread if it isn't running yet."""
+        if self._statusline_thread is None or not self._statusline_thread.is_alive():
+            t = threading.Thread(
+                target=self._statusline_worker_loop,
+                daemon=True,
+                name="statusline-post",
+            )
+            self._statusline_thread = t
+            t.start()
+
+    def _statusline_worker_loop(self) -> None:
+        """Drain the statusline queue until the shutdown sentinel arrives."""
+        while True:
+            task = self._statusline_queue.get()
+            try:
+                if task is None:
+                    break
+                try:
+                    self._process_statusline_task(task)
+                except Exception:
+                    logger.exception(
+                        "statusline worker crashed for session=%s",
+                        task.session_id,
+                    )
+            finally:
+                self._statusline_queue.task_done()
+
+    def _process_statusline_task(self, task: _StatuslineTask) -> None:
+        """Record, seed-if-needed, then POST one queued task."""
+        assert self._agentpulse_endpoint is not None
+        host, port = self._agentpulse_endpoint
+
+        with self._accumulator_lock:
+            self._accumulator.record_result(
+                session_id=task.session_id,
+                total_cost_usd=task.total_cost_usd,
+                usage=task.usage,
+                duration_ms=task.duration_ms,
+                duration_api_ms=task.duration_api_ms,
+                model_name=task.model_name,
+            )
+            self._accumulator.record_turn_snapshot(task.turn_snapshot)
+            need_seed = not self._accumulator_seeded
+
+        if need_seed:
+            # Seed outside the lock — this is a blocking HTTP call and
+            # the threading standard forbids I/O while holding a lock.
+            # Safe to mutate the accumulator from here because this
+            # worker is the single writer.
+            seed = merge_agentpulse_seed(self._accumulator, host, port, task.session_id)
+            if not seed.ok:
+                if not self._agentpulse_outage_warned:
+                    logger.warning(
+                        "AgentPulse unreachable at %s:%d; statusline "
+                        "forwarding deferred (will retry each turn)",
+                        host,
+                        port,
+                    )
+                    self._agentpulse_outage_warned = True
+                else:
+                    logger.debug(
+                        "statusline post deferred — AgentPulse still unreachable"
+                    )
+                return
+            with self._accumulator_lock:
+                self._accumulator_seeded = True
+            logger.info(
+                "AgentPulse seeded session=%s merged=%s total_cost_usd=%.4f",
+                task.session_id,
+                seed.merged,
+                self._accumulator.total_cost_usd,
+            )
+
+        from personal_assistant_dashboard.config import WORK_DIR
+
+        with self._accumulator_lock:
+            payload = build_payload(
+                self._accumulator,
+                pid=self._pid,
+                cwd=str(WORK_DIR),
+                source_system=self._source_system,
+            )
+        posted = post_statusline(host, port, payload)
+        if posted:
+            self._agentpulse_outage_warned = False
+        elif not self._agentpulse_outage_warned:
+            logger.warning(
+                "statusline POST failed for session=%s at %s:%d; "
+                "data may be missing from the Info tab",
+                task.session_id,
+                host,
+                port,
+            )
+            self._agentpulse_outage_warned = True
