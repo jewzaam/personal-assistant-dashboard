@@ -4,6 +4,7 @@
 import json
 import platform as _plat
 from pathlib import Path
+from typing import Any
 
 # Fonts — negative sizes = pixels (DPI-independent)
 if _plat.system() == "Windows":
@@ -105,6 +106,9 @@ DEBOUNCE_RESIZE_MS = 150  # canvas resize debounce
 GEOMETRY_CAPTURE_DELAY_MS = 500  # delay before capturing initial window geometry
 COUNTDOWN_HORIZON_H = 8  # show countdown if next meeting within this many hours
 
+# Chat model — default, overridable via config.json "chat_model" key
+_DEFAULT_CHAT_MODEL = "claude-opus-4-7[1m]"
+
 # Subprocess/connection timeouts (seconds)
 TIMEOUT_SDK_CONNECT_S = 30  # SDK client initial connection
 TIMEOUT_SDK_DISCONNECT_S = 5  # SDK client disconnect grace period
@@ -131,19 +135,30 @@ DETAIL_PANEL_WIDTH = 300
 _PA_CONFIG = Path.home() / ".claude" / "personal-assistant-config.json"
 
 
+def _load_pa_config() -> dict[str, Any]:
+    """Load the PA config file, returning an empty dict on failure."""
+    try:
+        data: dict[str, Any] = json.loads(_PA_CONFIG.read_text(encoding="utf-8"))
+        return data
+    except (OSError, json.JSONDecodeError, KeyError):
+        return {}
+
+
 def _resolve_work_dir() -> Path:
     """Read pa_workspace from the config file, falling back to cwd."""
-    try:
-        data = json.loads(_PA_CONFIG.read_text(encoding="utf-8"))
-        workspace = data.get("pa_workspace")
-        if workspace:
-            return Path(workspace).expanduser().resolve()
-    except (OSError, json.JSONDecodeError, KeyError):
-        pass
+    workspace = _load_pa_config().get("pa_workspace")
+    if workspace:
+        return Path(str(workspace)).expanduser().resolve()
     return Path.cwd()
 
 
+def _resolve_chat_model() -> str:
+    """Read chat_model from the config file, falling back to default."""
+    return str(_load_pa_config().get("chat_model") or _DEFAULT_CHAT_MODEL)
+
+
 WORK_DIR = _resolve_work_dir()
+CHAT_MODEL = _resolve_chat_model()
 
 # Commands
 GWS_BINARY = "gws"

@@ -31,6 +31,7 @@ from personal_assistant_dashboard.agentpulse_statusline import (
     build_payload,
     extract_model_name,
     load_agentpulse_endpoint,
+    lookup_context_window,
     merge_agentpulse_seed,
     post_statusline,
 )
@@ -97,11 +98,13 @@ class ChatClient:
         on_tool_use: Callable[[str], None],
         on_done: Callable[[], None],
         on_error: Callable[[str], None],
+        on_usage: Callable[[str, float, float], None] | None = None,
     ) -> None:
         self._on_text = on_text
         self._on_tool_use = on_tool_use
         self._on_done = on_done
         self._on_error = on_error
+        self._on_usage = on_usage
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -154,6 +157,17 @@ class ChatClient:
         # current-context snapshot we want the last single-call usage
         # before the turn ended.
         self._last_assistant_usage: dict[str, Any] | None = None
+        # UI-side running totals for the on_usage callback. These mirror
+        # the accumulator's values but are maintained on the asyncio
+        # thread to avoid cross-thread lock contention. Seeded from
+        # CHAT_MODEL so context % uses the correct window size before
+        # the first ResultMessage arrives.
+        from personal_assistant_dashboard.config import CHAT_MODEL
+
+        self._ui_total_cost: float = 0.0
+        self._ui_context_pct: float = 0.0
+        self._ui_model_name: str = CHAT_MODEL
+        self._accumulator.last_model_name = CHAT_MODEL
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -200,12 +214,13 @@ class ChatClient:
         Args:
             fresh: if True, start a new session instead of resuming the last one.
         """
-        from personal_assistant_dashboard.config import WORK_DIR
+        from personal_assistant_dashboard.config import CHAT_MODEL, WORK_DIR
 
         resume = None if fresh else self._find_last_session(WORK_DIR)
         logger.info("resuming session %s", resume or "(new)")
         options = ClaudeAgentOptions(
             system_prompt=SYSTEM_PROMPT,
+            model=CHAT_MODEL,
             permission_mode="default",
             can_use_tool=_deny_unapproved,
             include_partial_messages=True,
@@ -337,7 +352,10 @@ class ChatClient:
                 errors = msg.errors or []
                 self._on_error("; ".join(errors) if errors else "Unknown error")
             else:
-                self._forward_statusline(msg)
+                turn_snapshot = self._last_assistant_usage
+                self._last_assistant_usage = None
+                self._forward_statusline(msg, turn_snapshot)
+                self._fire_usage_callback(msg, turn_snapshot)
                 self._on_done()
         elif isinstance(msg, SystemMessage):
             logger.debug("system message: %s", msg)
@@ -365,8 +383,12 @@ class ChatClient:
         The usage accumulator is intentionally preserved across the
         reconnect so cost/token totals keep climbing after ``/clear``,
         matching the Claude Code CLI's statusline behaviour where
-        totals are process-scoped, not session-scoped.
+        totals are process-scoped, not session-scoped. The per-turn
+        snapshot is reset so context % drops to 0 until the new
+        session's first turn provides fresh data.
         """
+        self._accumulator.reset_snapshot()
+        self._ui_context_pct = 0.0
         try:
             await self._disconnect()
             await self._connect(fresh=True)
@@ -376,7 +398,11 @@ class ChatClient:
 
     # -- statusline forwarding ----------------------------------------------
 
-    def _forward_statusline(self, msg: ResultMessage) -> None:
+    def _forward_statusline(
+        self,
+        msg: ResultMessage,
+        turn_snapshot: dict[str, Any] | None,
+    ) -> None:
         """Queue a statusline forward task for the background worker.
 
         Called from the asyncio loop. The worker thread drains the queue
@@ -387,13 +413,8 @@ class ChatClient:
         When AgentPulse is not configured this is a no-op.
         """
         if self._agentpulse_endpoint is None:
-            self._last_assistant_usage = None
             return
         model_name = extract_model_name(msg.model_usage)
-        # Take ownership of the last per-call snapshot observed during
-        # the turn; clear the slot so the next turn starts fresh.
-        turn_snapshot = self._last_assistant_usage
-        self._last_assistant_usage = None
         task = _StatuslineTask(
             session_id=msg.session_id,
             total_cost_usd=msg.total_cost_usd,
@@ -421,6 +442,31 @@ class ChatClient:
                     "statusline queue full after drop; dropping turn session=%s",
                     msg.session_id,
                 )
+
+    def _fire_usage_callback(
+        self,
+        msg: ResultMessage,
+        turn_snapshot: dict[str, Any] | None,
+    ) -> None:
+        """Update UI-side usage totals and fire the on_usage callback."""
+        if self._on_usage is None:
+            return
+        if msg.total_cost_usd is not None:
+            self._ui_total_cost += float(msg.total_cost_usd)
+        model_name = extract_model_name(msg.model_usage)
+        if model_name:
+            self._ui_model_name = model_name
+        if turn_snapshot:
+            window_size = lookup_context_window(self._ui_model_name)
+            ctx_used = (
+                int(turn_snapshot.get("input_tokens") or 0)
+                + int(turn_snapshot.get("cache_read_input_tokens") or 0)
+                + int(turn_snapshot.get("cache_creation_input_tokens") or 0)
+            )
+            self._ui_context_pct = round(
+                (ctx_used / window_size * 100) if window_size else 0.0, 1
+            )
+        self._on_usage(self._ui_model_name, self._ui_total_cost, self._ui_context_pct)
 
     def _ensure_statusline_worker(self) -> None:
         """Start the statusline worker thread if it isn't running yet."""

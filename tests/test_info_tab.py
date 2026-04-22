@@ -6,7 +6,11 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from personal_assistant_dashboard.info_tab import InfoTab, _process_key
+from personal_assistant_dashboard.info_tab import (
+    InfoTab,
+    _process_key,
+    short_model_name,
+)
 
 
 class TestActiveToday:
@@ -330,4 +334,52 @@ class TestProcessKey:
         assert _process_key({"pid": 4242, "source_system": ""}) == "4242"
 
     def test_em_dash_when_pid_missing(self) -> None:
-        assert _process_key({"pid": 0, "source_system": "h"}) == "\u2014"
+        assert _process_key({"pid": 0, "source_system": "h"}) == "—"
+
+
+class TestShortModelName:
+    """Test short_model_name normalizes all source formats consistently."""
+
+    # SDK format: claude-<family>-<major>-<minor>[<ctx>][-<date>]
+    def test_sdk_opus_1m(self) -> None:
+        assert short_model_name("claude-opus-4-7[1m]") == "opus-4.7-1m"
+
+    def test_sdk_sonnet(self) -> None:
+        assert short_model_name("claude-sonnet-4-6") == "sonnet-4.6"
+
+    def test_sdk_haiku(self) -> None:
+        assert short_model_name("claude-haiku-4-5") == "haiku-4.5"
+
+    def test_sdk_dated_variant_stripped(self) -> None:
+        assert short_model_name("claude-opus-4-7-20260401") == "opus-4.7"
+
+    def test_sdk_dated_1m_variant(self) -> None:
+        assert short_model_name("claude-opus-4-7[1m]-20260401") == "opus-4.7-1m"
+
+    # CLI hook format: "Opus 4.6 (1M)" and "opus 4.6 (1m context)"
+    def test_cli_opus_1m(self) -> None:
+        assert short_model_name("Opus 4.6 (1M)") == "opus-4.6-1m"
+
+    def test_cli_opus_1m_context(self) -> None:
+        assert short_model_name("opus 4.6 (1m context)") == "opus-4.6-1m"
+
+    def test_cli_sonnet(self) -> None:
+        assert short_model_name("Sonnet 4.6") == "sonnet-4.6"
+
+    # Raw/dash format: "opus-4.6-1m"
+    def test_raw_opus_1m(self) -> None:
+        assert short_model_name("opus-4.6-1m") == "opus-4.6-1m"
+
+    def test_raw_sonnet(self) -> None:
+        assert short_model_name("sonnet-4-6") == "sonnet-4.6"
+
+    # All formats produce identical output
+    def test_all_formats_converge(self) -> None:
+        expected = "opus-4.6-1m"
+        assert short_model_name("claude-opus-4-6[1m]") == expected
+        assert short_model_name("Opus 4.6 (1M)") == expected
+        assert short_model_name("opus 4.6 (1m context)") == expected
+        assert short_model_name("opus-4.6-1m") == expected
+
+    def test_empty_returns_em_dash(self) -> None:
+        assert short_model_name("") == "—"

@@ -10,6 +10,7 @@ aggregate summary.
 """
 
 import logging
+import re
 import tkinter as tk
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -34,11 +35,10 @@ logger = logging.getLogger(__name__)
 
 # Treeview column definitions: (id, heading, width, anchor)
 _COLUMNS = [
-    ("pk", "PK", 110, tk.W),
-    ("project", "Project", 120, tk.W),
+    ("pk", "PK", 60, tk.W),
+    ("project", "Project", 160, tk.W),
+    ("model", "Model", 80, tk.W),
     ("cost", "Cost", 60, tk.E),
-    ("tok_in", "Tok In", 60, tk.E),
-    ("tok_out", "Tok Out", 60, tk.E),
     ("ctx_pct", "Ctx %", 50, tk.E),
     ("lines", "Lines", 70, tk.E),
 ]
@@ -48,9 +48,8 @@ _SortKey = Callable[[dict[str, Any]], Any]
 _SORT_KEYS: dict[str, _SortKey] = {
     "pk": lambda s: _process_key(s).lower(),
     "project": lambda s: _project_name(s.get("cwd", "")).lower(),
+    "model": lambda s: s.get("model_display_name", "").lower(),
     "cost": lambda s: s.get("total_cost_usd", 0.0),
-    "tok_in": lambda s: s.get("total_input_tokens", 0),
-    "tok_out": lambda s: s.get("total_output_tokens", 0),
     "ctx_pct": lambda s: s.get("context_used_pct", 0),
     "lines": lambda s: s.get("lines_added", 0) + s.get("lines_removed", 0),
 }
@@ -58,6 +57,34 @@ _SORT_KEYS: dict[str, _SortKey] = {
 # Percentage thresholds for color coding
 _THRESHOLD_MID = 60
 _THRESHOLD_HIGH = 90
+
+
+def short_model_name(name: str) -> str:
+    """Normalize a Claude model identifier into a consistent short form.
+
+    Handles three source formats:
+    - SDK id:   ``claude-opus-4-6[1m]``  → ``opus-4.6-1m``
+    - CLI hook: ``Opus 4.6 (1M)``        → ``opus-4.6-1m``
+    - Raw:      ``opus-4.6-1m``          → ``opus-4.6-1m``
+
+    Output is always ``<family>-<major>.<minor>[ 1M]``, lowercase.
+    """
+    if not name:
+        return "—"
+    s = name.strip().lower()
+    s = s.removeprefix("claude-").removeprefix("claude ")
+    # Strip dated suffixes like -20250514
+    s = re.sub(r"-\d{8}$", "", s)
+    # Detect and strip context-window markers in any format:
+    # [1m], (1m), (1m context), -1m, trailing " 1m"
+    s, count = re.subn(r"\s*[\[(]-?1m[^\])]*[\])]|\s*-1m\b|\s+1m$", "", s)
+    has_1m = count > 0
+    s = s.strip().rstrip("-")
+    # Normalize separators: "opus 4.6" or "opus-4-6" → "opus-4.6"
+    m = re.match(r"^([a-z]+)[\s-]+(\d+)[\s.-]+(\d+)$", s)
+    if m:
+        s = f"{m.group(1)}-{m.group(2)}.{m.group(3)}"
+    return f"{s}-1m" if has_1m else s
 
 
 def _format_cost(usd: float) -> str:
@@ -423,8 +450,10 @@ class InfoTab:
             return
 
         total_cost = sum(s.get("total_cost_usd", 0.0) for s in self._sessions)
-        total_in = sum(s.get("total_input_tokens", 0) for s in self._sessions)
-        total_out = sum(s.get("total_output_tokens", 0) for s in self._sessions)
+        total_tokens = sum(
+            s.get("total_input_tokens", 0) + s.get("total_output_tokens", 0)
+            for s in self._sessions
+        )
 
         limits = self._client.get_limits()
         five_h = _format_limit(limits.get("five_hour"))
@@ -432,7 +461,7 @@ class InfoTab:
 
         parts = [
             _format_cost(total_cost),
-            f"{_format_tokens(total_in)} in / {_format_tokens(total_out)} out",
+            f"{_format_tokens(total_tokens)} tokens",
             five_h,
             seven_d,
         ]
@@ -454,8 +483,6 @@ class InfoTab:
 
         # Aggregate row first
         total_cost = sum(s.get("total_cost_usd", 0.0) for s in sessions)
-        total_in = sum(s.get("total_input_tokens", 0) for s in sessions)
-        total_out = sum(s.get("total_output_tokens", 0) for s in sessions)
         total_add = sum(s.get("lines_added", 0) for s in sessions)
         total_rm = sum(s.get("lines_removed", 0) for s in sessions)
 
@@ -466,9 +493,8 @@ class InfoTab:
             values=(
                 "",
                 "TOTAL",
+                "",
                 _format_cost(total_cost),
-                _format_tokens(total_in),
-                _format_tokens(total_out),
                 "",
                 lines_val,
             ),
@@ -482,8 +508,7 @@ class InfoTab:
             tag = "closed" if not active else _pct_tag(ctx_pct)
             ctx_str = f"{ctx_pct}%" if ctx_pct else "\u2014"
             cost = s.get("total_cost_usd", 0.0)
-            tok_in = s.get("total_input_tokens", 0)
-            tok_out = s.get("total_output_tokens", 0)
+            model = short_model_name(s.get("model_display_name", ""))
             add = s.get("lines_added", 0)
             rm = s.get("lines_removed", 0)
             lines_str = f"+{add}/-{rm}" if add or rm else "\u2014"
@@ -494,9 +519,8 @@ class InfoTab:
                 values=(
                     _process_key(s),
                     _project_name(s.get("cwd", "")),
+                    model,
                     _format_cost(cost),
-                    _format_tokens(tok_in),
-                    _format_tokens(tok_out),
                     ctx_str,
                     lines_str,
                 ),
