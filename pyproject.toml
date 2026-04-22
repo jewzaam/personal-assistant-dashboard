@@ -12,7 +12,6 @@ dependencies = [
     "claude-agent-sdk>=0.1.50",
     "local-transcribe @ git+https://github.com/jewzaam/local-transcribe.git@v0.5.0",
     "pyyaml>=6.0",
-    "tkinterweb>=3.0",
     "websockets>=13.0",
 ]
 
@@ -48,7 +47,7 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["tkinterweb.*", "claude_agent_sdk.*", "local_transcribe.*", "local_transcribe_ui.*"]
+module = ["claude_agent_sdk.*", "local_transcribe.*", "local_transcribe_ui.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -61,7 +60,6 @@ markers = [
 omit = [
     "personal_assistant_dashboard/agentpulse_client.py",
     "personal_assistant_dashboard/dashboard.py",
-    "personal_assistant_dashboard/pages_tab.py",
     "personal_assistant_dashboard/config.py",
     "personal_assistant_dashboard/chat_client.py",
     "personal_assistant_dashboard/chat_tab.py",

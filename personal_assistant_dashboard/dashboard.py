@@ -275,23 +275,6 @@ class Dashboard:
             notify_tab=self._notify_tab,
         )
 
-        # Pages tab — discovers HTML files in the working directory
-        pages_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
-        self._notebook.add(pages_frame, text="Pages")
-
-        from personal_assistant_dashboard.pages_tab import PagesTab
-
-        self._pages_notifications = True  # overridden by _apply_ui_state
-        self._pages_tab = PagesTab(
-            pages_frame,
-            self._root,
-            notify_tab=self._notify_tab,
-            notify_tab_persistent=self._notify_tab_persistent,
-            clear_persistent_bell=self._clear_persistent_bell,
-            notifications_enabled=self._pages_notifications,
-            on_notifications_changed=self._on_pages_notifications_changed,
-        )
-
         # Calendar tab
         cal_tab = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(cal_tab, text="Calendar")
@@ -646,11 +629,6 @@ class Dashboard:
     def _clear_checkpoint_status(self) -> None:
         """Clear the checkpoint status label."""
         self._checkpoint_status_var.set("")
-
-    def _on_pages_notifications_changed(self, enabled: bool) -> None:
-        """Persist pages notification preference."""
-        self._pages_notifications = enabled
-        self._save_ui_state()
 
     def _build_calendar_tab(self, cal_tab: tk.Frame) -> None:
         """Build the calendar tab with nav, changes, canvas, and bindings."""
@@ -1092,9 +1070,6 @@ class Dashboard:
         self._font_input.configure(size=int(FONT_SIZE_INPUT * scale))
         # Update ttk style (doesn't auto-propagate from named fonts)
         self._style.configure("Dark.TNotebook.Tab", font=self._font_body)
-        # Scale HTML content in Assistant and Actions tabs
-        if hasattr(self, "_pages_tab"):
-            self._pages_tab.set_font_scale(scale)
         # Re-render calendar canvas (uses font in create_text calls)
         if self._canvas:
             self._render_current_day()
@@ -1660,9 +1635,6 @@ class Dashboard:
             state["topmost"] = bool(self._window.attributes("-topmost"))
             state["sticky"] = self._sticky
             state["auto_shade"] = self._auto_shade
-        # Save pages notification preference
-        if hasattr(self, "_pages_notifications") and not self._pages_notifications:
-            state["pages_notifications"] = False
         # Save font scale
         if hasattr(self, "_font_scale") and self._font_scale != 1.0:
             state["font_scale"] = round(self._font_scale, 2)
@@ -1732,12 +1704,6 @@ class Dashboard:
         if state.get("auto_shade"):
             self._auto_shade = True
             self._start_auto_shade_poll()
-
-        # Restore pages notification preference
-        if not state.get("pages_notifications", True):
-            self._pages_notifications = False
-            if hasattr(self, "_pages_tab"):
-                self._pages_tab._notify_var.set(False)
 
         # Restore font scale
         font_scale = state.get("font_scale")
@@ -1816,8 +1782,6 @@ class Dashboard:
         self._save_ui_state()
         self._stop_cal_refresh()
         # Clean up tab resources
-        if hasattr(self, "_pages_tab"):
-            self._pages_tab.on_destroy()
         if hasattr(self, "_chat_tab"):
             self._chat_tab.on_destroy()
         if hasattr(self, "_settings_tab"):
