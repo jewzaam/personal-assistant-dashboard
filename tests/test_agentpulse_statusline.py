@@ -122,12 +122,14 @@ def test_accumulator_sums_across_queries():
     assert acc.total_api_duration_ms == 1200
 
 
-def test_record_result_ignores_cache_tokens():
-    """``record_result`` consumes ResultMessage usage — turn-aggregated.
+def test_record_result_sums_all_input_token_variants():
+    """``record_result`` sums input_tokens + cache_read + cache_creation.
 
-    Cache token fields on ResultMessage are sums across every API call
-    in the turn and can exceed the window size; they must not leak into
-    the per-turn snapshot used for ``used_percentage``.
+    The CLI statusline's ``total_input_tokens`` is the full billed
+    input — summing the new bytes, cache reads, and cache creations.
+    Counting only ``input_tokens`` undercounts by 100–1000× in a long
+    conversation because the system prompt and recent history are
+    replayed from cache every turn.
     """
     acc = SessionAccumulator()
     acc.record_result(
@@ -136,16 +138,16 @@ def test_record_result_ignores_cache_tokens():
         usage={
             "input_tokens": 10,
             "output_tokens": 5,
-            "cache_read_input_tokens": 999_999,
-            "cache_creation_input_tokens": 999_999,
+            "cache_read_input_tokens": 30_000,
+            "cache_creation_input_tokens": 1_000,
         },
         duration_ms=100,
         duration_api_ms=90,
     )
-    # Lifetime counters accumulate...
-    assert acc.total_input_tokens == 10
+    # All three input-side counters roll into the lifetime total.
+    assert acc.total_input_tokens == 31_010
     assert acc.total_output_tokens == 5
-    # ...but per-turn snapshot stays zero until record_turn_snapshot runs.
+    # Per-turn snapshot stays separate — unchanged until record_turn_snapshot.
     assert acc.last_input_tokens == 0
     assert acc.last_cache_read_tokens == 0
     assert acc.last_cache_creation_tokens == 0
@@ -345,9 +347,10 @@ def test_build_payload_used_pct_uses_turn_snapshot_not_result_aggregate():
         }
     )
     payload = build_payload(acc, pid=1, cwd="", source_system="")
-    # Lifetime input_tokens still accumulates from ResultMessage usage.
-    assert payload["context_window"]["total_input_tokens"] == 20 * 5_000
-    # used_percentage uses the snapshot, not the aggregates:
+    # Lifetime input_tokens sums all three input-side counters per turn:
+    # (5_000 + 500_000 + 50_000) × 20 = 11_100_000
+    assert payload["context_window"]["total_input_tokens"] == 20 * 555_000
+    # used_percentage uses the snapshot, not the lifetime aggregate:
     # (10 + 60_000 + 1_000) / 200_000 * 100 = 30.505 → 30.5
     assert payload["context_window"]["used_percentage"] == pytest.approx(30.5)
 
