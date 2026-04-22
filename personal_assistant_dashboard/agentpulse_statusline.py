@@ -151,17 +151,7 @@ class SessionAccumulator:
         self.total_duration_ms += int(duration_ms or 0)
         self.total_api_duration_ms += int(duration_api_ms or 0)
         if usage:
-            # ``input_tokens`` alone is just the fresh (uncached) bytes per
-            # request — a tiny fraction of what the model actually processed
-            # once prompt caching is in play. Summing all three input-side
-            # counters matches the CLI statusline hook's ``total_input_tokens``
-            # and the billing view. The per-turn ``last_*`` snapshots stay
-            # separate for ``used_percentage`` (see ``record_turn_snapshot``).
-            self.total_input_tokens += (
-                int(usage.get("input_tokens") or 0)
-                + int(usage.get("cache_read_input_tokens") or 0)
-                + int(usage.get("cache_creation_input_tokens") or 0)
-            )
+            self.total_input_tokens += int(usage.get("input_tokens") or 0)
             self.total_output_tokens += int(usage.get("output_tokens") or 0)
         if model_name:
             self.last_model_name = model_name
