@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -28,42 +29,28 @@ from personal_assistant_dashboard.agentpulse_config import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONTEXT_WINDOW = 200_000
+_1M_CONTEXT_WINDOW = 1_000_000
 
-# Model identifier → context window size. Matched by exact id first, then
-# by known-prefix fallback so dated variants like
-# ``claude-sonnet-4-5-20250929`` resolve to their family's window size.
-CONTEXT_WINDOW_SIZES: dict[str, int] = {
-    "claude-haiku-4-5": 200_000,
-    "claude-sonnet-4-5": 200_000,
-    "claude-sonnet-4-6": 200_000,
-    "claude-sonnet-4-6[1m]": 1_000_000,
-    "claude-opus-4-6": 200_000,
-    "claude-opus-4-7": 200_000,
-    "claude-opus-4-7[1m]": 1_000_000,
-}
+# Matches any Claude model id containing a ``[1m]`` context-window tag,
+# with optional dated suffix. Structural — no per-model enumeration.
+_1M_RE = re.compile(r"\[1m\]")
 
 
 def lookup_context_window(model_name: str) -> int:
     """Return the context window size for a Claude model.
 
+    Any model whose id contains ``[1m]`` gets 1M; all others get 200k.
     Unknown or empty names fall back to ``DEFAULT_CONTEXT_WINDOW`` and
     emit a warning so the lookup table can be updated.
-
-    Prefix matching iterates longest-first so that dated ``[1m]``
-    variants (e.g. ``claude-opus-4-7[1m]-20251231``) resolve to the 1M
-    entry rather than the shorter 200k base key.
     """
     if not model_name:
         return DEFAULT_CONTEXT_WINDOW
-    if model_name in CONTEXT_WINDOW_SIZES:
-        return CONTEXT_WINDOW_SIZES[model_name]
-    # Prefix match — longest key first so `[1m]` variants beat their base.
-    for known in sorted(CONTEXT_WINDOW_SIZES, key=len, reverse=True):
-        if model_name.startswith(known):
-            return CONTEXT_WINDOW_SIZES[known]
+    if _1M_RE.search(model_name):
+        return _1M_CONTEXT_WINDOW
+    if re.match(r"^claude-", model_name):
+        return DEFAULT_CONTEXT_WINDOW
     logger.warning(
-        "unknown Claude model %r; defaulting context window to %d — "
-        "update CONTEXT_WINDOW_SIZES",
+        "unknown Claude model %r; defaulting context window to %d",
         model_name,
         DEFAULT_CONTEXT_WINDOW,
     )
@@ -156,6 +143,13 @@ class SessionAccumulator:
         if model_name:
             self.last_model_name = model_name
 
+    def reset_snapshot(self) -> None:
+        """Zero the per-turn snapshot so context % reads 0 until the next turn."""
+        logger.debug("snapshot reset to zero")
+        self.last_input_tokens = 0
+        self.last_cache_read_tokens = 0
+        self.last_cache_creation_tokens = 0
+
     def record_turn_snapshot(self, usage: dict[str, Any] | None) -> None:
         """Record per-API-call usage from the turn's last AssistantMessage.
 
@@ -164,11 +158,18 @@ class SessionAccumulator:
         correctly represents present context occupancy.
         """
         if not usage:
+            logger.debug("snapshot: no usage provided, keeping previous values")
             return
         self.last_input_tokens = int(usage.get("input_tokens") or 0)
         self.last_cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
         self.last_cache_creation_tokens = int(
             usage.get("cache_creation_input_tokens") or 0
+        )
+        logger.debug(
+            "snapshot: input=%d cache_read=%d cache_create=%d",
+            self.last_input_tokens,
+            self.last_cache_read_tokens,
+            self.last_cache_creation_tokens,
         )
 
 
@@ -195,6 +196,17 @@ def build_payload(
         + acc.last_cache_creation_tokens
     )
     used_pct = (ctx_used / window_size * 100) if window_size else 0.0
+    logger.debug(
+        "context %%: model=%s window=%d input=%d cache_read=%d "
+        "cache_create=%d total=%d pct=%.1f",
+        acc.last_model_name,
+        window_size,
+        acc.last_input_tokens,
+        acc.last_cache_read_tokens,
+        acc.last_cache_creation_tokens,
+        ctx_used,
+        used_pct,
+    )
     return {
         "session_id": acc.session_id,
         "pid": pid,

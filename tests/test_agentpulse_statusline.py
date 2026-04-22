@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from personal_assistant_dashboard.agentpulse_statusline import (
-    CONTEXT_WINDOW_SIZES,
     DEFAULT_CONTEXT_WINDOW,
     SeedResult,
     SessionAccumulator,
@@ -26,7 +25,7 @@ from personal_assistant_dashboard.agentpulse_statusline import (
 # -- lookup_context_window ---------------------------------------------------
 
 
-def test_lookup_context_window_exact_match():
+def test_lookup_context_window_base_model():
     assert lookup_context_window("claude-opus-4-7") == 200_000
 
 
@@ -34,9 +33,20 @@ def test_lookup_context_window_1m_variant():
     assert lookup_context_window("claude-opus-4-7[1m]") == 1_000_000
 
 
-def test_lookup_context_window_dated_prefix_match():
-    """Dated variant like claude-opus-4-7-20251231 falls back to family size."""
+def test_lookup_context_window_dated_base():
     assert lookup_context_window("claude-opus-4-7-20251231") == 200_000
+
+
+def test_lookup_context_window_dated_1m():
+    assert lookup_context_window("claude-opus-4-7[1m]-20251231") == 1_000_000
+
+
+def test_lookup_context_window_any_1m_variant_returns_1m():
+    """Any model with [1m] suffix resolves to 1M — no per-model enumeration."""
+    assert lookup_context_window("claude-opus-4-6[1m]") == 1_000_000
+    assert lookup_context_window("claude-sonnet-4-5[1m]") == 1_000_000
+    assert lookup_context_window("claude-haiku-4-5[1m]") == 1_000_000
+    assert lookup_context_window("claude-sonnet-4-6[1m]") == 1_000_000
 
 
 def test_lookup_context_window_unknown_defaults():
@@ -45,12 +55,6 @@ def test_lookup_context_window_unknown_defaults():
 
 def test_lookup_context_window_empty():
     assert lookup_context_window("") == DEFAULT_CONTEXT_WINDOW
-
-
-def test_known_models_cover_current_families():
-    """Regression fence: every family the project uses must be listed."""
-    for family in ("claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5"):
-        assert family in CONTEXT_WINDOW_SIZES
 
 
 # -- extract_model_name ------------------------------------------------------

@@ -52,6 +52,7 @@ def _make_client(**overrides: object) -> ChatClient:
         "on_tool_use": MagicMock(),
         "on_done": MagicMock(),
         "on_error": MagicMock(),
+        "on_usage": MagicMock(),
     }
     defaults.update(overrides)
     client = ChatClient(**defaults)  # type: ignore[arg-type]
@@ -788,3 +789,112 @@ def test_fake_seed_matches_real_merge_signature():
     # _FakeSeed.__call__ has (self, acc, host, port, session_id)
     fake_params = list(inspect.signature(fake.__call__).parameters)
     assert fake_params == real_params
+
+
+# -- on_usage callback -------------------------------------------------------
+
+
+def test_usage_callback_fires_with_cumulative_cost():
+    """on_usage receives cumulative cost across turns."""
+    client = _make_client()
+    client._handle_message(_make_result_msg(total_cost_usd=0.05))
+    client._handle_message(_make_result_msg(total_cost_usd=0.03))
+    assert client._on_usage.call_count == 2
+    # Second call should have cumulative $0.08
+    _model, cost, _pct = client._on_usage.call_args_list[1].args
+    assert cost == pytest.approx(0.08)
+
+
+def test_usage_callback_fires_with_context_pct():
+    """on_usage receives context % from the turn's assistant usage snapshot."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    client = _make_client()
+    client._handle_message(
+        AssistantMessage(
+            content=[TextBlock(text="")],
+            model="claude-opus-4-7",
+            usage={
+                "input_tokens": 10,
+                "cache_read_input_tokens": 50_000,
+                "cache_creation_input_tokens": 2_000,
+            },
+        )
+    )
+    client._handle_message(_make_result_msg(model="claude-opus-4-7"))
+    _model, _cost, pct = client._on_usage.call_args.args
+    # (10 + 50_000 + 2_000) / 200_000 * 100 = 26.005 → 26.0
+    assert pct == pytest.approx(26.0)
+
+
+def test_usage_callback_respects_1m_context_window():
+    """on_usage computes context % against the correct window size."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    client = _make_client()
+    client._handle_message(
+        AssistantMessage(
+            content=[TextBlock(text="")],
+            model="claude-opus-4-7[1m]",
+            usage={
+                "input_tokens": 100_000,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            },
+        )
+    )
+    client._handle_message(_make_result_msg(model="claude-opus-4-7[1m]"))
+    _model, _cost, pct = client._on_usage.call_args.args
+    # 100_000 / 1_000_000 * 100 = 10.0
+    assert pct == pytest.approx(10.0)
+
+
+def test_usage_callback_not_fired_on_error_result():
+    """Error results skip the usage callback."""
+    client = _make_client()
+    client._handle_message(_make_result_msg(is_error=True))
+    client._on_usage.assert_not_called()
+
+
+def test_usage_callback_works_without_agentpulse():
+    """on_usage fires even when AgentPulse is not configured."""
+    client = _make_client()
+    assert client._agentpulse_endpoint is None
+    client._handle_message(_make_result_msg(total_cost_usd=0.10))
+    client._on_usage.assert_called_once()
+    _model, cost, _pct = client._on_usage.call_args.args
+    assert cost == pytest.approx(0.10)
+
+
+def test_usage_callback_passes_model_name():
+    """on_usage passes the model name from the ResultMessage."""
+    client = _make_client()
+    client._handle_message(_make_result_msg(model="claude-opus-4-7[1m]"))
+    model, _cost, _pct = client._on_usage.call_args.args
+    assert model == "claude-opus-4-7[1m]"
+
+
+def test_usage_callback_preserves_pct_when_no_snapshot():
+    """Context % stays at prior value when no assistant usage snapshot exists."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    client = _make_client()
+    client._handle_message(
+        AssistantMessage(
+            content=[TextBlock(text="")],
+            model="claude-sonnet-4-6",
+            usage={
+                "input_tokens": 40_000,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            },
+        )
+    )
+    client._handle_message(_make_result_msg(total_cost_usd=0.05))
+    _model1, _cost1, pct1 = client._on_usage.call_args.args
+    assert pct1 == pytest.approx(20.0)
+
+    # Second turn with no assistant usage snapshot
+    client._handle_message(_make_result_msg(total_cost_usd=0.03))
+    _model2, _cost2, pct2 = client._on_usage.call_args.args
+    assert pct2 == pytest.approx(20.0)  # unchanged

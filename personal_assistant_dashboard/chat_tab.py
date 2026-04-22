@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from personal_assistant_dashboard.info_tab import short_model_name
 from personal_assistant_dashboard.models import ConsoleLogCallback, NotifyTabCallback
 from personal_assistant_dashboard.config import (
     WORK_DIR,
@@ -143,17 +144,31 @@ class ChatTab:
         )
         self._messages.tag_configure("system_msg", foreground=FG_DIM, justify=tk.LEFT)
 
-        # Status label
+        # Status bar — left: tool/status, right: cost & context %
+        status_frame = tk.Frame(self._parent, bg=BG_WINDOW)
+        status_frame.pack(fill=tk.X, padx=PAD, pady=(0, 0))
+
         self._status_var = tk.StringVar(value="")
         self._status_label = tk.Label(
-            self._parent,
+            status_frame,
             textvariable=self._status_var,
             bg=BG_WINDOW,
             fg=FG_DIM,
             font=FONT_NAME_BODY,
             anchor=tk.W,
         )
-        self._status_label.pack(fill=tk.X, padx=PAD, pady=(0, 0))
+        self._status_label.pack(side=tk.LEFT)
+
+        self._usage_var = tk.StringVar(value="")
+        self._usage_label = tk.Label(
+            status_frame,
+            textvariable=self._usage_var,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=FONT_NAME_BODY,
+            anchor=tk.E,
+        )
+        self._usage_label.pack(side=tk.RIGHT)
 
         # Send/Stop button — updated externally by _send_now / _on_done
         self._send_btn: tk.Button | None = None
@@ -223,6 +238,11 @@ class ChatTab:
         self._status_var.set(text)
         color = COLOR_SUCCESS if text == "Ready" else COLOR_WARNING
         self._status_label.config(fg=color)
+
+    def _on_usage(self, model: str, cost_usd: float, used_pct: float) -> None:
+        """Update the right-side usage display with model, cost, and context %."""
+        short = short_model_name(model)
+        self._usage_var.set(f"{short}  ${cost_usd:.2f}  {used_pct}%")
 
     def _stop(self) -> None:
         """Interrupt the current response."""
@@ -334,6 +354,7 @@ class ChatTab:
             on_tool_use=lambda t: self._schedule(self._on_tool_use, t),
             on_done=lambda: self._schedule(self._on_done),
             on_error=lambda e: self._schedule(self._on_error, e),
+            on_usage=lambda m, c, p: self._schedule(self._on_usage, m, c, p),
         )
         self._client.start()
 
