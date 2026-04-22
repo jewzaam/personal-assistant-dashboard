@@ -36,7 +36,6 @@ Coverage target: 80% on non-UI code. UI modules (`dashboard.py`, `*_tab.py`, `co
 - **`dashboard.py`** — main Tkinter window, tab management, window geometry
 - **`chat_tab.py`** — Chat tab with Claude Agent SDK streaming
 - **`chat_client.py`** — `ClaudeSDKClient` wrapper in background asyncio thread. Each `ResultMessage` is forwarded to AgentPulse's `/statusline/claude` endpoint via a queued single-writer worker thread (see `agentpulse_statusline.py`). Forwarding is seeded with AgentPulse's stored totals on first successful contact so restart-with-resume preserves lifetime cost.
-- **`pages_tab.py`** — discovers `*.html` files in workspace, renders with `tkinterweb`
 - **`settings_tab.py`** — settings editor with git checkpoint
 - **`config.py`** — constants (colors, fonts, timeouts)
 
@@ -78,7 +77,7 @@ Evolved from two predecessor repos:
 1. **`claude-dashboard`** — session-monitoring dashboard (still separate)
 2. **`claude-personal-assistant`** — combined personal assistant (this repo was extracted from it on 2026-04-04)
 
-The rename dropped meeting transcript pipeline dependencies, collapsed Assistant+Actions into the Pages tab, and made the workspace path configurable.
+The rename dropped meeting transcript pipeline dependencies and made the workspace path configurable.
 
 ## Platform notes
 
