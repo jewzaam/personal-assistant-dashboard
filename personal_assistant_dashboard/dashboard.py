@@ -82,6 +82,12 @@ from personal_assistant_dashboard.config import (
     TOOLTIP_DELAY_MS,
     WORK_DIR,
 )
+from personal_assistant_dashboard.meeting_notes import (
+    create_notes_file,
+    find_notes_file,
+    invoke_prep_skill,
+    open_notes_file,
+)
 from personal_assistant_dashboard.state_repo import DEFAULT_STATE_PATH
 from personal_assistant_dashboard.utils import (
     atomic_write_json,
@@ -2282,6 +2288,44 @@ class Dashboard:
                 btn.pack(side=tk.LEFT, padx=1)
                 if response == status_val:
                     btn.configure(state=tk.DISABLED)
+
+        # Meeting notes button
+        notes_frame = tk.Frame(panel, bg=BG_WINDOW)
+        notes_frame.pack(fill=tk.X, padx=self._s(8), pady=(0, 4))
+
+        event_id = cal_event.get("id", "")
+        existing_notes = find_notes_file(event_id) if event_id else None
+
+        if existing_notes:
+            notes_btn_label = "Open Notes"
+            _notes_path: Path = existing_notes
+
+            def _open_notes(p: Path = _notes_path) -> None:
+                open_notes_file(p)
+
+            notes_cmd: Any = _open_notes
+        else:
+            notes_btn_label = "Generate Notes"
+
+            def _generate_prep(evt: CalendarEvent = cal_event) -> None:
+                filepath = create_notes_file(evt)
+                open_notes_file(filepath)
+                invoke_prep_skill(filepath, self._chat_tab.send_message)
+
+            notes_cmd = _generate_prep
+
+        tk.Button(
+            notes_frame,
+            text=notes_btn_label,
+            bg=COLOR_BUTTON,
+            fg=COLOR_WHITE,
+            font=self._font_body,
+            relief=tk.FLAT,
+            padx=6,
+            pady=1,
+            cursor="hand2",
+            command=notes_cmd,
+        ).pack(side=tk.LEFT, padx=1)
 
         # Content area
         content_frame = tk.Frame(panel, bg=BG_OUTPUT)
