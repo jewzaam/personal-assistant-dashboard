@@ -349,15 +349,43 @@ class Dashboard:
 
         self._build_calendar_tab(cal_tab)
 
+        # Chat status bar — visible across all tabs, above input
+        self._chat_status_frame = tk.Frame(main, bg=BG_WINDOW)
+        status_label = tk.Label(
+            self._chat_status_frame,
+            textvariable=self._chat_tab._status_var,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=self._font_body,
+            anchor=tk.W,
+        )
+        status_label.pack(side=tk.LEFT)
+        tk.Label(
+            self._chat_status_frame,
+            textvariable=self._chat_tab._usage_var,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=self._font_body,
+            anchor=tk.E,
+        ).pack(side=tk.RIGHT)
+        self._chat_tab._status_label = status_label
+
         self._quick_chat_frame = tk.Frame(main, bg=BG_WINDOW)
         self._pack_main_layout()
         self._build_checkpoint_overlay()
+
+        # Identify the resume session so we can seed the status bar from
+        # AgentPulse when data arrives.
+        from personal_assistant_dashboard.chat_client import ChatClient
+
+        self._resume_session_id = ChatClient._find_last_session(WORK_DIR)
 
         # Now that InfoTab and the top-bar overlay both exist, wire the
         # AgentPulse callback to refresh both on every update.
         def _on_agentpulse_update() -> None:
             self._info_tab._refresh()
             self._update_topbar_usage()
+            self._seed_chat_status()
 
         self._agentpulse_client._on_update = _on_agentpulse_update
         self._update_topbar_usage()
@@ -468,6 +496,25 @@ class Dashboard:
             self._quick_chat_input.insert("1.0", "help")
             self._on_quick_chat_send()
 
+    def _seed_chat_status(self) -> None:
+        """Populate the chat status bar from AgentPulse on resume.
+
+        Runs once: clears ``_resume_session_id`` after seeding so
+        subsequent AgentPulse updates skip the lookup.
+        """
+        sid = self._resume_session_id
+        if not sid:
+            return
+        for session in self._agentpulse_client.get_sessions():
+            if session.get("session_id") == sid:
+                self._chat_tab._on_usage(
+                    session.get("model_display_name", ""),
+                    session.get("total_cost_usd", 0.0),
+                    session.get("context_used_pct", 0.0),
+                )
+                self._resume_session_id = None
+                return
+
     def _schedule(self, fn: Any, *args: Any) -> None:
         """Schedule a callback on the main thread from a background thread."""
         try:
@@ -484,6 +531,10 @@ class Dashboard:
         if hasattr(self, "_quick_chat_frame"):
             self._quick_chat_frame.pack(
                 side=tk.BOTTOM, fill=tk.X, padx=self._s(PAD), pady=(4, 0)
+            )
+        if hasattr(self, "_chat_status_frame"):
+            self._chat_status_frame.pack(
+                side=tk.BOTTOM, fill=tk.X, padx=self._s(PAD), pady=(2, 0)
             )
         if self._notebook:
             self._notebook.pack(fill=tk.BOTH, expand=True)
@@ -1023,6 +1074,8 @@ class Dashboard:
             width=self._s(MIN_WINDOW_WIDTH), height=self._s(MIN_WINDOW_HEIGHT_SHADED)
         )
         self._window.geometry(f"{w}x{self._s(SHADED_HEIGHT)}+{x}+{y}")
+        if hasattr(self, "_chat_status_frame"):
+            self._chat_status_frame.pack_forget()
         if hasattr(self, "_quick_chat_frame"):
             self._quick_chat_frame.pack_forget()
 
@@ -1034,9 +1087,9 @@ class Dashboard:
         self._window.minsize(
             width=self._s(MIN_WINDOW_WIDTH), height=self._s(MIN_WINDOW_HEIGHT)
         )
-        # Forget notebook so _pack_main_layout re-packs in the correct order
-        # (chat BOTTOM first, then notebook). Can't forget it in _shade because
-        # the tab strip must remain visible for middle-click unshade.
+        # Forget widgets so _pack_main_layout re-packs in the correct order
+        # (chat BOTTOM, status BOTTOM, notebook expand). Can't forget notebook
+        # in _shade because the tab strip must remain visible for middle-click.
         if self._notebook:
             self._notebook.pack_forget()
         self._pack_main_layout()
@@ -1388,6 +1441,8 @@ class Dashboard:
         next_start: datetime | None = None
         for event in self._all_events:
             if event.get("all_day"):
+                continue
+            if event.get("event_type") in ("workingLocation", "outOfOffice"):
                 continue
             if _user_response_status(event) == "declined":
                 continue
