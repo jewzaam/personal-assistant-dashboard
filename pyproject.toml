@@ -29,6 +29,7 @@ dev = [
     "pytest-cov>=4.0",
     "pytest-mock>=3.0",
     "types-PyYAML>=6.0",
+    "xenon>=0.9",
 ]
 
 [project.scripts]
@@ -66,7 +67,6 @@ omit = [
     "personal_assistant_dashboard/info_tab.py",
     "personal_assistant_dashboard/settings_tab.py",
     "personal_assistant_dashboard/startup.py",
-    "personal_assistant_dashboard/utils.py",
 ]
 
 [tool.coverage.report]

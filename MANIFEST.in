@@ -1,4 +1,4 @@
 include LICENSE
 include README.md
 include TEST_PLAN.md
-recursive-include personal_assistant *.py
+recursive-include personal_assistant_dashboard *.py
