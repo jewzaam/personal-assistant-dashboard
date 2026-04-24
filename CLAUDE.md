@@ -10,11 +10,11 @@ Tkinter GUI dashboard for personal task management and situational awareness. In
 
 ```bash
 make install-dev   # editable install with dev deps into .venv
-make check         # format + lint + typecheck + test + coverage (default target)
+make check         # test-format + test-lint + test-typecheck + test-unit + test-coverage (default target)
 make run           # launch GUI (reads pa_workspace from config)
 ```
 
-Individual targets: `make format`, `make lint`, `make typecheck`, `make test`, `make coverage`, `make mutation`.
+Individual targets: `make format`, `make test-lint`, `make test-typecheck`, `make test-unit`, `make test-coverage`, `make mutation`.
 
 Coverage target: 80% on non-UI code. UI modules (`dashboard.py`, `*_tab.py`, `config.py`) are excluded — Tkinter testing is impractical.
 

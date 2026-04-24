@@ -360,8 +360,11 @@ class ChatTab:
 
     def _schedule(self, fn: Any, *args: Any) -> None:
         """Schedule a callback on the TkInter main thread."""
-        if not self._destroying and self._root.winfo_exists():
-            self._root.after(0, fn, *args)
+        try:
+            if not self._destroying and self._root.winfo_exists():
+                self._root.after(0, fn, *args)
+        except RuntimeError:
+            pass
 
     # -- UI callbacks (main thread only) -------------------------------------
 
