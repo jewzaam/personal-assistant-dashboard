@@ -158,7 +158,7 @@ def list_local_skills(skills_dir: Path) -> list[tuple[str, str]]:
     if not skills_dir.is_dir():
         return []
     results: list[tuple[str, str]] = []
-    for skill_md in sorted(skills_dir.glob("**/SKILL.md")):
+    for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
         try:
             content = skill_md.read_text(encoding="utf-8")
         except OSError:
