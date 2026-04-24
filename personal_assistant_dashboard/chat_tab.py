@@ -16,7 +16,6 @@ from personal_assistant_dashboard.models import ConsoleLogCallback, NotifyTabCal
 from personal_assistant_dashboard.config import (
     WORK_DIR,
     BG_OUTPUT,
-    BG_WINDOW,
     BORDER_COLOR,
     COLOR_ASSISTANT,
     COLOR_BUTTON,
@@ -144,31 +143,11 @@ class ChatTab:
         )
         self._messages.tag_configure("system_msg", foreground=FG_DIM, justify=tk.LEFT)
 
-        # Status bar — left: tool/status, right: cost & context %
-        status_frame = tk.Frame(self._parent, bg=BG_WINDOW)
-        status_frame.pack(fill=tk.X, padx=PAD, pady=(0, 0))
-
+        # Status StringVars — widgets created by Dashboard so they're
+        # visible across all tabs.
         self._status_var = tk.StringVar(value="")
-        self._status_label = tk.Label(
-            status_frame,
-            textvariable=self._status_var,
-            bg=BG_WINDOW,
-            fg=FG_DIM,
-            font=FONT_NAME_BODY,
-            anchor=tk.W,
-        )
-        self._status_label.pack(side=tk.LEFT)
-
         self._usage_var = tk.StringVar(value="")
-        self._usage_label = tk.Label(
-            status_frame,
-            textvariable=self._usage_var,
-            bg=BG_WINDOW,
-            fg=FG_DIM,
-            font=FONT_NAME_BODY,
-            anchor=tk.E,
-        )
-        self._usage_label.pack(side=tk.RIGHT)
+        self._status_label: tk.Label | None = None
 
         # Send/Stop button — updated externally by _send_now / _on_done
         self._send_btn: tk.Button | None = None
@@ -237,7 +216,8 @@ class ChatTab:
         """Update status text and color — green for Ready, yellow otherwise."""
         self._status_var.set(text)
         color = COLOR_SUCCESS if text == "Ready" else COLOR_WARNING
-        self._status_label.config(fg=color)
+        if self._status_label:
+            self._status_label.config(fg=color)
 
     def _on_usage(self, model: str, cost_usd: float, used_pct: float) -> None:
         """Update the right-side usage display with model, cost, and context %."""
@@ -374,7 +354,8 @@ class ChatTab:
             return
         elapsed = self._format_duration(time.monotonic() - self._send_time)
         self._status_var.set(f"{self._status_text} ({elapsed})")
-        self._status_label.config(fg=COLOR_WARNING)
+        if self._status_label:
+            self._status_label.config(fg=COLOR_WARNING)
         self._status_timer = self._root.after(1000, self._tick_status)
 
     def _schedule(self, fn: Any, *args: Any) -> None:
