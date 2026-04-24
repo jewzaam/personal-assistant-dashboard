@@ -265,8 +265,22 @@ def test_list_local_skills_skips_missing_fields(tmp_path):
     assert list_local_skills(tmp_path) == []
 
 
-def test_list_local_skills_sorted_and_nested(tmp_path):
+def test_list_local_skills_sorted(tmp_path):
     _write_skill(tmp_path, "zeta", "---\nname: zeta\ndescription: Z thing.\n---\n")
     _write_skill(tmp_path, "alpha", "---\nname: alpha\ndescription: A thing.\n---\n")
     result = list_local_skills(tmp_path)
     assert [name for name, _ in result] == ["alpha", "zeta"]
+
+
+def test_list_local_skills_follows_symlinks(tmp_path):
+    real_dir = tmp_path / "real_skills" / "myskill"
+    real_dir.mkdir(parents=True)
+    (real_dir / "SKILL.md").write_text(
+        "---\nname: myskill\ndescription: A symlinked skill.\n---\n",
+        encoding="utf-8",
+    )
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "myskill").symlink_to(real_dir)
+    result = list_local_skills(skills_dir)
+    assert result == [("myskill", "A symlinked skill.")]
