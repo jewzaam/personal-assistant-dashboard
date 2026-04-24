@@ -2289,34 +2289,28 @@ class Dashboard:
                 if response == status_val:
                     btn.configure(state=tk.DISABLED)
 
-        # Meeting notes button
+        # Meeting notes buttons
         notes_frame = tk.Frame(panel, bg=BG_WINDOW)
         notes_frame.pack(fill=tk.X, padx=self._s(8), pady=(0, 4))
 
         event_id = cal_event.get("id", "")
         existing_notes = find_notes_file(event_id) if event_id else None
 
-        if existing_notes:
-            notes_btn_label = "Open Notes"
-            _notes_path: Path = existing_notes
+        open_notes_btn: tk.Button | None = None
 
-            def _open_notes(p: Path = _notes_path) -> None:
-                open_notes_file(p)
-
-            notes_cmd: Any = _open_notes
-        else:
-            notes_btn_label = "Generate Notes"
-
-            def _generate_prep(evt: CalendarEvent = cal_event) -> None:
+        def _generate_prep(evt: CalendarEvent = cal_event) -> None:
+            eid = evt.get("id", "")
+            filepath = find_notes_file(eid) if eid else None
+            if not filepath:
                 filepath = create_notes_file(evt)
-                open_notes_file(filepath)
-                invoke_prep_skill(filepath, self._chat_tab.send_message)
-
-            notes_cmd = _generate_prep
+            open_notes_file(filepath)
+            invoke_prep_skill(filepath, self._chat_tab.send_message)
+            if open_notes_btn:
+                open_notes_btn.configure(state=tk.NORMAL)
 
         tk.Button(
             notes_frame,
-            text=notes_btn_label,
+            text="Generate Prep",
             bg=COLOR_BUTTON,
             fg=COLOR_WHITE,
             font=self._font_body,
@@ -2324,8 +2318,28 @@ class Dashboard:
             padx=6,
             pady=1,
             cursor="hand2",
-            command=notes_cmd,
+            command=_generate_prep,
         ).pack(side=tk.LEFT, padx=1)
+
+        def _open_notes(eid: str = event_id) -> None:
+            filepath = find_notes_file(eid) if eid else None
+            if filepath:
+                open_notes_file(filepath)
+
+        open_notes_btn = tk.Button(
+            notes_frame,
+            text="Open Notes",
+            bg=COLOR_BUTTON,
+            fg=COLOR_WHITE,
+            font=self._font_body,
+            relief=tk.FLAT,
+            padx=6,
+            pady=1,
+            cursor="hand2",
+            command=_open_notes,
+            state=tk.NORMAL if existing_notes else tk.DISABLED,
+        )
+        open_notes_btn.pack(side=tk.LEFT, padx=1)
 
         # Content area
         content_frame = tk.Frame(panel, bg=BG_OUTPUT)
