@@ -147,9 +147,6 @@ class ChatClient:
             maxsize=_STATUSLINE_QUEUE_MAX
         )
         self._statusline_thread: threading.Thread | None = None
-        # Process identity is stable for the dashboard's lifetime;
-        # capture once to avoid redundant syscalls per turn.
-        self._pid = os.getpid()
         self._source_system = socket.gethostname()
         # Latest top-level AssistantMessage.usage, captured as the tool
         # loop runs. ``ResultMessage.usage`` is aggregated across every
@@ -496,6 +493,23 @@ class ChatClient:
             finally:
                 self._statusline_queue.task_done()
 
+    def _get_subprocess_pid(self) -> int:
+        """Return the SDK-spawned claude CLI subprocess PID.
+
+        AgentPulse hooks walk process ancestry to find the claude CLI
+        and report that PID; the statusline must report the same PID so
+        hook events and statusline events correlate. Reaches into SDK
+        internals (``_transport._process``) — there is no public API for
+        this in claude-agent-sdk. Falls back to the dashboard PID when
+        the SDK isn't connected or uses a custom transport without a
+        ``_process`` attribute.
+        """
+        client = self._client
+        transport = getattr(client, "_transport", None) if client else None
+        process = getattr(transport, "_process", None) if transport else None
+        pid = getattr(process, "pid", None) if process else None
+        return int(pid) if pid is not None else os.getpid()
+
     def _process_statusline_task(self, task: _StatuslineTask) -> None:
         """Record, seed-if-needed, then POST one queued task."""
         assert self._agentpulse_endpoint is not None
@@ -544,10 +558,11 @@ class ChatClient:
 
         from personal_assistant_dashboard.config import WORK_DIR
 
+        pid = self._get_subprocess_pid()
         with self._accumulator_lock:
             payload = build_payload(
                 self._accumulator,
-                pid=self._pid,
+                pid=pid,
                 cwd=str(WORK_DIR),
                 source_system=self._source_system,
             )

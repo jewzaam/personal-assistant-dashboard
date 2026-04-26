@@ -771,6 +771,122 @@ def test_multiple_back_to_back_results_all_post():
     assert costs[-1] == pytest.approx(0.10)
 
 
+# -- statusline PID -----------------------------------------------------------
+
+
+def _wire_fake_subprocess(client: ChatClient, pid: int) -> MagicMock:
+    """Attach a mock SDK client whose transport process has the given PID.
+
+    Returns the inner ``_process`` mock so tests can mutate ``.pid`` to
+    simulate a reconnect (the SDK spawns a new subprocess with a new PID
+    when ``/clear`` triggers ``_reconnect``).
+    """
+    fake_process = MagicMock()
+    fake_process.pid = pid
+    fake_transport = MagicMock()
+    fake_transport._process = fake_process
+    client._client = MagicMock()
+    client._client._transport = fake_transport
+    return fake_process
+
+
+def test_statusline_pid_comes_from_sdk_subprocess():
+    """PID in payload is the SDK subprocess PID, matching what the hook reports.
+
+    The hook walks process ancestry to find the ``claude`` CLI process
+    and reports that PID. Sending the dashboard's ``os.getpid()`` instead
+    means hook events and statusline events can't be correlated.
+    """
+    client = _make_client()
+    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    _wire_fake_subprocess(client, pid=46264)
+    captured: dict[str, object] = {}
+
+    def fake_post(host: str, port: int, payload: dict) -> bool:
+        captured["payload"] = payload
+        return True
+
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+            side_effect=_FakeSeed(ok=True, merged=False),
+        ),
+        patch(
+            "personal_assistant_dashboard.chat_client.post_statusline",
+            side_effect=fake_post,
+        ),
+    ):
+        client._handle_message(_make_result_msg())
+        _drain_statusline_queue(client)
+
+    assert captured["payload"]["pid"] == 46264
+
+
+def test_statusline_pid_falls_back_when_subprocess_unavailable():
+    """No SDK client attached → fall back to os.getpid() rather than crash.
+
+    Defensive: in normal flow the worker only runs after a ResultMessage
+    so the subprocess must exist, but a custom transport without
+    ``_process`` or a torn-down client mid-shutdown shouldn't take the
+    forwarder down.
+    """
+    import os
+
+    client = _make_client()
+    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    client._client = None
+    captured: dict[str, object] = {}
+
+    def fake_post(host: str, port: int, payload: dict) -> bool:
+        captured["payload"] = payload
+        return True
+
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+            side_effect=_FakeSeed(ok=True, merged=False),
+        ),
+        patch(
+            "personal_assistant_dashboard.chat_client.post_statusline",
+            side_effect=fake_post,
+        ),
+    ):
+        client._handle_message(_make_result_msg())
+        _drain_statusline_queue(client)
+
+    assert captured["payload"]["pid"] == os.getpid()
+
+
+def test_statusline_pid_reread_each_post():
+    """PID is re-read each post so /clear reconnect (new subprocess) is reflected."""
+    client = _make_client()
+    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    fake_process = _wire_fake_subprocess(client, pid=1111)
+    posts: list[dict] = []
+
+    def fake_post(host: str, port: int, payload: dict) -> bool:
+        posts.append(payload)
+        return True
+
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+            side_effect=_FakeSeed(ok=True, merged=False),
+        ),
+        patch(
+            "personal_assistant_dashboard.chat_client.post_statusline",
+            side_effect=fake_post,
+        ),
+    ):
+        client._handle_message(_make_result_msg())
+        _drain_statusline_queue(client)
+        fake_process.pid = 2222  # simulate reconnect: new subprocess
+        client._handle_message(_make_result_msg())
+        _drain_statusline_queue(client)
+
+    assert [p["pid"] for p in posts] == [1111, 2222]
+
+
 def test_fake_seed_matches_real_merge_signature():
     """Regression guard: _FakeSeed must match merge_agentpulse_seed's signature.
 
