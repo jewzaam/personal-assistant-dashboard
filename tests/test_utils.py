@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from personal_assistant_dashboard.utils import (
     atomic_write_json,
     atomic_write_text,
@@ -281,6 +283,9 @@ def test_list_local_skills_follows_symlinks(tmp_path):
     )
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
-    (skills_dir / "myskill").symlink_to(real_dir)
+    try:
+        (skills_dir / "myskill").symlink_to(real_dir)
+    except OSError as exc:
+        pytest.skip(f"symlink creation not permitted: {exc}")
     result = list_local_skills(skills_dir)
     assert result == [("myskill", "A symlinked skill.")]
