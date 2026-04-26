@@ -151,4 +151,4 @@ def invoke_prep_skill(
         rel_path = filepath
 
     logger.info("Invoking meeting-prep skill: %s", rel_path)
-    send_message(f"/meeting-prep {rel_path}")
+    send_message(f"/meeting-prep {rel_path.as_posix()}")
