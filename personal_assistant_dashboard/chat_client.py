@@ -114,6 +114,16 @@ class ChatClient:
         # Guards SDK client lifecycle state: _loop, _thread, _client,
         # _running, _receiving. Held briefly around start/stop and send.
         self._lock = threading.Lock()
+        # Resume target for the next SDK connect. Captured at start() so
+        # the UI can choose its initial button label (Cont vs Send)
+        # without forcing an early connect. Consumed by _connect, cleared
+        # by clear(). None means: next connect starts a fresh session.
+        self._next_resume_id: str | None = None
+        # Serializes SDK lifecycle ops on the asyncio loop. Prevents a
+        # rapid clear→send sequence from racing: the in-flight disconnect
+        # holds the lock while it tears down, and the next connect waits
+        # before spawning a new subprocess.
+        self._sdk_lock: asyncio.Lock = asyncio.Lock()
 
         # Per-process usage accumulator. Mirrors the Claude Code CLI: cost
         # and token totals accumulate across /clear and session resume.
@@ -169,20 +179,25 @@ class ChatClient:
     # -- lifecycle -----------------------------------------------------------
 
     def start(self) -> None:
-        """Start the background asyncio loop and connect the SDK client."""
+        """Spin up the background asyncio loop. SDK connect is deferred.
+
+        The expensive work (subprocess spawn + initialize handshake)
+        runs on the first ``send()`` so the user can choose between
+        resuming the prior session and starting fresh (via ``clear()``)
+        before any session state is established.
+        """
+        from personal_assistant_dashboard.config import WORK_DIR
+
         with self._lock:
             if self._running:
                 return
             self._running = True
+            self._next_resume_id = self._find_last_session(WORK_DIR)
             self._loop = asyncio.new_event_loop()
             self._thread = threading.Thread(
                 target=self._run_loop, daemon=True, name="chat-client"
             )
             self._thread.start()
-        future = asyncio.run_coroutine_threadsafe(self._connect(), self._loop)
-        from personal_assistant_dashboard.config import TIMEOUT_SDK_CONNECT_S
-
-        future.result(timeout=TIMEOUT_SDK_CONNECT_S)
 
     def _run_loop(self) -> None:
         """Entry point for the background thread."""
@@ -205,16 +220,18 @@ class ChatClient:
         latest = max(jsonl_files, key=lambda f: f.stat().st_mtime)
         return latest.stem
 
-    async def _connect(self, *, fresh: bool = False) -> None:
-        """Create and connect the SDK client.
+    async def _connect(self) -> None:
+        """Create and connect the SDK client using ``_next_resume_id``.
 
-        Args:
-            fresh: if True, start a new session instead of resuming the last one.
+        Reads ``self._next_resume_id`` for the resume target — None
+        means start a fresh session (matches a CLI invocation with no
+        ``--resume`` flag). The id is consumed on success so subsequent
+        sends within the same SDK instance don't redundantly pass it.
         """
         from personal_assistant_dashboard.config import CHAT_MODEL, WORK_DIR
 
-        resume = None if fresh else self._find_last_session(WORK_DIR)
-        logger.info("resuming session %s", resume or "(new)")
+        resume = self._next_resume_id
+        logger.info("connecting (resume=%s)", resume or "(fresh session)")
         options = ClaudeAgentOptions(
             system_prompt=SYSTEM_PROMPT,
             model=CHAT_MODEL,
@@ -226,7 +243,20 @@ class ChatClient:
         )
         self._client = ClaudeSDKClient(options=options)
         await self._client.connect()
+        self._next_resume_id = None
         logger.info("chat client connected")
+
+    async def _ensure_connected(self) -> None:
+        """Connect under the SDK lifecycle lock; subsequent callers wait.
+
+        Held across the connect so a rapid second send doesn't spawn a
+        second subprocess, and so a clear()-triggered disconnect can't
+        race a connect for the new session.
+        """
+        async with self._sdk_lock:
+            if self._client is not None:
+                return
+            await self._connect()
 
     def stop(self) -> None:
         """Disconnect and shut down the background loop."""
@@ -281,17 +311,25 @@ class ChatClient:
     # -- messaging -----------------------------------------------------------
 
     def send(self, text: str) -> None:
-        """Send a user message (thread-safe, called from TkInter thread)."""
+        """Send a user message (thread-safe, called from TkInter thread).
+
+        Triggers a lazy SDK connect if this is the first send.
+        """
         with self._lock:
             loop_ref = self._loop
-            client_ref = self._client
-        if not loop_ref or not client_ref:
+        if not loop_ref:
             self._on_error("Chat client not connected")
             return
         asyncio.run_coroutine_threadsafe(self._send(text), loop_ref)
 
     async def _send(self, text: str) -> None:
-        """Send the message and start receiving responses."""
+        """Connect if needed, then send the message and start receiving."""
+        try:
+            await self._ensure_connected()
+        except Exception:
+            logger.exception("failed to connect")
+            self._on_error("Failed to connect to Claude. See logs for details.")
+            return
         if self._client is None:
             self._on_error("Chat client not connected")
             return
@@ -367,31 +405,81 @@ class ChatClient:
             asyncio.run_coroutine_threadsafe(self._client.interrupt(), loop_ref)
 
     def clear(self) -> None:
-        """Reset conversation by reconnecting."""
+        """Reset conversation: tear down the SDK; next send is a fresh session.
+
+        Mirrors CLI ``/clear`` semantics: process-scoped cost/token
+        totals are preserved, the SDK subprocess is wiped, and the next
+        send starts a brand-new session with no resume. The resume
+        target is dropped synchronously so the UI can refresh its
+        button label immediately; SDK teardown runs on the asyncio loop
+        under ``_sdk_lock``.
+
+        The UI disables the Clear button during a streaming turn — this
+        method has no in-turn guard of its own, since ``_receiving``
+        tracks the receive loop's lifetime (set once on first send,
+        cleared on disconnect) and would block every clear after the
+        first send.
+        """
+        self._next_resume_id = None
         with self._lock:
             loop_ref = self._loop
         if not loop_ref:
             return
-        asyncio.run_coroutine_threadsafe(self._reconnect(), loop_ref)
+        asyncio.run_coroutine_threadsafe(self._clear(), loop_ref)
 
-    async def _reconnect(self) -> None:
-        """Disconnect and reconnect with a brand-new session.
+    async def _clear(self) -> None:
+        """Async portion of clear: snapshot reset + SDK teardown.
 
-        The usage accumulator is intentionally preserved across the
-        reconnect so cost/token totals keep climbing after ``/clear``,
-        matching the Claude Code CLI's statusline behaviour where
-        totals are process-scoped, not session-scoped. The per-turn
-        snapshot is reset so context % drops to 0 until the new
-        session's first turn provides fresh data.
+        Held under ``_sdk_lock`` so a subsequent ``send()`` waits for
+        teardown before starting a new connect.
         """
-        self._accumulator.reset_snapshot()
-        self._ui_context_pct = 0.0
-        try:
-            await self._disconnect()
-            await self._connect(fresh=True)
-        except Exception as exc:
-            logger.exception("reconnect failed")
-            self._on_error(f"Failed to reconnect: {exc}")
+        async with self._sdk_lock:
+            # Per-turn snapshot reset so context % drops to 0 until the
+            # new session's first turn arrives. Cumulative accumulator
+            # totals are intentionally preserved (CLI-statusline parity).
+            self._accumulator.reset_snapshot()
+            # Reset the accumulator's session id so ``get_active_session_id``
+            # reports None until the next ResultMessage arrives — otherwise
+            # the prior session's id leaks through to UI queries after clear.
+            self._accumulator.session_id = ""
+            self._ui_context_pct = 0.0
+            if self._client is not None:
+                try:
+                    await self._disconnect()
+                except Exception:
+                    logger.exception("disconnect during clear failed")
+
+    def has_resume_target(self) -> bool:
+        """True if the next ``send()`` will resume a prior session.
+
+        Used by the UI to label the primary action button: ``Cont`` when
+        this returns True, ``Send`` otherwise. Becomes False once the
+        SDK is connected (resume id consumed) or after ``clear()``.
+        """
+        return self._next_resume_id is not None and self._client is None
+
+    def is_connected(self) -> bool:
+        """True if the SDK subprocess is up and ready to receive queries."""
+        return self._client is not None
+
+    def get_active_session_id(self) -> str | None:
+        """Return the session ID for the current or next session, or None.
+
+        States:
+        - Connected, ``ResultMessage`` seen → accumulator's session_id.
+        - Connected, no ``ResultMessage`` yet → None (id pending).
+        - Not connected, resume target set → the resume id (next send
+          will resume to it, so it's the correct answer pre-send too).
+        - Not connected, no resume target (post-clear or fresh PA) →
+          None.
+
+        The accumulator's id is reset by ``_clear`` so a stale id from
+        the prior session can't leak through after clear.
+        """
+        if self._client is not None:
+            sid = self._accumulator.session_id
+            return sid or None
+        return self._next_resume_id
 
     # -- statusline forwarding ----------------------------------------------
 

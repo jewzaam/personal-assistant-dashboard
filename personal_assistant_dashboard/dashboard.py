@@ -442,7 +442,7 @@ class Dashboard:
         )
         self._quick_send_btn.pack(side=tk.TOP, fill=tk.X, pady=(0, 2))
 
-        tk.Button(
+        self._quick_clear_btn = tk.Button(
             btn_frame,
             text="Clear",
             command=self._on_quick_chat_clear,
@@ -453,10 +453,13 @@ class Dashboard:
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=self._s(8),
-        ).pack(side=tk.TOP, fill=tk.X)
+        )
+        self._quick_clear_btn.pack(side=tk.TOP, fill=tk.X)
 
-        # Wire the Send button to ChatTab for Send/Stop toggling
+        # Wire the Send/Clear buttons to ChatTab so it can manage their
+        # labels (Cont/Send/Stop) and disable Clear during streaming.
         self._chat_tab.set_send_button(self._quick_send_btn)
+        self._chat_tab.set_clear_button(self._quick_clear_btn)
         self._chat_tab._on_external_send = self._on_quick_chat_send
 
         # Ctrl+` focuses the persistent chat input
@@ -1206,10 +1209,10 @@ class Dashboard:
                 self._chat_tab._append_system("\n".join(lines))
             return True
         if lower == "session_id":
-            from personal_assistant_dashboard.chat_client import ChatClient
-
-            sid = ChatClient._find_last_session(WORK_DIR)
-            msg = sid if sid else "No active session"
+            sid: str | None = None
+            if hasattr(self, "_chat_tab") and self._chat_tab._client is not None:
+                sid = self._chat_tab._client.get_active_session_id()
+            msg = sid if sid else "none until next message is sent"
             if hasattr(self, "_chat_tab"):
                 self._chat_tab._append_system(msg)
             return True
