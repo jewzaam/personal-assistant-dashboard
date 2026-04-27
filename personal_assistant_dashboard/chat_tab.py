@@ -149,8 +149,12 @@ class ChatTab:
         self._usage_var = tk.StringVar(value="")
         self._status_label: tk.Label | None = None
 
-        # Send/Stop button — updated externally by _send_now / _on_done
+        # Primary action button — labeled Cont/Send/Stop depending on
+        # state (see _set_send_btn_label_for_idle / _streaming).
         self._send_btn: tk.Button | None = None
+        # Clear button — disabled while a response is streaming so the
+        # user can't tear down the SDK mid-receive. They must Stop first.
+        self._clear_btn: tk.Button | None = None
 
     # -- history replay -------------------------------------------------------
 
@@ -209,8 +213,58 @@ class ChatTab:
     # -- button control ------------------------------------------------------
 
     def set_send_button(self, btn: tk.Button) -> None:
-        """Attach an external Send/Stop button for this chat session."""
+        """Attach the external primary action button for this chat session.
+
+        Eagerly constructs the ChatClient so the initial label
+        accurately reflects the resume state and pre-send ``clear()``
+        works against a real client. ``ChatClient.start()`` is cheap —
+        no SDK subprocess is spawned until the first send.
+        """
         self._send_btn = btn
+        self._ensure_client()
+        self._set_send_btn_label_for_idle()
+
+    def set_clear_button(self, btn: tk.Button) -> None:
+        """Attach the external Clear button so we can lock it during sends."""
+        self._clear_btn = btn
+
+    def _has_resume_target(self) -> bool:
+        """True if the next send would resume a prior session."""
+        if self._client is None:
+            return False
+        return bool(self._client.has_resume_target())
+
+    def _set_send_btn_label_for_idle(self) -> None:
+        """Restore the primary button to its idle label (Cont or Send)."""
+        if self._send_btn is None:
+            return
+        label = "Cont" if self._has_resume_target() else "Send"
+        self._send_btn.config(
+            text=label,
+            command=self._on_send_click,
+            bg=COLOR_BUTTON,
+            activebackground=COLOR_BUTTON_ACTIVE,
+        )
+
+    def _set_send_btn_label_for_streaming(self) -> None:
+        """Switch the primary button to Stop while a response streams."""
+        if self._send_btn is None:
+            return
+        self._send_btn.config(
+            text="Stop",
+            command=self._stop,
+            bg=COLOR_STOP_BUTTON,
+            activebackground=COLOR_STOP_BUTTON_ACTIVE,
+        )
+
+    def _set_clear_btn_enabled(self, enabled: bool) -> None:
+        """Enable or disable the Clear button (no-op if not attached)."""
+        if self._clear_btn is None:
+            return
+        try:
+            self._clear_btn.config(state=tk.NORMAL if enabled else tk.DISABLED)
+        except tk.TclError:
+            pass
 
     def _set_status(self, text: str) -> None:
         """Update status text and color — green for Ready, yellow otherwise."""
@@ -299,26 +353,24 @@ class ChatTab:
     def _send_now(self, text: str) -> None:
         """Send a message immediately."""
         self._streaming = True
-        if self._send_btn:
-            self._send_btn.config(
-                text="Stop",
-                command=self._stop,
-                bg=COLOR_STOP_BUTTON,
-                activebackground=COLOR_STOP_BUTTON_ACTIVE,
-            )
+        self._set_send_btn_label_for_streaming()
+        self._set_clear_btn_enabled(False)
         self._assistant_active = False
 
         self._send_time = time.monotonic()
-        self._status_text = (
-            "Connecting" if self._client is None else "Waiting for response"
-        )
-        self._start_status_timer()
         self._ensure_client()
-        self._status_text = "Waiting for response"
-
         if self._client is None:
             self._on_error("Failed to initialize chat client")
             return
+        # SDK subprocess connects lazily on first send; reflect that in
+        # the status so the user sees something other than a silent
+        # "Waiting for response" during the 1–3s connect.
+        self._status_text = (
+            "Waiting for response"
+            if self._client.is_connected()
+            else "Connecting agent"
+        )
+        self._start_status_timer()
         ts = self._format_timestamp()
         self._client.send(f"[{ts}] {text}")
 
@@ -397,7 +449,8 @@ class ChatTab:
         """Response complete."""
         self._streaming = False
         self._assistant_active = False
-        self._reset_send_btn()
+        self._set_send_btn_label_for_idle()
+        self._set_clear_btn_enabled(True)
         self._stop_status_timer()
         if self._current_response:
             self._last_response = "".join(self._current_response)
@@ -427,16 +480,6 @@ class ChatTab:
         if self._notify_tab:
             self._notify_tab("Chat")
 
-    def _reset_send_btn(self) -> None:
-        """Restore the Send button to its default state."""
-        if self._send_btn:
-            self._send_btn.config(
-                text="Send",
-                command=self._on_send_click,
-                bg=COLOR_BUTTON,
-                activebackground=COLOR_BUTTON_ACTIVE,
-            )
-
     def _on_send_click(self) -> None:
         """Called by the external Send button — delegates to Dashboard."""
         if self._on_external_send:
@@ -447,7 +490,8 @@ class ChatTab:
         self._streaming = False
         self._assistant_active = False
         self._current_response.clear()
-        self._reset_send_btn()
+        self._set_send_btn_label_for_idle()
+        self._set_clear_btn_enabled(True)
         self._stop_status_timer()
         elapsed = time.monotonic() - self._send_time
         duration = self._format_duration(elapsed)
@@ -570,7 +614,13 @@ class ChatTab:
     # -- clear / refresh -----------------------------------------------------
 
     def _clear(self) -> None:
-        """Clear conversation history and display."""
+        """Clear conversation history and display.
+
+        No-op while streaming — the Clear button is disabled in that
+        state, this guard handles the rare case of a programmatic call.
+        """
+        if self._streaming:
+            return
         self._pending_messages.clear()
         # Create a new empty chat log so restart after clear shows help.
         CHAT_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -585,6 +635,9 @@ class ChatTab:
             pass
         if self._client:
             self._client.clear()
+        # Resume target was dropped (or never existed) — refresh the
+        # primary button label so it shows Send instead of Cont.
+        self._set_send_btn_label_for_idle()
 
     def refresh(self) -> None:
         """Called when the tab is activated."""

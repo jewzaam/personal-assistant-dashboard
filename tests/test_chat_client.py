@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -778,8 +779,8 @@ def _wire_fake_subprocess(client: ChatClient, pid: int) -> MagicMock:
     """Attach a mock SDK client whose transport process has the given PID.
 
     Returns the inner ``_process`` mock so tests can mutate ``.pid`` to
-    simulate a reconnect (the SDK spawns a new subprocess with a new PID
-    when ``/clear`` triggers ``_reconnect``).
+    simulate a reconnect (after ``clear()`` tears down the SDK, the next
+    send spawns a new subprocess with a new PID).
     """
     fake_process = MagicMock()
     fake_process.pid = pid
@@ -1014,3 +1015,257 @@ def test_usage_callback_preserves_pct_when_no_snapshot():
     client._handle_message(_make_result_msg(total_cost_usd=0.03))
     _model2, _cost2, pct2 = client._on_usage.call_args.args
     assert pct2 == pytest.approx(20.0)  # unchanged
+
+
+# -- lazy SDK connect / new clear semantics ----------------------------------
+
+
+def test_has_resume_target_true_when_id_set_and_disconnected():
+    """Pre-connect with a prior session id → UI shows Cont."""
+    client = _make_client()
+    client._next_resume_id = "session-abc"
+    assert client.has_resume_target() is True
+
+
+def test_has_resume_target_false_when_no_id():
+    """Fresh PA, no prior session → UI shows Send."""
+    client = _make_client()
+    client._next_resume_id = None
+    assert client.has_resume_target() is False
+
+
+def test_has_resume_target_false_after_connect():
+    """Once connected, resume target is consumed → UI shows Send."""
+    client = _make_client()
+    client._next_resume_id = "session-abc"
+    client._client = MagicMock()
+    assert client.has_resume_target() is False
+
+
+def test_start_does_not_connect_sdk():
+    """start() spins up the loop but does NOT spawn the SDK subprocess."""
+    client = _make_client()
+    with (
+        patch.object(ChatClient, "_find_last_session", return_value=None),
+        patch(
+            "personal_assistant_dashboard.chat_client.ClaudeSDKClient"
+        ) as mock_sdk_cls,
+    ):
+        try:
+            client.start()
+            time.sleep(0.05)
+            assert client._client is None
+            assert mock_sdk_cls.call_count == 0
+        finally:
+            client.stop()
+
+
+def test_start_captures_resume_id_for_button_label():
+    """start() reads the last session id so the UI knows to show Cont."""
+    client = _make_client()
+    with (
+        patch.object(ChatClient, "_find_last_session", return_value="session-xyz"),
+        patch("personal_assistant_dashboard.chat_client.ClaudeSDKClient"),
+    ):
+        try:
+            client.start()
+            time.sleep(0.05)
+            assert client._next_resume_id == "session-xyz"
+        finally:
+            client.stop()
+
+
+def _make_sdk_mock() -> AsyncMock:
+    """AsyncMock for ClaudeSDKClient with empty receive_messages."""
+    sdk = AsyncMock()
+
+    async def _empty_messages():  # pragma: no cover - awaited but yields nothing
+        return
+        yield  # noqa
+
+    sdk.receive_messages = MagicMock(side_effect=_empty_messages)
+    return sdk
+
+
+def test_connect_uses_next_resume_id_and_clears_it():
+    """_connect reads _next_resume_id and consumes it after success."""
+    client = _make_client()
+    client._next_resume_id = "session-abc"
+    sdk = _make_sdk_mock()
+
+    with patch(
+        "personal_assistant_dashboard.chat_client.ClaudeSDKClient",
+        return_value=sdk,
+    ) as mock_cls:
+        asyncio.run(client._connect())
+
+    options = mock_cls.call_args.kwargs["options"]
+    assert options.resume == "session-abc"
+    assert client._next_resume_id is None
+    assert client._client is sdk
+
+
+def test_connect_with_none_resume_starts_fresh_session():
+    """_connect with no resume id passes resume=None (fresh CLI session)."""
+    client = _make_client()
+    client._next_resume_id = None
+    sdk = _make_sdk_mock()
+
+    with patch(
+        "personal_assistant_dashboard.chat_client.ClaudeSDKClient",
+        return_value=sdk,
+    ) as mock_cls:
+        asyncio.run(client._connect())
+
+    options = mock_cls.call_args.kwargs["options"]
+    assert options.resume is None
+
+
+def test_clear_drops_resume_id_synchronously():
+    """Sync clear() drops the resume target immediately for UI updates.
+
+    The async portion (SDK teardown) runs on the loop, but
+    ``_next_resume_id`` is dropped first so ``has_resume_target()``
+    returns the right value when the chat tab refreshes its button
+    label right after calling ``clear()``.
+    """
+    client = _make_client()
+    client._next_resume_id = "session-abc"
+    assert client._client is None
+
+    client.clear()
+
+    assert client._next_resume_id is None
+    assert client._client is None
+
+
+def test_clear_async_disconnects_when_connected():
+    """_clear (async) tears down the SDK; clear() is responsible for the sync drop."""
+    client = _make_client()
+    sdk = _make_sdk_mock()
+    client._client = sdk
+    client._next_resume_id = None  # already dropped by sync clear()
+
+    asyncio.run(client._clear())
+
+    sdk.disconnect.assert_awaited_once()
+    assert client._client is None
+
+
+def test_clear_works_when_receiving_flag_set():
+    """Regression: ``_receiving`` tracks the receive loop's lifetime, not
+    turn-in-progress. It's set on the first send and only cleared when
+    the SDK disconnects, so gating ``clear()`` on it would block every
+    clear after the first send. The UI disables the Clear button
+    during an actual turn — that's the real lock.
+    """
+    client = _make_client()
+    sdk = _make_sdk_mock()
+    client._client = sdk
+    client._next_resume_id = None  # consumed by the initial connect
+    client._receiving = True  # receive loop alive post-first-send
+
+    client.clear()  # sync drop
+    asyncio.run(client._clear())  # async tear-down
+
+    sdk.disconnect.assert_awaited_once()
+    assert client._client is None
+
+
+def test_send_after_clear_starts_fresh_session():
+    """End-to-end: clear() then send → SDK constructed with resume=None."""
+    client = _make_client()
+    client._next_resume_id = "session-abc"
+
+    client.clear()  # sync drops resume id (no loop attached, async portion skipped)
+    assert client._next_resume_id is None
+
+    sdk = _make_sdk_mock()
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.ClaudeSDKClient",
+            return_value=sdk,
+        ) as mock_cls,
+        patch.object(client, "_receive_loop", AsyncMock()),
+    ):
+        asyncio.run(client._send("hello"))
+
+    options = mock_cls.call_args.kwargs["options"]
+    assert options.resume is None
+    sdk.query.assert_awaited_once_with("hello")
+
+
+def test_get_active_session_id_when_connected():
+    """Active session id returned when SDK is up and a ResultMessage seen."""
+    client = _make_client()
+    client._client = MagicMock()
+    client._accumulator.session_id = "session-abc"
+    assert client.get_active_session_id() == "session-abc"
+
+
+def test_get_active_session_id_returns_resume_target_pre_connect():
+    """Pre-first-send with a resume target → return the resume id.
+
+    On dashboard restart, the user has a session waiting to resume —
+    the next send will pick it up. ``session_id`` should report it now,
+    not after the user has sent something.
+    """
+    client = _make_client()
+    client._client = None
+    client._next_resume_id = "session-xyz"
+    # Accumulator has no session_id yet — only set after a ResultMessage
+    client._accumulator.session_id = ""
+    assert client.get_active_session_id() == "session-xyz"
+
+
+def test_get_active_session_id_none_after_clear():
+    """Post-clear with no resume target and no SDK → None."""
+    client = _make_client()
+    client._client = None
+    client._next_resume_id = None
+    client._accumulator.session_id = "stale-session-abc"  # leftover
+    assert client.get_active_session_id() is None
+
+
+def test_get_active_session_id_none_before_first_result():
+    """SDK connected but no ResultMessage yet → still None (id unknown)."""
+    client = _make_client()
+    client._client = MagicMock()
+    client._accumulator.session_id = ""
+    assert client.get_active_session_id() is None
+
+
+def test_clear_resets_session_id():
+    """Regression: after clear, get_active_session_id must not leak the
+    prior session's id. Otherwise the dashboard's ``session_id`` command
+    reports the old session even though the SDK has been wiped.
+    """
+    client = _make_client()
+    sdk = _make_sdk_mock()
+    client._client = sdk
+    client._accumulator.session_id = "old-session-abc"
+
+    asyncio.run(client._clear())
+
+    assert client._accumulator.session_id == ""
+    assert client.get_active_session_id() is None
+
+
+def test_send_lazy_connects_with_pending_resume():
+    """End-to-end: pending resume id → SDK constructed with that id."""
+    client = _make_client()
+    client._next_resume_id = "session-abc"
+
+    sdk = _make_sdk_mock()
+    with (
+        patch(
+            "personal_assistant_dashboard.chat_client.ClaudeSDKClient",
+            return_value=sdk,
+        ) as mock_cls,
+        patch.object(client, "_receive_loop", AsyncMock()),
+    ):
+        asyncio.run(client._send("hello"))
+
+    options = mock_cls.call_args.kwargs["options"]
+    assert options.resume == "session-abc"
+    sdk.query.assert_awaited_once_with("hello")
