@@ -125,15 +125,15 @@ class ChatClient:
         # before spawning a new subprocess.
         self._sdk_lock: asyncio.Lock = asyncio.Lock()
 
-        # Per-process usage accumulator. Mirrors the Claude Code CLI: cost
-        # and token totals accumulate across /clear and session resume.
-        # On first successful contact with AgentPulse the accumulator is
-        # seeded with any pre-existing stored totals for the current
-        # session_id so restart-with-resume resumes the full lifetime
-        # cost. ``_accumulator_seeded`` gates posting: while it's False
-        # we keep accumulating locally but never POST, so a down or
-        # recovering AgentPulse can't be overwritten with our incomplete
-        # in-memory view.
+        # Per-session usage accumulator. Reset on clear() because the
+        # dashboard kills the SDK subprocess (new PID = new process from
+        # AgentPulse's perspective). On first successful contact with
+        # AgentPulse the accumulator is seeded with any pre-existing
+        # stored totals for the current session_id so restart-with-resume
+        # resumes the full lifetime cost. ``_accumulator_seeded`` gates
+        # posting: while it's False we keep accumulating locally but
+        # never POST, so a down or recovering AgentPulse can't be
+        # overwritten with our incomplete in-memory view.
         self._accumulator = SessionAccumulator()
         # Guards the accumulator and its seeded flag. Separate from
         # _lock because the statusline worker thread holds this during
@@ -407,18 +407,11 @@ class ChatClient:
     def clear(self) -> None:
         """Reset conversation: tear down the SDK; next send is a fresh session.
 
-        Mirrors CLI ``/clear`` semantics: process-scoped cost/token
-        totals are preserved, the SDK subprocess is wiped, and the next
-        send starts a brand-new session with no resume. The resume
-        target is dropped synchronously so the UI can refresh its
-        button label immediately; SDK teardown runs on the asyncio loop
-        under ``_sdk_lock``.
-
-        The UI disables the Clear button during a streaming turn — this
-        method has no in-turn guard of its own, since ``_receiving``
-        tracks the receive loop's lifetime (set once on first send,
-        cleared on disconnect) and would block every clear after the
-        first send.
+        Unlike the CLI's ``/clear`` (which keeps the subprocess alive
+        and preserves process-scoped totals), the dashboard's clear
+        kills the SDK subprocess — the next send spawns a new one with
+        a new PID. All cost/token totals are reset so the new session
+        starts clean from AgentPulse's perspective.
         """
         self._next_resume_id = None
         with self._lock:
@@ -428,21 +421,23 @@ class ChatClient:
         asyncio.run_coroutine_threadsafe(self._clear(), loop_ref)
 
     async def _clear(self) -> None:
-        """Async portion of clear: snapshot reset + SDK teardown.
+        """Async portion of clear: full accumulator reset + SDK teardown.
 
-        Held under ``_sdk_lock`` so a subsequent ``send()`` waits for
-        teardown before starting a new connect.
+        The dashboard's clear kills the SDK subprocess and the next send
+        spawns a new one (new PID). From AgentPulse's perspective this is
+        a new process, so we reset everything — no cost carries over.
         """
         async with self._sdk_lock:
-            # Per-turn snapshot reset so context % drops to 0 until the
-            # new session's first turn arrives. Cumulative accumulator
-            # totals are intentionally preserved (CLI-statusline parity).
-            self._accumulator.reset_snapshot()
-            # Reset the accumulator's session id so ``get_active_session_id``
-            # reports None until the next ResultMessage arrives — otherwise
-            # the prior session's id leaks through to UI queries after clear.
-            self._accumulator.session_id = ""
+            with self._accumulator_lock:
+                from personal_assistant_dashboard.config import CHAT_MODEL
+
+                self._accumulator.reset()
+                self._accumulator.last_model_name = CHAT_MODEL
+                self._accumulator_seeded = False
+            self._ui_total_cost = 0.0
             self._ui_context_pct = 0.0
+            if self._on_usage:
+                self._on_usage(self._ui_model_name, 0.0, 0.0)
             if self._client is not None:
                 try:
                     await self._disconnect()

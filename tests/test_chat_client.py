@@ -1251,6 +1251,42 @@ def test_clear_resets_session_id():
     assert client.get_active_session_id() is None
 
 
+def test_clear_resets_accumulator_totals():
+    """Clear kills the subprocess (new PID), so cumulative totals must
+    reset — otherwise the new session inherits the old session's cost.
+    """
+    client = _make_client()
+    sdk = _make_sdk_mock()
+    client._client = sdk
+    client._accumulator.session_id = "old-session"
+    client._accumulator.total_cost_usd = 42.0
+    client._accumulator.total_input_tokens = 10000
+    client._accumulator.total_output_tokens = 5000
+    client._accumulator_seeded = True
+
+    asyncio.run(client._clear())
+
+    assert client._accumulator.total_cost_usd == 0.0
+    assert client._accumulator.total_input_tokens == 0
+    assert client._accumulator.total_output_tokens == 0
+    assert client._accumulator_seeded is False
+
+
+def test_clear_resets_ui_cost():
+    """UI-side cost resets on clear and fires the callback with zeros."""
+    client = _make_client()
+    sdk = _make_sdk_mock()
+    client._client = sdk
+    client._ui_total_cost = 42.0
+    client._ui_context_pct = 55.0
+
+    asyncio.run(client._clear())
+
+    assert client._ui_total_cost == 0.0
+    assert client._ui_context_pct == 0.0
+    client._on_usage.assert_called_once_with(client._ui_model_name, 0.0, 0.0)
+
+
 def test_send_lazy_connects_with_pending_resume():
     """End-to-end: pending resume id → SDK constructed with that id."""
     client = _make_client()
