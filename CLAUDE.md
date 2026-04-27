@@ -47,7 +47,7 @@ Coverage target: 80% on non-UI code. UI modules (`dashboard.py`, `*_tab.py`, `co
 - **`gws_auth.py`** — GWS CLI OAuth scope checking
 - **`startup.py`** — XDG autostart `.desktop` file management
 - **`agentpulse_config.py`** — shared loader for `~/.claude/agentpulse/config.json`, used by both AgentPulse consumers.
-- **`agentpulse_statusline.py`** — forwards Chat tab SDK session usage (cost, tokens, context %) to AgentPulse's `/statusline/claude` endpoint. Cumulative per-process accumulator mirrors the CLI's statusline semantics; merge-seed-on-first-contact preserves lifetime totals across dashboard restarts.
+- **`agentpulse_statusline.py`** — forwards Chat tab SDK session usage (cost, tokens, context %) to AgentPulse's `/statusline/claude` endpoint. Per-session accumulator resets on clear (dashboard clear kills the subprocess — new PID = new process); merge-seed-on-first-contact preserves totals across dashboard restarts within the same session.
 
 ## Configuration
 

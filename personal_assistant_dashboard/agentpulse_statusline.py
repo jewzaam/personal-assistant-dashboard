@@ -87,15 +87,13 @@ def extract_model_name(model_usage: dict[str, Any] | None) -> str:
 
 
 class SessionAccumulator:
-    """Accumulate per-query usage into process-cumulative totals.
+    """Accumulate per-query usage into session-scoped totals.
 
-    Counters grow monotonically while the accumulator lives. The Claude
-    Code CLI's statusline is process-scoped — cost and tokens keep
-    climbing across ``/clear`` and session resume, only resetting when
-    the CLI process exits. This class mirrors that: callers should keep
-    one instance for the lifetime of the chat process and let
-    ``session_id`` update via ``record_result`` when the SDK rotates
-    sessions. Construct a new instance only to simulate a full restart.
+    Counters grow monotonically within a session. Unlike the CLI (where
+    ``/clear`` preserves process-scoped totals because the subprocess
+    stays alive), the dashboard's clear tears down the SDK subprocess
+    and spawns a new one — a new PID, a new process from AgentPulse's
+    perspective. Call ``reset()`` on clear so each session starts fresh.
     """
 
     def __init__(self) -> None:
@@ -142,6 +140,16 @@ class SessionAccumulator:
             self.total_output_tokens += int(usage.get("output_tokens") or 0)
         if model_name:
             self.last_model_name = model_name
+
+    def reset(self) -> None:
+        """Zero all counters — call on clear (new subprocess = new process)."""
+        self.session_id = ""
+        self.total_cost_usd = 0.0
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_duration_ms = 0
+        self.total_api_duration_ms = 0
+        self.reset_snapshot()
 
     def reset_snapshot(self) -> None:
         """Zero the per-turn snapshot so context % reads 0 until the next turn."""

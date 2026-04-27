@@ -206,6 +206,40 @@ def test_accumulator_tolerates_null_fields():
     assert acc.total_input_tokens == 0
 
 
+def test_accumulator_reset_zeroes_everything():
+    """reset() returns the accumulator to its initial state."""
+    acc = SessionAccumulator()
+    acc.record_result(
+        session_id="s1",
+        total_cost_usd=0.10,
+        usage={"input_tokens": 100, "output_tokens": 50},
+        duration_ms=500,
+        duration_api_ms=400,
+        model_name="claude-sonnet-4-6",
+    )
+    acc.record_turn_snapshot(
+        {
+            "input_tokens": 100,
+            "cache_read_input_tokens": 200,
+            "cache_creation_input_tokens": 300,
+        }
+    )
+
+    acc.reset()
+
+    assert acc.session_id == ""
+    assert acc.total_cost_usd == 0.0
+    assert acc.total_input_tokens == 0
+    assert acc.total_output_tokens == 0
+    assert acc.total_duration_ms == 0
+    assert acc.total_api_duration_ms == 0
+    assert acc.last_input_tokens == 0
+    assert acc.last_cache_read_tokens == 0
+    assert acc.last_cache_creation_tokens == 0
+    # last_model_name is intentionally NOT reset — caller restores it
+    assert acc.last_model_name == "claude-sonnet-4-6"
+
+
 def test_accumulator_follows_session_id_rotations():
     """Totals persist and session_id updates when the SDK rotates sessions.
 
