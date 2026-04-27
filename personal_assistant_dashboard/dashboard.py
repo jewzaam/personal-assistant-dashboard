@@ -640,7 +640,7 @@ class Dashboard:
         if not sessions:
             self._topbar_usage_text = ""
         else:
-            total_cost = sum(s.get("total_cost_usd", 0.0) for s in sessions)
+            total_cost = sum(s.get("today_cost_usd", 0.0) for s in sessions)
             parts = [_format_cost(total_cost)]
             if self._agentpulse_client.fetch_limits_enabled:
                 limits = self._agentpulse_client.get_limits()

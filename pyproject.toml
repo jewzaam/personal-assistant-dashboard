@@ -59,7 +59,6 @@ markers = [
 
 [tool.coverage.run]
 omit = [
-    "personal_assistant_dashboard/agentpulse_client.py",
     "personal_assistant_dashboard/dashboard.py",
     "personal_assistant_dashboard/config.py",
     "personal_assistant_dashboard/chat_client.py",

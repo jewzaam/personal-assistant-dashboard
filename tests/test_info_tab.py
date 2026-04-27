@@ -3,198 +3,11 @@
 
 from __future__ import annotations
 
-import time
-from datetime import datetime
-
 from personal_assistant_dashboard.info_tab import (
     InfoTab,
-    _process_key,
+    _session_key,
     short_model_name,
 )
-
-
-class TestActiveToday:
-    """Test InfoTab._active_today static method."""
-
-    def _today_start_ms(self) -> int:
-        return int(
-            datetime.now()
-            .replace(hour=0, minute=0, second=0, microsecond=0)
-            .timestamp()
-            * 1000
-        )
-
-    def test_active_sessions_always_included(self) -> None:
-        yesterday_ms = self._today_start_ms() - 86_400_000
-        sessions = [{"session_id": "s1", "is_active": True, "started_at": yesterday_ms}]
-        result = InfoTab._active_today(sessions)
-        assert len(result) == 1
-
-    def test_closed_started_today_included(self) -> None:
-        now_ms = int(time.time() * 1000)
-        sessions = [
-            {
-                "session_id": "s1",
-                "is_active": False,
-                "started_at": now_ms,
-                "ended_at": 0,
-            }
-        ]
-        result = InfoTab._active_today(sessions)
-        assert len(result) == 1
-
-    def test_closed_started_yesterday_excluded(self) -> None:
-        yesterday_ms = self._today_start_ms() - 86_400_000
-        sessions = [
-            {
-                "session_id": "s1",
-                "is_active": False,
-                "started_at": yesterday_ms,
-                "ended_at": 0,
-            }
-        ]
-        result = InfoTab._active_today(sessions)
-        assert len(result) == 0
-
-    def test_closed_started_yesterday_ended_today_included(self) -> None:
-        yesterday_ms = self._today_start_ms() - 86_400_000
-        now_ms = int(time.time() * 1000)
-        sessions = [
-            {
-                "session_id": "s1",
-                "is_active": False,
-                "started_at": yesterday_ms,
-                "ended_at": now_ms,
-            }
-        ]
-        result = InfoTab._active_today(sessions)
-        assert len(result) == 1
-
-    def test_closed_started_and_ended_yesterday_excluded(self) -> None:
-        yesterday_ms = self._today_start_ms() - 86_400_000
-        sessions = [
-            {
-                "session_id": "s1",
-                "is_active": False,
-                "started_at": yesterday_ms - 3600_000,
-                "ended_at": yesterday_ms,
-            }
-        ]
-        result = InfoTab._active_today(sessions)
-        assert len(result) == 0
-
-
-class TestCollapseByProcess:
-    """Test InfoTab._collapse_by_process static method."""
-
-    def test_groups_sessions_by_pid_and_source_system(self) -> None:
-        """Two sessions with the same (source_system, pid) collapse into one."""
-        sessions = [
-            {
-                "session_id": "older",
-                "pid": 1234,
-                "source_system": "host-a",
-                "started_at": 1000,
-                "last_event_at": 5.0,
-                "total_cost_usd": 1.00,
-                "total_input_tokens": 100,
-                "total_output_tokens": 200,
-                "cwd": "/tmp",
-            },
-            {
-                "session_id": "newer",
-                "pid": 1234,
-                "source_system": "host-a",
-                "started_at": 2000,
-                "last_event_at": 10.0,
-                "total_cost_usd": 2.50,
-                "total_input_tokens": 500,
-                "total_output_tokens": 800,
-                "cwd": "/tmp",
-            },
-        ]
-        result = InfoTab._collapse_by_process(sessions)
-        assert len(result) == 1
-        collapsed = result[0]
-        # Keeps newest session's cumulative counters (avoids double-counting)
-        assert collapsed["session_id"] == "newer"
-        assert collapsed["total_cost_usd"] == 2.50
-        assert collapsed["total_input_tokens"] == 500
-        assert collapsed["total_output_tokens"] == 800
-        # Adopts earliest started_at so the row represents process uptime
-        assert collapsed["started_at"] == 1000
-
-    def test_different_pids_stay_separate(self) -> None:
-        sessions = [
-            {
-                "session_id": "a",
-                "pid": 1,
-                "source_system": "h",
-                "started_at": 1,
-                "last_event_at": 1.0,
-            },
-            {
-                "session_id": "b",
-                "pid": 2,
-                "source_system": "h",
-                "started_at": 2,
-                "last_event_at": 2.0,
-            },
-        ]
-        result = InfoTab._collapse_by_process(sessions)
-        assert len(result) == 2
-
-    def test_same_pid_different_source_system_stays_separate(self) -> None:
-        """PID reuse across hosts must not collapse into a single row."""
-        sessions = [
-            {
-                "session_id": "a",
-                "pid": 1234,
-                "source_system": "host-a",
-                "started_at": 1,
-                "last_event_at": 1.0,
-            },
-            {
-                "session_id": "b",
-                "pid": 1234,
-                "source_system": "host-b",
-                "started_at": 2,
-                "last_event_at": 2.0,
-            },
-        ]
-        result = InfoTab._collapse_by_process(sessions)
-        assert len(result) == 2
-
-    def test_missing_pid_sessions_kept_individually(self) -> None:
-        """Sessions without a pid can't be grouped; each stays on its own row."""
-        sessions = [
-            {"session_id": "a", "pid": 0, "source_system": "h", "started_at": 1},
-            {"session_id": "b", "pid": 0, "source_system": "h", "started_at": 2},
-        ]
-        result = InfoTab._collapse_by_process(sessions)
-        assert len(result) == 2
-
-    def test_fallback_to_started_at_when_last_event_at_missing(self) -> None:
-        sessions = [
-            {
-                "session_id": "older",
-                "pid": 9,
-                "source_system": "h",
-                "started_at": 100,
-                "total_cost_usd": 1.0,
-            },
-            {
-                "session_id": "newer",
-                "pid": 9,
-                "source_system": "h",
-                "started_at": 200,
-                "total_cost_usd": 2.0,
-            },
-        ]
-        result = InfoTab._collapse_by_process(sessions)
-        assert len(result) == 1
-        assert result[0]["session_id"] == "newer"
-        assert result[0]["total_cost_usd"] == 2.0
 
 
 class TestDropEmptyInactive:
@@ -205,7 +18,7 @@ class TestDropEmptyInactive:
             {
                 "session_id": "empty",
                 "is_active": False,
-                "total_cost_usd": 0.0,
+                "today_cost_usd": 0.0,
                 "total_input_tokens": 0,
                 "total_output_tokens": 0,
                 "lines_added": 0,
@@ -220,7 +33,7 @@ class TestDropEmptyInactive:
             {
                 "session_id": "warming",
                 "is_active": True,
-                "total_cost_usd": 0.0,
+                "today_cost_usd": 0.0,
                 "total_input_tokens": 0,
                 "total_output_tokens": 0,
                 "lines_added": 0,
@@ -231,7 +44,7 @@ class TestDropEmptyInactive:
 
     def test_keeps_inactive_with_cost(self) -> None:
         sessions = [
-            {"session_id": "s", "is_active": False, "total_cost_usd": 0.01},
+            {"session_id": "s", "is_active": False, "today_cost_usd": 0.01},
         ]
         assert len(InfoTab._drop_empty_inactive(sessions)) == 1
 
@@ -261,7 +74,7 @@ class TestDropEmptyInactive:
                 "session_id": "ctx-only",
                 "is_active": False,
                 "context_used_pct": 42,
-                "total_cost_usd": 0.0,
+                "today_cost_usd": 0.0,
                 "total_input_tokens": 0,
                 "total_output_tokens": 0,
                 "lines_added": 0,
@@ -276,18 +89,18 @@ class TestOrderSessions:
 
     def test_active_always_above_inactive(self) -> None:
         sessions = [
-            {"session_id": "inactive-cheap", "is_active": False, "total_cost_usd": 0.1},
+            {"session_id": "inactive-cheap", "is_active": False, "today_cost_usd": 0.1},
             {
                 "session_id": "active-expensive",
                 "is_active": True,
-                "total_cost_usd": 5.0,
+                "today_cost_usd": 5.0,
             },
             {
                 "session_id": "inactive-expensive",
                 "is_active": False,
-                "total_cost_usd": 9.0,
+                "today_cost_usd": 9.0,
             },
-            {"session_id": "active-cheap", "is_active": True, "total_cost_usd": 0.5},
+            {"session_id": "active-cheap", "is_active": True, "today_cost_usd": 0.5},
         ]
         # Sort by cost descending — active group sits on top even though the
         # single most expensive row is inactive.
@@ -302,10 +115,10 @@ class TestOrderSessions:
 
     def test_secondary_sort_applies_within_each_group(self) -> None:
         sessions = [
-            {"session_id": "a-low", "is_active": True, "total_cost_usd": 1.0},
-            {"session_id": "a-high", "is_active": True, "total_cost_usd": 3.0},
-            {"session_id": "i-low", "is_active": False, "total_cost_usd": 0.5},
-            {"session_id": "i-high", "is_active": False, "total_cost_usd": 10.0},
+            {"session_id": "a-low", "is_active": True, "today_cost_usd": 1.0},
+            {"session_id": "a-high", "is_active": True, "today_cost_usd": 3.0},
+            {"session_id": "i-low", "is_active": False, "today_cost_usd": 0.5},
+            {"session_id": "i-high", "is_active": False, "today_cost_usd": 10.0},
         ]
         result = InfoTab._order_sessions(sessions, "cost", reverse=False)
         ids = [s["session_id"] for s in result]
@@ -324,17 +137,21 @@ class TestOrderSessions:
         assert ids == ["a1", "a2", "i1", "i2"]
 
 
-class TestProcessKey:
-    """Test _process_key helper used by the PK column."""
+class TestSessionKey:
+    """Test _session_key helper used by the Session column."""
 
-    def test_formats_pid_plus_host(self) -> None:
-        assert _process_key({"pid": 4242, "source_system": "dev-box"}) == "4242+dev-box"
+    def test_first_segment_with_double_dot(self) -> None:
+        assert (
+            _session_key({"session_id": "32beeba5-c9b0-4981-9b8f-acb1b572ae1e"})
+            == "32beeba5.."
+        )
 
-    def test_pid_only_when_host_missing(self) -> None:
-        assert _process_key({"pid": 4242, "source_system": ""}) == "4242"
+    def test_short_session_id_uses_full_value(self) -> None:
+        assert _session_key({"session_id": "abc"}) == "abc.."
 
-    def test_em_dash_when_pid_missing(self) -> None:
-        assert _process_key({"pid": 0, "source_system": "h"}) == "—"
+    def test_em_dash_when_session_id_missing(self) -> None:
+        assert _session_key({}) == "—"
+        assert _session_key({"session_id": ""}) == "—"
 
 
 class TestShortModelName:
