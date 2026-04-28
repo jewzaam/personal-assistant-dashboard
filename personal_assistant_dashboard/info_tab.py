@@ -392,9 +392,11 @@ class InfoTab:
         parts = [
             _format_cost(total_cost),
             f"{_format_tokens(total_tokens)} tokens",
-            five_h,
-            seven_d,
         ]
+        if five_h != "—":
+            parts.append(five_h)
+        if seven_d != "—":
+            parts.append(seven_d)
         self._summary_label.configure(text="  \u2022  ".join(parts))
 
         # Color based on worst rate limit utilization
