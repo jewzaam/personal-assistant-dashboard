@@ -36,19 +36,29 @@ logger = logging.getLogger(__name__)
 # Treeview column definitions: (id, heading, width, anchor)
 _COLUMNS = [
     ("session", "Session", 60, tk.W),
-    ("project", "Project", 160, tk.W),
-    ("model", "Model", 80, tk.W),
+    ("state", "State", 60, tk.W),
+    ("project", "Project", 220, tk.W),
     ("cost", "Cost", 60, tk.E),
     ("ctx_pct", "Ctx %", 50, tk.E),
     ("tokens", "Tokens", 70, tk.E),
 ]
 
+# Display labels for derived_state values
+_STATE_LABELS: dict[str | None, str] = {
+    "working": "Working",
+    "ready": "Ready",
+    "idle": "Idle",
+    "awaiting_input": "Waiting",
+    "permission_required": "Permission",
+    None: "—",
+}
+
 # Sort key extractors: column id → function(dict) → sortable value
 _SortKey = Callable[[dict[str, Any]], Any]
 _SORT_KEYS: dict[str, _SortKey] = {
     "session": lambda s: s.get("session_id", "").lower(),
+    "state": lambda s: _STATE_LABELS.get(s.get("derived_state"), "—").lower(),
     "project": lambda s: _project_name(s.get("cwd", "")).lower(),
-    "model": lambda s: s.get("model_display_name", "").lower(),
     "cost": lambda s: s.get("today_cost_usd", 0.0),
     "ctx_pct": lambda s: s.get("context_used_pct", 0),
     "tokens": lambda s: (
@@ -437,8 +447,8 @@ class InfoTab:
             tk.END,
             values=(
                 "",
-                "TOTAL",
                 "",
+                "TOTAL",
                 _format_cost(total_cost),
                 "",
                 _format_tokens(total_tokens),
@@ -453,18 +463,19 @@ class InfoTab:
             tag = "closed" if not active else _pct_tag(ctx_pct)
             ctx_str = f"{ctx_pct}%" if ctx_pct else "\u2014"
             cost = s.get("today_cost_usd", 0.0)
-            model = short_model_name(s.get("model_display_name", ""))
             session_tokens = s.get("total_input_tokens", 0) + s.get(
                 "total_output_tokens", 0
             )
+
+            state_label = _STATE_LABELS.get(s.get("derived_state"), "—")
 
             self._tree.insert(
                 "",
                 tk.END,
                 values=(
                     _session_key(s),
+                    state_label,
                     _project_name(s.get("cwd", "")),
-                    model,
                     _format_cost(cost),
                     ctx_str,
                     _format_tokens(session_tokens, compact=True),

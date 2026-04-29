@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 
 from personal_assistant_dashboard.agentpulse_client import (
     AgentPulseClient,
-    _derived_state_from_event,
     _session_response_to_row,
     _today_local_date,
 )
@@ -55,47 +54,6 @@ class TestTodayLocalDate:
             _FakeDateTime,
         ):
             assert _today_local_date() == "2026-04-26"
-
-
-class TestDerivedStateFromEvent:
-    def test_pre_tool_use_ask_user_question(self) -> None:
-        assert (
-            _derived_state_from_event("PreToolUse", "AskUserQuestion")
-            == "awaiting_input"
-        )
-
-    def test_pre_tool_use_other(self) -> None:
-        assert _derived_state_from_event("PreToolUse", "Bash") == "working"
-
-    def test_permission_request_ask_user_question(self) -> None:
-        assert (
-            _derived_state_from_event("PermissionRequest", "AskUserQuestion")
-            == "awaiting_input"
-        )
-
-    def test_permission_request_other(self) -> None:
-        assert (
-            _derived_state_from_event("PermissionRequest", "Bash")
-            == "permission_required"
-        )
-
-    def test_user_prompt_submit(self) -> None:
-        assert _derived_state_from_event("UserPromptSubmit", None) == "working"
-
-    def test_post_tool_use(self) -> None:
-        assert _derived_state_from_event("PostToolUse", None) == "working"
-
-    def test_stop(self) -> None:
-        assert _derived_state_from_event("Stop", None) == "ready"
-
-    def test_session_end(self) -> None:
-        assert _derived_state_from_event("SessionEnd", None) is None
-
-    def test_clear_state(self) -> None:
-        assert _derived_state_from_event("clear_state", None) == "idle"
-
-    def test_unknown_event_returns_none(self) -> None:
-        assert _derived_state_from_event("SomeFutureEvent", None) is None
 
 
 class TestSessionResponseToRow:
@@ -446,6 +404,7 @@ class TestHandleWsMessage:
             "event_name": "PostToolUse",
             "tool_name": "Bash",
             "received_at": 100.5,
+            "derived_state": "working",
         }
         client._handle_ws_message(msg)
         s = client._sessions["s1"]
@@ -484,6 +443,7 @@ class TestHandleWsMessage:
             "event_name": "SessionEnd",
             "tool_name": None,
             "received_at": 200.0,
+            "derived_state": None,
         }
         client._handle_ws_message(msg)
         s = client._sessions["s1"]
@@ -509,6 +469,7 @@ class TestHandleWsMessage:
             "event_name": "clear_state",
             "tool_name": None,
             "received_at": 60.0,
+            "derived_state": "idle",
         }
         client._handle_ws_message(msg)
         s = client._sessions["s1"]
@@ -689,6 +650,7 @@ class TestHandleWsMessage:
             "event_name": "PostToolUse",
             "tool_name": "Bash",
             "received_at": 1.0,
+            "derived_state": "working",
         }
         client._handle_ws_message(msg)
         client._root.after.assert_called()
