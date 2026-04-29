@@ -512,7 +512,7 @@ class Dashboard:
             if session.get("session_id") == sid:
                 self._chat_tab._on_usage(
                     session.get("model_display_name", ""),
-                    session.get("total_cost_usd", 0.0),
+                    session.get("today_cost_usd", 0.0),
                     session.get("context_used_pct", 0.0),
                 )
                 self._resume_session_id = None

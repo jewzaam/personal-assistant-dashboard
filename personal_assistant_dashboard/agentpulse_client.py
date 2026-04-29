@@ -39,27 +39,6 @@ def _today_local_date() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
-def _derived_state_from_event(event_name: str, tool_name: str | None) -> str | None:
-    """Derive session state from the latest hook event per v2 mapping.
-
-    Returns None for terminal/unknown events so the UI can render '—'
-    rather than guessing. Source of truth: AgentPulse
-    docs/reference/state-transitions.md.
-    """
-    if event_name in ("PreToolUse", "PermissionRequest"):
-        if tool_name == "AskUserQuestion":
-            return "awaiting_input"
-        return "working" if event_name == "PreToolUse" else "permission_required"
-    if event_name in ("UserPromptSubmit", "PostToolUse"):
-        return "working"
-    if event_name == "Stop":
-        return "ready"
-    if event_name == "clear_state":
-        return "idle"
-    # SessionEnd, unknown events -> None (terminal/unknown)
-    return None
-
-
 def _session_response_to_row(resp: dict[str, Any]) -> dict[str, Any]:
     """Convert a v2 SessionResponse to an InfoTab row dict.
 
@@ -92,9 +71,7 @@ def _session_response_to_row(resp: dict[str, Any]) -> dict[str, Any]:
         "ended_at": ended_at,
         "last_event": last_event,
         "last_event_at": float(resp.get("last_event_at") or 0.0),
-        "derived_state": _derived_state_from_event(
-            last_event or "", resp.get("last_tool")
-        ),
+        "derived_state": resp.get("derived_state"),
         "is_active": is_active,
     }
 
@@ -399,13 +376,12 @@ class AgentPulseClient:
             return
 
         event_name = msg.get("event_name", "")
-        tool_name = msg.get("tool_name")
         received_at = float(msg.get("received_at") or 0.0)
 
         with self._lock:
             row["last_event"] = event_name
             row["last_event_at"] = received_at
-            row["derived_state"] = _derived_state_from_event(event_name, tool_name)
+            row["derived_state"] = msg.get("derived_state")
             if event_name == "SessionEnd":
                 row["ended_at"] = received_at
                 row["is_active"] = False

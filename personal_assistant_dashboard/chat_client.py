@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import queue
 import socket
 import threading
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -26,6 +28,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
+from personal_assistant_dashboard.agentpulse_config import HTTP_TIMEOUT_S
 from personal_assistant_dashboard.agentpulse_statusline import (
     SessionAccumulator,
     build_payload,
@@ -145,6 +148,7 @@ class ChatClient:
         # AgentPulse outage. Reset on successful seed/POST so a later
         # outage produces a fresh warning.
         self._agentpulse_outage_warned = False
+        self._ui_cost_seeded = False
         self._agentpulse_endpoint: tuple[str, int] | None = load_agentpulse_endpoint()
         if self._agentpulse_endpoint is None:
             logger.info("AgentPulse statusline forwarding disabled (no config)")
@@ -198,6 +202,14 @@ class ChatClient:
                 target=self._run_loop, daemon=True, name="chat-client"
             )
             self._thread.start()
+
+        if self._next_resume_id and self._agentpulse_endpoint:
+            threading.Thread(
+                target=self._eager_seed_ui,
+                args=(self._next_resume_id,),
+                daemon=True,
+                name="chat-eager-seed",
+            ).start()
 
     def _run_loop(self) -> None:
         """Entry point for the background thread."""
@@ -434,6 +446,7 @@ class ChatClient:
                 self._accumulator.reset()
                 self._accumulator.last_model_name = CHAT_MODEL
                 self._accumulator_seeded = False
+            self._ui_cost_seeded = False
             self._ui_total_cost = 0.0
             self._ui_context_pct = 0.0
             if self._on_usage:
@@ -548,6 +561,62 @@ class ChatClient:
             )
         self._on_usage(self._ui_model_name, self._ui_total_cost, self._ui_context_pct)
 
+    def _eager_seed_ui(self, session_id: str) -> None:
+        """Fetch stored session cost from AgentPulse and seed the UI.
+
+        Runs once at start() on a throwaway thread so the Chat tab
+        statusline shows the resumed session's lifetime cost immediately,
+        before the first turn completes. Uses the v2 session endpoint
+        which returns sessions regardless of active/inactive state.
+        """
+        assert self._agentpulse_endpoint is not None
+        host, port = self._agentpulse_endpoint
+        url = f"http://{host}:{port}/api/v2/sessions/{session_id}"
+        try:
+            with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT_S) as resp:
+                data = json.loads(resp.read())
+        except Exception:
+            logger.debug("eager seed fetch failed for session %s", session_id[:8])
+            return
+        if not isinstance(data, dict):
+            return
+        from personal_assistant_dashboard.agentpulse_client import _today_local_date
+
+        cost_by_day = data.get("cost_by_day") or {}
+        seed_cost = float(cost_by_day.get(_today_local_date(), 0.0))
+        if seed_cost <= 0:
+            return
+        self._ui_cost_seeded = True
+        with self._lock:
+            loop_ref = self._loop
+        if loop_ref is None:
+            return
+        loop_ref.call_soon_threadsafe(self._apply_seed_to_ui_sync, seed_cost)
+        logger.info("eager UI seed session=%s cost=%.4f", session_id[:8], seed_cost)
+
+    def _apply_seed_to_ui(self, seed_delta: float) -> None:
+        """Add the seed cost delta to the UI counter and fire the callback.
+
+        Called from the statusline worker thread after a successful seed.
+        Skipped when the eager seed already populated the UI to prevent
+        double-counting.
+        """
+        if self._ui_cost_seeded:
+            return
+        with self._lock:
+            loop_ref = self._loop
+        if loop_ref is None:
+            return
+        loop_ref.call_soon_threadsafe(self._apply_seed_to_ui_sync, seed_delta)
+
+    def _apply_seed_to_ui_sync(self, seed_delta: float) -> None:
+        """Asyncio-thread half: add seed delta and notify the UI."""
+        self._ui_total_cost += seed_delta
+        if self._on_usage:
+            self._on_usage(
+                self._ui_model_name, self._ui_total_cost, self._ui_context_pct
+            )
+
     def _ensure_statusline_worker(self) -> None:
         """Start the statusline worker thread if it isn't running yet."""
         if self._statusline_thread is None or not self._statusline_thread.is_alive():
@@ -615,6 +684,7 @@ class ChatClient:
             # the threading standard forbids I/O while holding a lock.
             # Safe to mutate the accumulator from here because this
             # worker is the single writer.
+            cost_before = self._accumulator.total_cost_usd
             seed = merge_agentpulse_seed(self._accumulator, host, port, task.session_id)
             if not seed.ok:
                 if not self._agentpulse_outage_warned:
@@ -632,6 +702,9 @@ class ChatClient:
                 return
             with self._accumulator_lock:
                 self._accumulator_seeded = True
+            seed_delta = self._accumulator.total_cost_usd - cost_before
+            if seed_delta > 0:
+                self._apply_seed_to_ui(seed_delta)
             logger.info(
                 "AgentPulse seeded session=%s merged=%s total_cost_usd=%.4f",
                 task.session_id,
