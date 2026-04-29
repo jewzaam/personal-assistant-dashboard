@@ -23,8 +23,10 @@ from personal_assistant_dashboard.config import (
     COLOR_WARNING,
     FG_DIM,
     FG_TEXT,
+    FONT_FAMILY_MONO,
     FONT_NAME_BODY,
     FONT_NAME_HEADING,
+    FONT_SIZE_BODY,
     PAD,
 )
 from personal_assistant_dashboard.models import ConsoleLogCallback
@@ -38,7 +40,7 @@ _COLUMNS = [
     ("model", "Model", 80, tk.W),
     ("cost", "Cost", 60, tk.E),
     ("ctx_pct", "Ctx %", 50, tk.E),
-    ("lines", "Lines", 70, tk.E),
+    ("tokens", "Tokens", 70, tk.E),
 ]
 
 # Sort key extractors: column id → function(dict) → sortable value
@@ -49,7 +51,9 @@ _SORT_KEYS: dict[str, _SortKey] = {
     "model": lambda s: s.get("model_display_name", "").lower(),
     "cost": lambda s: s.get("today_cost_usd", 0.0),
     "ctx_pct": lambda s: s.get("context_used_pct", 0),
-    "lines": lambda s: s.get("lines_added", 0) + s.get("lines_removed", 0),
+    "tokens": lambda s: (
+        s.get("total_input_tokens", 0) + s.get("total_output_tokens", 0)
+    ),
 }
 
 # Percentage thresholds for color coding
@@ -94,14 +98,22 @@ def _format_cost(usd: float) -> str:
     return f"${usd:.2f}"
 
 
-def _format_tokens(count: int) -> str:
-    """Format token count with K/M suffix."""
+def _format_tokens(count: int, *, compact: bool = False) -> str:
+    """Format token count with K/M suffix.
+
+    ``compact=True`` drops decimal precision (used in table rows).
+    """
     if count == 0:
         return "\u2014"
     if count >= 1_000_000:
-        return f"{count / 1_000_000:.1f}M"
+        if compact:
+            return f"{round(count / 1_000_000)} M"
+        return f"{count / 1_000_000:.1f} M"
     if count >= 1000:
-        return f"{count / 1000:.1f}K".replace(".0K", "K")
+        if compact:
+            return f"{round(count / 1000)} K"
+        val = f"{count / 1000:.1f} K".replace(".0 K", " K")
+        return val
     return str(count)
 
 
@@ -222,12 +234,14 @@ class InfoTab:
             fieldbackground=BG_WINDOW,
             borderwidth=0,
             rowheight=22,
+            font=(FONT_FAMILY_MONO, FONT_SIZE_BODY),
         )
         style.configure(
             "Info.Treeview.Heading",
             background="#333333",
             foreground=FG_TEXT,
             borderwidth=0,
+            font=(FONT_FAMILY_MONO, FONT_SIZE_BODY, "bold"),
         )
         style.map(
             "Info.Treeview",
@@ -294,12 +308,12 @@ class InfoTab:
     ) -> list[dict[str, Any]]:
         """Hide inactive sessions that carry no usage data.
 
-        An inactive row is dropped when cost, input tokens, output tokens,
-        lines added, and lines removed are all zero. Context % is
-        deliberately excluded — a session may have had context use
-        without actually doing billable work, and that isn't worth
-        surfacing after the fact. Active sessions are always kept so
-        they remain visible while still warming up.
+        An inactive row is dropped when cost, input tokens, and output
+        tokens are all zero. Context % is deliberately excluded — a
+        session may have had context use without actually doing billable
+        work, and that isn't worth surfacing after the fact. Active
+        sessions are always kept so they remain visible while still
+        warming up.
         """
         result: list[dict[str, Any]] = []
         for s in sessions:
@@ -310,8 +324,6 @@ class InfoTab:
                 (s.get("today_cost_usd") or 0.0) > 0
                 or (s.get("total_input_tokens") or 0) > 0
                 or (s.get("total_output_tokens") or 0) > 0
-                or (s.get("lines_added") or 0) > 0
-                or (s.get("lines_removed") or 0) > 0
             )
             if has_data:
                 result.append(s)
@@ -415,10 +427,11 @@ class InfoTab:
 
         # Aggregate row first
         total_cost = sum(s.get("today_cost_usd", 0.0) for s in sessions)
-        total_add = sum(s.get("lines_added", 0) for s in sessions)
-        total_rm = sum(s.get("lines_removed", 0) for s in sessions)
+        total_tokens = sum(
+            s.get("total_input_tokens", 0) + s.get("total_output_tokens", 0)
+            for s in sessions
+        )
 
-        lines_val = f"+{total_add}/-{total_rm}" if total_add or total_rm else "\u2014"
         self._tree.insert(
             "",
             tk.END,
@@ -428,7 +441,7 @@ class InfoTab:
                 "",
                 _format_cost(total_cost),
                 "",
-                lines_val,
+                _format_tokens(total_tokens),
             ),
             tags=("aggregate",),
         )
@@ -441,9 +454,9 @@ class InfoTab:
             ctx_str = f"{ctx_pct}%" if ctx_pct else "\u2014"
             cost = s.get("today_cost_usd", 0.0)
             model = short_model_name(s.get("model_display_name", ""))
-            add = s.get("lines_added", 0)
-            rm = s.get("lines_removed", 0)
-            lines_str = f"+{add}/-{rm}" if add or rm else "\u2014"
+            session_tokens = s.get("total_input_tokens", 0) + s.get(
+                "total_output_tokens", 0
+            )
 
             self._tree.insert(
                 "",
@@ -454,7 +467,7 @@ class InfoTab:
                     model,
                     _format_cost(cost),
                     ctx_str,
-                    lines_str,
+                    _format_tokens(session_tokens, compact=True),
                 ),
                 tags=(tag,),
             )

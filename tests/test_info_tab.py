@@ -60,13 +60,6 @@ class TestDropEmptyInactive:
         ]
         assert len(InfoTab._drop_empty_inactive(sessions)) == 1
 
-    def test_keeps_inactive_with_lines(self) -> None:
-        sessions = [
-            {"session_id": "added", "is_active": False, "lines_added": 1},
-            {"session_id": "removed", "is_active": False, "lines_removed": 1},
-        ]
-        assert len(InfoTab._drop_empty_inactive(sessions)) == 2
-
     def test_context_pct_alone_is_not_enough(self) -> None:
         """Context % is not a data-bearing metric — inactive row still drops."""
         sessions = [
