@@ -9,8 +9,10 @@ from typing import Any
 # Fonts — negative sizes = pixels (DPI-independent)
 if _plat.system() == "Windows":
     FONT_FAMILY = "Segoe UI"
+    FONT_FAMILY_MONO = "Consolas"
 else:
     FONT_FAMILY = "Noto Sans"
+    FONT_FAMILY_MONO = "Noto Sans Mono"
 
 # Base pixel sizes (negative = DPI-independent pixels)
 FONT_SIZE_BODY = -13
