@@ -2126,10 +2126,7 @@ class Dashboard:
             ("Maybe", "tentative"),
             ("Decline", "declined"),
         ]:
-            if status_val == "declined" and is_organizer:
-                # Organizer can't decline — offer DELETE instead
-                continue
-            elif response == status_val:
+            if response == status_val:
                 menu.add_command(label=label, state=tk.DISABLED)
             else:
 
