@@ -44,9 +44,9 @@ _MODEL = "claude-sonnet-4-5-20250514"
 def _make_client(**overrides: object) -> ChatClient:
     """Create a ChatClient with mock callbacks, without starting it.
 
-    AgentPulse forwarding is disabled by default so tests don't depend on
-    (or hit) a running AgentPulse. Individual tests re-enable it by
-    setting ``_agentpulse_endpoint``.
+    AgentPulse forwarding is disabled by default (agentpulse_client=None)
+    so tests don't depend on (or hit) a running AgentPulse. Individual
+    tests re-enable it by setting ``_agentpulse_client`` to a MagicMock.
     """
     defaults = {
         "on_text": MagicMock(),
@@ -57,7 +57,6 @@ def _make_client(**overrides: object) -> ChatClient:
     }
     defaults.update(overrides)
     client = ChatClient(**defaults)  # type: ignore[arg-type]
-    client._agentpulse_endpoint = None
     return client
 
 
@@ -336,7 +335,7 @@ class _FakeSeed:
         self.add_cost = add_cost
         self.calls = 0
 
-    def __call__(self, acc, host, port, session_id):
+    def __call__(self, acc, session):
         from personal_assistant_dashboard.agentpulse_statusline import SeedResult
 
         self.calls += 1
@@ -348,23 +347,19 @@ class _FakeSeed:
 def test_statusline_posts_after_successful_seed():
     """First ResultMessage accumulates, seed succeeds, POST goes out."""
     client = _make_client()
-    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    mock_ap = MagicMock()
+    client._agentpulse_client = mock_ap
     seed = _FakeSeed(ok=True, merged=True, add_cost=1.00)
     captured: dict[str, object] = {}
 
-    def fake_post(host: str, port: int, payload: dict) -> bool:
-        captured["payload"] = payload
-        return True
+    mock_ap.session.return_value = None
+    mock_ap.post_statusline.side_effect = lambda payload: (
+        captured.update({"payload": payload}) or True
+    )
 
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-            side_effect=seed,
-        ),
-        patch(
-            "personal_assistant_dashboard.chat_client.post_statusline",
-            side_effect=fake_post,
-        ),
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+        side_effect=seed,
     ):
         client._handle_message(_make_result_msg(total_cost_usd=0.05))
         _drain_statusline_queue(client)
@@ -379,15 +374,15 @@ def test_statusline_posts_after_successful_seed():
 def test_statusline_defers_post_when_seed_fails():
     """Seed failure → accumulator updated locally, no POST goes out."""
     client = _make_client()
-    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    mock_ap = MagicMock()
+    client._agentpulse_client = mock_ap
     seed = _FakeSeed(ok=False)
 
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-            side_effect=seed,
-        ),
-        patch("personal_assistant_dashboard.chat_client.post_statusline") as mock_post,
+    mock_ap.session.return_value = None
+
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+        side_effect=seed,
     ):
         client._handle_message(_make_result_msg(total_cost_usd=0.05))
         _drain_statusline_queue(client)
@@ -396,23 +391,23 @@ def test_statusline_defers_post_when_seed_fails():
     assert client._accumulator_seeded is False
     # Local accumulation preserved
     assert client._accumulator.total_cost_usd == pytest.approx(0.05)
-    mock_post.assert_not_called()
+    mock_ap.post_statusline.assert_not_called()
 
 
 def test_statusline_recovers_after_agentpulse_returns():
     """Offline → accumulate without posting. Online → seed merges all local
     totals and POST reflects the combined cumulative."""
     client = _make_client()
-    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    mock_ap = MagicMock()
+    client._agentpulse_client = mock_ap
 
     # First two turns: AgentPulse down, seed fails
     down_seed = _FakeSeed(ok=False)
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-            side_effect=down_seed,
-        ),
-        patch("personal_assistant_dashboard.chat_client.post_statusline") as mock_post,
+    mock_ap.session.return_value = None
+
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+        side_effect=down_seed,
     ):
         client._handle_message(_make_result_msg(total_cost_usd=0.10))
         _drain_statusline_queue(client)
@@ -420,26 +415,20 @@ def test_statusline_recovers_after_agentpulse_returns():
         _drain_statusline_queue(client)
     assert down_seed.calls == 2
     assert client._accumulator.total_cost_usd == pytest.approx(0.30)
-    mock_post.assert_not_called()
+    mock_ap.post_statusline.assert_not_called()
     assert client._accumulator_seeded is False
 
     # Third turn: AgentPulse back up, seed merges $2.00 stored prior
     up_seed = _FakeSeed(ok=True, merged=True, add_cost=2.00)
     captured: dict[str, object] = {}
 
-    def fake_post(host: str, port: int, payload: dict) -> bool:
-        captured["payload"] = payload
-        return True
+    mock_ap.post_statusline.side_effect = lambda payload: (
+        captured.update({"payload": payload}) or True
+    )
 
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-            side_effect=up_seed,
-        ),
-        patch(
-            "personal_assistant_dashboard.chat_client.post_statusline",
-            side_effect=fake_post,
-        ),
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+        side_effect=up_seed,
     ):
         client._handle_message(_make_result_msg(total_cost_usd=0.05))
         _drain_statusline_queue(client)
@@ -454,18 +443,16 @@ def test_statusline_recovers_after_agentpulse_returns():
 def test_statusline_seeds_only_once_per_process():
     """After a successful seed, subsequent turns don't re-seed."""
     client = _make_client()
-    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    mock_ap = MagicMock()
+    client._agentpulse_client = mock_ap
     seed = _FakeSeed(ok=True, merged=False)
 
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-            side_effect=seed,
-        ),
-        patch(
-            "personal_assistant_dashboard.chat_client.post_statusline",
-            return_value=True,
-        ),
+    mock_ap.session.return_value = None
+    mock_ap.post_statusline.return_value = True
+
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+        side_effect=seed,
     ):
         client._handle_message(_make_result_msg(session_id="s1"))
         _drain_statusline_queue(client)
@@ -480,23 +467,19 @@ def test_statusline_seeds_only_once_per_process():
 def test_statusline_seed_404_proceeds_with_local_values():
     """Session not in AgentPulse (404) → seed ok with no merge; POST uses local."""
     client = _make_client()
-    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    mock_ap = MagicMock()
+    client._agentpulse_client = mock_ap
     seed = _FakeSeed(ok=True, merged=False)
     captured: dict[str, object] = {}
 
-    def fake_post(host: str, port: int, payload: dict) -> bool:
-        captured["payload"] = payload
-        return True
+    mock_ap.session.return_value = None
+    mock_ap.post_statusline.side_effect = lambda payload: (
+        captured.update({"payload": payload}) or True
+    )
 
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-            side_effect=seed,
-        ),
-        patch(
-            "personal_assistant_dashboard.chat_client.post_statusline",
-            side_effect=fake_post,
-        ),
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+        side_effect=seed,
     ):
         client._handle_message(_make_result_msg(total_cost_usd=0.07))
         _drain_statusline_queue(client)
@@ -509,19 +492,15 @@ def test_statusline_seed_404_proceeds_with_local_values():
 def test_statusline_skips_forwarding_when_agentpulse_not_configured():
     """No AgentPulse config → neither seed nor POST attempted."""
     client = _make_client()
-    assert client._agentpulse_endpoint is None
+    assert client._agentpulse_client is None
 
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed"
-        ) as mock_seed,
-        patch("personal_assistant_dashboard.chat_client.post_statusline") as mock_post,
-    ):
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed"
+    ) as mock_seed:
         client._handle_message(_make_result_msg())
         _drain_statusline_queue(client)
 
     mock_seed.assert_not_called()
-    mock_post.assert_not_called()
     # Accumulator untouched when AgentPulse isn't configured at all
     assert client._accumulator.total_cost_usd == 0.0
 
@@ -531,13 +510,15 @@ def test_assistant_message_usage_populates_turn_snapshot_on_post():
     from claude_agent_sdk import AssistantMessage, TextBlock
 
     client = _make_client()
-    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    mock_ap = MagicMock()
+    client._agentpulse_client = mock_ap
     seed = _FakeSeed(ok=True, merged=False)
     captured: dict[str, object] = {}
 
-    def fake_post(host: str, port: int, payload: dict) -> bool:
-        captured["payload"] = payload
-        return True
+    mock_ap.session.return_value = None
+    mock_ap.post_statusline.side_effect = lambda payload: (
+        captured.update({"payload": payload}) or True
+    )
 
     # Simulate a tool loop: two main-agent calls, last one wins.
     client._handle_message(
@@ -563,15 +544,9 @@ def test_assistant_message_usage_populates_turn_snapshot_on_post():
         )
     )
 
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-            side_effect=seed,
-        ),
-        patch(
-            "personal_assistant_dashboard.chat_client.post_statusline",
-            side_effect=fake_post,
-        ),
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+        side_effect=seed,
     ):
         client._handle_message(_make_result_msg(model="claude-opus-4-7"))
         _drain_statusline_queue(client)
@@ -643,14 +618,12 @@ def test_error_result_message_does_not_forward():
     from claude_agent_sdk import ResultMessage
 
     client = _make_client()
-    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    mock_ap = MagicMock()
+    client._agentpulse_client = mock_ap
 
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed"
-        ) as mock_seed,
-        patch("personal_assistant_dashboard.chat_client.post_statusline") as mock_post,
-    ):
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed"
+    ) as mock_seed:
         # Send a ResultMessage with is_error=True and errors populated —
         # both assert_not_called for forwarding AND that on_error fired.
         msg = ResultMessage(
@@ -666,7 +639,7 @@ def test_error_result_message_does_not_forward():
         _drain_statusline_queue(client)
 
     mock_seed.assert_not_called()
-    mock_post.assert_not_called()
+    mock_ap.post_statusline.assert_not_called()
     assert client._accumulator.total_cost_usd == 0.0
     # UI must see the error — otherwise a silent swallow would regress.
     client._on_error.assert_called_once_with("boom")
@@ -677,8 +650,11 @@ def test_seed_failure_logs_warning_once(caplog):
     import logging
 
     client = _make_client()
-    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    mock_ap = MagicMock()
+    client._agentpulse_client = mock_ap
     seed = _FakeSeed(ok=False)
+
+    mock_ap.session.return_value = None
 
     with (
         caplog.at_level(
@@ -688,7 +664,6 @@ def test_seed_failure_logs_warning_once(caplog):
             "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
             side_effect=seed,
         ),
-        patch("personal_assistant_dashboard.chat_client.post_statusline"),
     ):
         client._handle_message(_make_result_msg())
         _drain_statusline_queue(client)
@@ -712,21 +687,19 @@ def test_seed_failure_logs_warning_once(caplog):
 def test_stop_cleanly_shuts_down_statusline_worker():
     """stop() joins the worker thread after draining in-flight tasks."""
     client = _make_client()
-    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    mock_ap = MagicMock()
+    client._agentpulse_client = mock_ap
     # Must simulate a running state so stop() proceeds past its guard.
     client._running = True
     client._loop = MagicMock()
     client._thread = MagicMock()
 
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-            side_effect=_FakeSeed(ok=True, merged=False),
-        ),
-        patch(
-            "personal_assistant_dashboard.chat_client.post_statusline",
-            return_value=True,
-        ),
+    mock_ap.session.return_value = None
+    mock_ap.post_statusline.return_value = True
+
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+        side_effect=_FakeSeed(ok=True, merged=False),
     ):
         client._handle_message(_make_result_msg())
         _drain_statusline_queue(client)
@@ -742,23 +715,19 @@ def test_multiple_back_to_back_results_all_post():
     """Queue-backed worker processes every turn in order without dropping
     any (well below the queue cap)."""
     client = _make_client()
-    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    mock_ap = MagicMock()
+    client._agentpulse_client = mock_ap
     seed = _FakeSeed(ok=True, merged=False)
     posts: list[dict] = []
 
-    def fake_post(host: str, port: int, payload: dict) -> bool:
-        posts.append(payload)
-        return True
+    mock_ap.session.return_value = None
+    mock_ap.post_statusline.side_effect = lambda payload: (
+        posts.append(payload) or True
+    )
 
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-            side_effect=seed,
-        ),
-        patch(
-            "personal_assistant_dashboard.chat_client.post_statusline",
-            side_effect=fake_post,
-        ),
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+        side_effect=seed,
     ):
         for i in range(4):
             client._handle_message(_make_result_msg(total_cost_usd=0.01 * (i + 1)))
@@ -799,23 +768,19 @@ def test_statusline_pid_comes_from_sdk_subprocess():
     means hook events and statusline events can't be correlated.
     """
     client = _make_client()
-    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    mock_ap = MagicMock()
+    client._agentpulse_client = mock_ap
     _wire_fake_subprocess(client, pid=46264)
     captured: dict[str, object] = {}
 
-    def fake_post(host: str, port: int, payload: dict) -> bool:
-        captured["payload"] = payload
-        return True
+    mock_ap.session.return_value = None
+    mock_ap.post_statusline.side_effect = lambda payload: (
+        captured.update({"payload": payload}) or True
+    )
 
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-            side_effect=_FakeSeed(ok=True, merged=False),
-        ),
-        patch(
-            "personal_assistant_dashboard.chat_client.post_statusline",
-            side_effect=fake_post,
-        ),
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+        side_effect=_FakeSeed(ok=True, merged=False),
     ):
         client._handle_message(_make_result_msg())
         _drain_statusline_queue(client)
@@ -834,23 +799,19 @@ def test_statusline_pid_falls_back_when_subprocess_unavailable():
     import os
 
     client = _make_client()
-    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    mock_ap = MagicMock()
+    client._agentpulse_client = mock_ap
     client._client = None
     captured: dict[str, object] = {}
 
-    def fake_post(host: str, port: int, payload: dict) -> bool:
-        captured["payload"] = payload
-        return True
+    mock_ap.session.return_value = None
+    mock_ap.post_statusline.side_effect = lambda payload: (
+        captured.update({"payload": payload}) or True
+    )
 
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-            side_effect=_FakeSeed(ok=True, merged=False),
-        ),
-        patch(
-            "personal_assistant_dashboard.chat_client.post_statusline",
-            side_effect=fake_post,
-        ),
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+        side_effect=_FakeSeed(ok=True, merged=False),
     ):
         client._handle_message(_make_result_msg())
         _drain_statusline_queue(client)
@@ -861,23 +822,19 @@ def test_statusline_pid_falls_back_when_subprocess_unavailable():
 def test_statusline_pid_reread_each_post():
     """PID is re-read each post so /clear reconnect (new subprocess) is reflected."""
     client = _make_client()
-    client._agentpulse_endpoint = ("127.0.0.1", 17385)
+    mock_ap = MagicMock()
+    client._agentpulse_client = mock_ap
     fake_process = _wire_fake_subprocess(client, pid=1111)
     posts: list[dict] = []
 
-    def fake_post(host: str, port: int, payload: dict) -> bool:
-        posts.append(payload)
-        return True
+    mock_ap.session.return_value = None
+    mock_ap.post_statusline.side_effect = lambda payload: (
+        posts.append(payload) or True
+    )
 
-    with (
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-            side_effect=_FakeSeed(ok=True, merged=False),
-        ),
-        patch(
-            "personal_assistant_dashboard.chat_client.post_statusline",
-            side_effect=fake_post,
-        ),
+    with patch(
+        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
+        side_effect=_FakeSeed(ok=True, merged=False),
     ):
         client._handle_message(_make_result_msg())
         _drain_statusline_queue(client)
@@ -903,7 +860,7 @@ def test_fake_seed_matches_real_merge_signature():
 
     real_params = list(inspect.signature(merge_agentpulse_seed).parameters)
     fake = _FakeSeed(ok=True)
-    # _FakeSeed.__call__ has (self, acc, host, port, session_id)
+    # _FakeSeed.__call__ has (self, acc, session)
     fake_params = list(inspect.signature(fake.__call__).parameters)
     assert fake_params == real_params
 
@@ -976,7 +933,7 @@ def test_usage_callback_not_fired_on_error_result():
 def test_usage_callback_works_without_agentpulse():
     """on_usage fires even when AgentPulse is not configured."""
     client = _make_client()
-    assert client._agentpulse_endpoint is None
+    assert client._agentpulse_client is None
     client._handle_message(_make_result_msg(total_cost_usd=0.10))
     client._on_usage.assert_called_once()
     _model, cost, _pct = client._on_usage.call_args.args

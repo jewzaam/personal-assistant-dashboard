@@ -3,10 +3,9 @@
 
 from __future__ import annotations
 
-import json
-import urllib.error
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any
 
 import pytest
 
@@ -16,10 +15,8 @@ from personal_assistant_dashboard.agentpulse_statusline import (
     SessionAccumulator,
     build_payload,
     extract_model_name,
-    load_agentpulse_endpoint,
     lookup_context_window,
     merge_agentpulse_seed,
-    post_statusline,
 )
 
 # -- lookup_context_window ---------------------------------------------------
@@ -42,7 +39,7 @@ def test_lookup_context_window_dated_1m():
 
 
 def test_lookup_context_window_any_1m_variant_returns_1m():
-    """Any model with [1m] suffix resolves to 1M — no per-model enumeration."""
+    """Any model with [1m] suffix resolves to 1M -- no per-model enumeration."""
     assert lookup_context_window("claude-opus-4-6[1m]") == 1_000_000
     assert lookup_context_window("claude-sonnet-4-5[1m]") == 1_000_000
     assert lookup_context_window("claude-haiku-4-5[1m]") == 1_000_000
@@ -81,7 +78,7 @@ def test_extract_model_name_multi_picks_highest_output():
 
 
 def test_extract_model_name_multi_nondict_values():
-    """Non-dict values tolerated — lexicographic tiebreaker picks the
+    """Non-dict values tolerated -- lexicographic tiebreaker picks the
     earlier key so the result is deterministic across dict orderings."""
     assert extract_model_name({"a": None, "b": None}) == "a"
     # Order-independent: reversing the input still picks 'a'.
@@ -127,7 +124,7 @@ def test_accumulator_sums_across_queries():
 
 
 def test_record_result_ignores_cache_tokens():
-    """``record_result`` consumes ResultMessage usage — turn-aggregated.
+    """``record_result`` consumes ResultMessage usage -- turn-aggregated.
 
     Cache token fields on ResultMessage are sums across every API call
     in the turn and can exceed the window size; they must not leak into
@@ -156,7 +153,7 @@ def test_record_result_ignores_cache_tokens():
 
 
 def test_record_turn_snapshot_is_latest_not_summed():
-    """Per-turn snapshot is assigned (not summed) — must reflect one call."""
+    """Per-turn snapshot is assigned (not summed) -- must reflect one call."""
     acc = SessionAccumulator()
     acc.record_turn_snapshot(
         {
@@ -236,17 +233,12 @@ def test_accumulator_reset_zeroes_everything():
     assert acc.last_input_tokens == 0
     assert acc.last_cache_read_tokens == 0
     assert acc.last_cache_creation_tokens == 0
-    # last_model_name is intentionally NOT reset — caller restores it
+    # last_model_name is intentionally NOT reset -- caller restores it
     assert acc.last_model_name == "claude-sonnet-4-6"
 
 
 def test_accumulator_follows_session_id_rotations():
-    """Totals persist and session_id updates when the SDK rotates sessions.
-
-    Matches the Claude Code CLI's statusline behaviour: ``/clear`` yields
-    a new ``session_id`` but cost/token totals keep climbing until the
-    process exits.
-    """
+    """Totals persist and session_id updates when the SDK rotates sessions."""
     acc = SessionAccumulator()
     acc.record_result(
         session_id="sess-a",
@@ -255,7 +247,6 @@ def test_accumulator_follows_session_id_rotations():
         duration_ms=0,
         duration_api_ms=0,
     )
-    # Simulate /clear: SDK rotates to a new session_id on the next result
     acc.record_result(
         session_id="sess-b",
         total_cost_usd=0.05,
@@ -330,7 +321,7 @@ def test_build_payload_cost_block():
     assert cost["total_cost_usd"] == pytest.approx(0.15)
     assert cost["total_duration_ms"] == 2000
     assert cost["total_api_duration_ms"] == 1800
-    # Lines counters deliberately absent — SDK doesn't expose them
+    # Lines counters deliberately absent -- SDK doesn't expose them
     assert "total_lines_added" not in cost
     assert "total_lines_removed" not in cost
 
@@ -351,13 +342,7 @@ def test_build_payload_context_window_block():
 
 def test_build_payload_used_pct_uses_turn_snapshot_not_result_aggregate():
     """Regression: ``used_percentage`` reads the per-call snapshot, never
-    the ResultMessage's turn-aggregated cache sums.
-
-    A long tool loop can make ``ResultMessage.usage.cache_read_input_tokens``
-    far exceed the model's context window — those are sums across every
-    API call in the turn. Only ``record_turn_snapshot`` (fed from the
-    last AssistantMessage) gives a bounded single-call view.
-    """
+    the ResultMessage's turn-aggregated cache sums."""
     acc = SessionAccumulator()
     for _ in range(20):
         acc.record_result(
@@ -366,7 +351,6 @@ def test_build_payload_used_pct_uses_turn_snapshot_not_result_aggregate():
             usage={
                 "input_tokens": 5_000,
                 "output_tokens": 500,
-                # Turn-aggregated sums that would blow past 100% if used:
                 "cache_read_input_tokens": 500_000,
                 "cache_creation_input_tokens": 50_000,
             },
@@ -374,7 +358,6 @@ def test_build_payload_used_pct_uses_turn_snapshot_not_result_aggregate():
             duration_api_ms=90,
             model_name="claude-opus-4-7",
         )
-    # Current-context snapshot — what the last API call actually sent.
     acc.record_turn_snapshot(
         {
             "input_tokens": 10,
@@ -383,10 +366,8 @@ def test_build_payload_used_pct_uses_turn_snapshot_not_result_aggregate():
         }
     )
     payload = build_payload(acc, pid=1, cwd="", source_system="")
-    # Lifetime input_tokens still accumulates from ResultMessage usage.
     assert payload["context_window"]["total_input_tokens"] == 20 * 5_000
-    # used_percentage uses the snapshot, not the aggregates:
-    # (10 + 60_000 + 1_000) / 200_000 * 100 = 30.505 → 30.5
+    # (10 + 60_000 + 1_000) / 200_000 * 100 = 30.505 -> 30.5
     assert payload["context_window"]["used_percentage"] == pytest.approx(30.5)
 
 
@@ -418,103 +399,46 @@ def test_build_payload_empty_accumulator_produces_zero_percentage():
     assert payload["context_window"]["used_percentage"] == 0.0
 
 
-# -- load_agentpulse_endpoint ------------------------------------------------
-
-
-def test_load_endpoint_returns_host_port(tmp_path: Path):
-    cfg = tmp_path / "config.json"
-    cfg.write_text(json.dumps({"host": "127.0.0.1", "port": 17385}))
-    assert load_agentpulse_endpoint(cfg) == ("127.0.0.1", 17385)
-
-
-def test_load_endpoint_missing_file(tmp_path: Path):
-    assert load_agentpulse_endpoint(tmp_path / "nope.json") is None
-
-
-def test_load_endpoint_malformed_json(tmp_path: Path):
-    cfg = tmp_path / "config.json"
-    cfg.write_text("not json")
-    assert load_agentpulse_endpoint(cfg) is None
-
-
-def test_load_endpoint_missing_fields(tmp_path: Path):
-    cfg = tmp_path / "config.json"
-    cfg.write_text(json.dumps({"host": "127.0.0.1"}))
-    assert load_agentpulse_endpoint(cfg) is None
-
-
-# -- post_statusline ---------------------------------------------------------
-
-
-def test_post_statusline_success():
-    resp = MagicMock()
-    resp.status = 200
-    resp.__enter__ = MagicMock(return_value=resp)
-    resp.__exit__ = MagicMock(return_value=False)
-    with patch(
-        "personal_assistant_dashboard.agentpulse_statusline.urllib.request.urlopen",
-        return_value=resp,
-    ) as mock_open:
-        ok = post_statusline("127.0.0.1", 17385, {"session_id": "x"})
-    assert ok is True
-    sent_req = mock_open.call_args.args[0]
-    assert sent_req.full_url == "http://127.0.0.1:17385/statusline/claude"
-    assert sent_req.method == "POST"
-    assert sent_req.headers.get("Content-type") == "application/json"
-    assert json.loads(sent_req.data) == {"session_id": "x"}
-
-
-def test_post_statusline_http_error_returns_false():
-    with patch(
-        "personal_assistant_dashboard.agentpulse_statusline.urllib.request.urlopen",
-        side_effect=urllib.error.URLError("refused"),
-    ):
-        assert post_statusline("127.0.0.1", 17385, {}) is False
-
-
-def test_post_statusline_timeout_returns_false():
-    with patch(
-        "personal_assistant_dashboard.agentpulse_statusline.urllib.request.urlopen",
-        side_effect=TimeoutError(),
-    ):
-        assert post_statusline("127.0.0.1", 17385, {}) is False
-
-
-def test_post_statusline_server_5xx_returns_false():
-    resp = MagicMock()
-    resp.status = 500
-    resp.__enter__ = MagicMock(return_value=resp)
-    resp.__exit__ = MagicMock(return_value=False)
-    with patch(
-        "personal_assistant_dashboard.agentpulse_statusline.urllib.request.urlopen",
-        return_value=resp,
-    ):
-        assert post_statusline("127.0.0.1", 17385, {}) is False
-
-
 # -- merge_agentpulse_seed ---------------------------------------------------
 
 
-def _mock_http_response(status: int, body: dict | None = None) -> MagicMock:
-    resp = MagicMock()
-    resp.status = status
-    resp.read = MagicMock(return_value=json.dumps(body or {}).encode("utf-8"))
-    resp.__enter__ = MagicMock(return_value=resp)
-    resp.__exit__ = MagicMock(return_value=False)
-    return resp
+@dataclass(frozen=True)
+class _FakeSession:
+    """Minimal stand-in for agentpulse.client.Session in tests."""
 
+    session_id: str = "sess-x"
+    process_id: str = ""
+    pid: int = 0
+    source_system: str = ""
+    cwd: str = ""
+    started_at: float = 0.0
+    last_activity_at: float = 0.0
+    ended_at: float | None = None
+    last_event: str | None = None
+    last_tool: str | None = None
+    last_event_at: float | None = None
+    context_used_pct: float | None = None
+    context_window_size: int | None = None
+    model_id: str | None = None
+    model_name: str | None = None
+    derived_state: str | None = None
+    total_cost_usd: float = 0.0
+    cost_by_day: Any = None
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    lines_added: int = 0
+    lines_removed: int = 0
+    epochs: tuple[()] = ()
+    agents: tuple[()] = ()
 
-def _patch_urlopen(**kwargs):
-    return patch(
-        "personal_assistant_dashboard.agentpulse_statusline.urllib.request.urlopen",
-        **kwargs,
-    )
+    def __post_init__(self) -> None:
+        if self.cost_by_day is None:
+            object.__setattr__(self, "cost_by_day", MappingProxyType({}))
 
 
 def test_seed_merges_onto_existing_local_totals():
     """AgentPulse totals are ADDED to acc; local accumulation preserved."""
     acc = SessionAccumulator()
-    # Simulate local accumulation while AgentPulse was offline
     acc.record_result(
         session_id="sess-x",
         total_cost_usd=0.20,
@@ -523,29 +447,29 @@ def test_seed_merges_onto_existing_local_totals():
         duration_api_ms=1800,
         model_name="claude-sonnet-4-6",
     )
-    body = {
-        "cost_usd": 1.00,
-        "total_input_tokens": 10_000,
-        "total_output_tokens": 2_000,
-        "model_name": "claude-sonnet-4-6",
-    }
-    with _patch_urlopen(return_value=_mock_http_response(200, body)):
-        result = merge_agentpulse_seed(acc, "h", 1, "sess-x")
+    session = _FakeSession(
+        session_id="sess-x",
+        total_cost_usd=1.00,
+        total_input_tokens=10_000,
+        total_output_tokens=2_000,
+        model_name="claude-sonnet-4-6",
+    )
+    result = merge_agentpulse_seed(acc, session)
     assert result.ok is True
     assert result.merged is True
     assert acc.total_cost_usd == pytest.approx(1.20)
     assert acc.total_input_tokens == 10_500
     assert acc.total_output_tokens == 2_100
-    # Local durations preserved — AgentPulse doesn't track at session level
+    # Local durations preserved -- AgentPulse doesn't track at session level
     assert acc.total_duration_ms == 2000
     assert acc.total_api_duration_ms == 1800
 
 
-def test_seed_200_sets_session_id():
-    """Seed updates the accumulator's session_id to the queried value."""
+def test_seed_sets_session_id():
+    """Seed updates the accumulator's session_id."""
     acc = SessionAccumulator()
-    with _patch_urlopen(return_value=_mock_http_response(200, {"cost_usd": 0.5})):
-        merge_agentpulse_seed(acc, "h", 1, "sess-new")
+    session = _FakeSession(session_id="sess-new", total_cost_usd=0.5)
+    merge_agentpulse_seed(acc, session)
     assert acc.session_id == "sess-new"
 
 
@@ -559,38 +483,20 @@ def test_seed_prefers_local_model_name_when_set():
         duration_api_ms=0,
         model_name="claude-opus-4-7",
     )
-    body = {"model_name": "some-other-model"}
-    with _patch_urlopen(return_value=_mock_http_response(200, body)):
-        merge_agentpulse_seed(acc, "h", 1, "s")
+    session = _FakeSession(model_name="some-other-model")
+    merge_agentpulse_seed(acc, session)
     assert acc.last_model_name == "claude-opus-4-7"
 
 
 def test_seed_uses_agentpulse_model_name_when_local_empty():
     acc = SessionAccumulator()
-    body = {"model_name": "claude-sonnet-4-6"}
-    with _patch_urlopen(return_value=_mock_http_response(200, body)):
-        merge_agentpulse_seed(acc, "h", 1, "s")
+    session = _FakeSession(model_name="claude-sonnet-4-6")
+    merge_agentpulse_seed(acc, session)
     assert acc.last_model_name == "claude-sonnet-4-6"
 
 
-def test_seed_tolerates_null_totals_in_response():
-    acc = SessionAccumulator()
-    body = {
-        "cost_usd": None,
-        "total_input_tokens": None,
-        "total_output_tokens": None,
-        "model_name": None,
-    }
-    with _patch_urlopen(return_value=_mock_http_response(200, body)):
-        result = merge_agentpulse_seed(acc, "h", 1, "s")
-    assert result.ok is True
-    assert result.merged is True
-    assert acc.total_cost_usd == 0.0
-    assert acc.total_input_tokens == 0
-
-
-def test_seed_404_is_ok_but_not_merged():
-    """Session not known to AgentPulse — proceed with local values unchanged."""
+def test_seed_none_session_is_ok_but_not_merged():
+    """Session not known to AgentPulse -- proceed with local values unchanged."""
     acc = SessionAccumulator()
     acc.record_result(
         session_id="s",
@@ -599,11 +505,7 @@ def test_seed_404_is_ok_but_not_merged():
         duration_ms=0,
         duration_api_ms=0,
     )
-    err = urllib.error.HTTPError(
-        "url", 404, "Not Found", hdrs=None, fp=None  # type: ignore[arg-type]
-    )
-    with _patch_urlopen(side_effect=err):
-        result = merge_agentpulse_seed(acc, "h", 1, "s")
+    result = merge_agentpulse_seed(acc, None)
     assert result.ok is True
     assert result.merged is False
     # Accumulator unchanged
@@ -611,65 +513,16 @@ def test_seed_404_is_ok_but_not_merged():
     assert acc.total_input_tokens == 10
 
 
-def test_seed_connection_refused_returns_not_ok():
-    """Caller must not POST when AgentPulse is unreachable."""
+def test_seed_zero_totals_still_merges():
+    """A session with all-zero values is still a valid merge."""
     acc = SessionAccumulator()
-    acc.record_result(
-        session_id="s",
-        total_cost_usd=0.30,
-        usage=None,
-        duration_ms=0,
-        duration_api_ms=0,
+    session = _FakeSession(
+        total_cost_usd=0.0, total_input_tokens=0, total_output_tokens=0
     )
-    with _patch_urlopen(side_effect=urllib.error.URLError("connection refused")):
-        result = merge_agentpulse_seed(acc, "h", 1, "s")
-    assert result.ok is False
-    assert result.merged is False
-    # Local accumulator untouched — still authoritative for later retry
-    assert acc.total_cost_usd == pytest.approx(0.30)
-
-
-def test_seed_timeout_returns_not_ok():
-    acc = SessionAccumulator()
-    with _patch_urlopen(side_effect=TimeoutError()):
-        result = merge_agentpulse_seed(acc, "h", 1, "s")
-    assert result.ok is False
-
-
-def test_seed_5xx_returns_not_ok():
-    acc = SessionAccumulator()
-    err = urllib.error.HTTPError(
-        "url", 503, "Unavailable", hdrs=None, fp=None  # type: ignore[arg-type]
-    )
-    with _patch_urlopen(side_effect=err):
-        result = merge_agentpulse_seed(acc, "h", 1, "s")
-    assert result.ok is False
-
-
-def test_seed_malformed_json_returns_not_ok():
-    resp = MagicMock()
-    resp.status = 200
-    resp.read = MagicMock(return_value=b"not json at all")
-    resp.__enter__ = MagicMock(return_value=resp)
-    resp.__exit__ = MagicMock(return_value=False)
-    acc = SessionAccumulator()
-    with _patch_urlopen(return_value=resp):
-        result = merge_agentpulse_seed(acc, "h", 1, "s")
-    assert result.ok is False
-
-
-def test_seed_non_dict_body_returns_ok_but_not_merged():
-    """A bizarre response (e.g. null or list) is tolerated as no-data."""
-    resp = MagicMock()
-    resp.status = 200
-    resp.read = MagicMock(return_value=b"null")
-    resp.__enter__ = MagicMock(return_value=resp)
-    resp.__exit__ = MagicMock(return_value=False)
-    acc = SessionAccumulator()
-    with _patch_urlopen(return_value=resp):
-        result = merge_agentpulse_seed(acc, "h", 1, "s")
+    result = merge_agentpulse_seed(acc, session)
     assert result.ok is True
-    assert result.merged is False
+    assert result.merged is True
+    assert acc.total_cost_usd == 0.0
 
 
 def test_seed_result_exposes_attributes():

@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any
+
 from personal_assistant_dashboard.info_tab import (
     InfoTab,
     _session_key,
@@ -10,69 +14,101 @@ from personal_assistant_dashboard.info_tab import (
 )
 
 
+@dataclass(frozen=True)
+class _FakeSession:
+    """Minimal stand-in for agentpulse.client.Session in tests."""
+
+    session_id: str = ""
+    process_id: str = ""
+    pid: int = 0
+    source_system: str = ""
+    cwd: str = ""
+    started_at: float = 0.0
+    last_activity_at: float = 0.0
+    ended_at: float | None = None
+    last_event: str | None = None
+    last_tool: str | None = None
+    last_event_at: float | None = None
+    context_used_pct: float | None = None
+    context_window_size: int | None = None
+    model_id: str | None = None
+    model_name: str | None = None
+    derived_state: str | None = None
+    total_cost_usd: float = 0.0
+    cost_by_day: Any = None
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    lines_added: int = 0
+    lines_removed: int = 0
+    epochs: tuple[()] = ()
+    agents: tuple[()] = ()
+
+    def __post_init__(self) -> None:
+        if self.cost_by_day is None:
+            object.__setattr__(self, "cost_by_day", MappingProxyType({}))
+
+
 class TestDropEmptyInactive:
     """Test InfoTab._drop_empty_inactive static method."""
 
     def test_drops_inactive_with_all_zero_metrics(self) -> None:
         sessions = [
-            {
-                "session_id": "empty",
-                "is_active": False,
-                "today_cost_usd": 0.0,
-                "total_input_tokens": 0,
-                "total_output_tokens": 0,
-                "lines_added": 0,
-                "lines_removed": 0,
-            }
+            _FakeSession(
+                session_id="empty",
+                ended_at=1.0,
+                total_input_tokens=0,
+                total_output_tokens=0,
+            )
         ]
         assert InfoTab._drop_empty_inactive(sessions) == []
 
     def test_keeps_active_even_when_empty(self) -> None:
-        """Active sessions are always shown — they may still be warming up."""
+        """Active sessions are always shown -- they may still be warming up."""
         sessions = [
-            {
-                "session_id": "warming",
-                "is_active": True,
-                "today_cost_usd": 0.0,
-                "total_input_tokens": 0,
-                "total_output_tokens": 0,
-                "lines_added": 0,
-                "lines_removed": 0,
-            }
+            _FakeSession(
+                session_id="warming",
+                ended_at=None,
+                total_input_tokens=0,
+                total_output_tokens=0,
+            )
         ]
         assert len(InfoTab._drop_empty_inactive(sessions)) == 1
 
     def test_keeps_inactive_with_cost(self) -> None:
+        from datetime import datetime
+
+        today = datetime.now().strftime("%Y-%m-%d")
         sessions = [
-            {"session_id": "s", "is_active": False, "today_cost_usd": 0.01},
+            _FakeSession(
+                session_id="s",
+                ended_at=1.0,
+                cost_by_day=MappingProxyType({today: 0.01}),
+            ),
         ]
         assert len(InfoTab._drop_empty_inactive(sessions)) == 1
 
     def test_keeps_inactive_with_input_tokens(self) -> None:
         sessions = [
-            {"session_id": "s", "is_active": False, "total_input_tokens": 100},
+            _FakeSession(session_id="s", ended_at=1.0, total_input_tokens=100),
         ]
         assert len(InfoTab._drop_empty_inactive(sessions)) == 1
 
     def test_keeps_inactive_with_output_tokens(self) -> None:
         sessions = [
-            {"session_id": "s", "is_active": False, "total_output_tokens": 50},
+            _FakeSession(session_id="s", ended_at=1.0, total_output_tokens=50),
         ]
         assert len(InfoTab._drop_empty_inactive(sessions)) == 1
 
     def test_context_pct_alone_is_not_enough(self) -> None:
-        """Context % is not a data-bearing metric — inactive row still drops."""
+        """Context % is not a data-bearing metric -- inactive row still drops."""
         sessions = [
-            {
-                "session_id": "ctx-only",
-                "is_active": False,
-                "context_used_pct": 42,
-                "today_cost_usd": 0.0,
-                "total_input_tokens": 0,
-                "total_output_tokens": 0,
-                "lines_added": 0,
-                "lines_removed": 0,
-            }
+            _FakeSession(
+                session_id="ctx-only",
+                ended_at=1.0,
+                context_used_pct=42.0,
+                total_input_tokens=0,
+                total_output_tokens=0,
+            )
         ]
         assert InfoTab._drop_empty_inactive(sessions) == []
 
@@ -81,24 +117,33 @@ class TestOrderSessions:
     """Test InfoTab._order_sessions: active rows always above inactive."""
 
     def test_active_always_above_inactive(self) -> None:
+        from datetime import datetime
+
+        today = datetime.now().strftime("%Y-%m-%d")
         sessions = [
-            {"session_id": "inactive-cheap", "is_active": False, "today_cost_usd": 0.1},
-            {
-                "session_id": "active-expensive",
-                "is_active": True,
-                "today_cost_usd": 5.0,
-            },
-            {
-                "session_id": "inactive-expensive",
-                "is_active": False,
-                "today_cost_usd": 9.0,
-            },
-            {"session_id": "active-cheap", "is_active": True, "today_cost_usd": 0.5},
+            _FakeSession(
+                session_id="inactive-cheap",
+                ended_at=1.0,
+                cost_by_day=MappingProxyType({today: 0.1}),
+            ),
+            _FakeSession(
+                session_id="active-expensive",
+                ended_at=None,
+                cost_by_day=MappingProxyType({today: 5.0}),
+            ),
+            _FakeSession(
+                session_id="inactive-expensive",
+                ended_at=1.0,
+                cost_by_day=MappingProxyType({today: 9.0}),
+            ),
+            _FakeSession(
+                session_id="active-cheap",
+                ended_at=None,
+                cost_by_day=MappingProxyType({today: 0.5}),
+            ),
         ]
-        # Sort by cost descending — active group sits on top even though the
-        # single most expensive row is inactive.
         result = InfoTab._order_sessions(sessions, "cost", reverse=True)
-        ids = [s["session_id"] for s in result]
+        ids = [s.session_id for s in result]
         assert ids == [
             "active-expensive",
             "active-cheap",
@@ -107,26 +152,44 @@ class TestOrderSessions:
         ]
 
     def test_secondary_sort_applies_within_each_group(self) -> None:
+        from datetime import datetime
+
+        today = datetime.now().strftime("%Y-%m-%d")
         sessions = [
-            {"session_id": "a-low", "is_active": True, "today_cost_usd": 1.0},
-            {"session_id": "a-high", "is_active": True, "today_cost_usd": 3.0},
-            {"session_id": "i-low", "is_active": False, "today_cost_usd": 0.5},
-            {"session_id": "i-high", "is_active": False, "today_cost_usd": 10.0},
+            _FakeSession(
+                session_id="a-low",
+                ended_at=None,
+                cost_by_day=MappingProxyType({today: 1.0}),
+            ),
+            _FakeSession(
+                session_id="a-high",
+                ended_at=None,
+                cost_by_day=MappingProxyType({today: 3.0}),
+            ),
+            _FakeSession(
+                session_id="i-low",
+                ended_at=1.0,
+                cost_by_day=MappingProxyType({today: 0.5}),
+            ),
+            _FakeSession(
+                session_id="i-high",
+                ended_at=1.0,
+                cost_by_day=MappingProxyType({today: 10.0}),
+            ),
         ]
         result = InfoTab._order_sessions(sessions, "cost", reverse=False)
-        ids = [s["session_id"] for s in result]
+        ids = [s.session_id for s in result]
         assert ids == ["a-low", "a-high", "i-low", "i-high"]
 
     def test_no_sort_column_still_groups_active_first(self) -> None:
         sessions = [
-            {"session_id": "i1", "is_active": False},
-            {"session_id": "a1", "is_active": True},
-            {"session_id": "i2", "is_active": False},
-            {"session_id": "a2", "is_active": True},
+            _FakeSession(session_id="i1", ended_at=1.0),
+            _FakeSession(session_id="a1", ended_at=None),
+            _FakeSession(session_id="i2", ended_at=1.0),
+            _FakeSession(session_id="a2", ended_at=None),
         ]
         result = InfoTab._order_sessions(sessions, None, reverse=False)
-        ids = [s["session_id"] for s in result]
-        # Relative order within each group preserved (stable sort)
+        ids = [s.session_id for s in result]
         assert ids == ["a1", "a2", "i1", "i2"]
 
 
@@ -134,17 +197,15 @@ class TestSessionKey:
     """Test _session_key helper used by the Session column."""
 
     def test_first_segment_with_double_dot(self) -> None:
-        assert (
-            _session_key({"session_id": "32beeba5-c9b0-4981-9b8f-acb1b572ae1e"})
-            == "32beeba5.."
-        )
+        s = _FakeSession(session_id="32beeba5-c9b0-4981-9b8f-acb1b572ae1e")
+        assert _session_key(s) == "32beeba5.."
 
     def test_short_session_id_uses_full_value(self) -> None:
-        assert _session_key({"session_id": "abc"}) == "abc.."
+        s = _FakeSession(session_id="abc")
+        assert _session_key(s) == "abc.."
 
     def test_em_dash_when_session_id_missing(self) -> None:
-        assert _session_key({}) == "—"
-        assert _session_key({"session_id": ""}) == "—"
+        assert _session_key(_FakeSession(session_id="")) == "—"
 
 
 class TestShortModelName:
