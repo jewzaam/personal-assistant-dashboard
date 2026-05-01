@@ -5,26 +5,16 @@ Claude Agent SDK ``ResultMessage`` payloads are per-query, but
 AgentPulse's ``/statusline/claude`` endpoint expects session-cumulative
 totals in the same nested shape the Claude Code CLI's statusline hook
 emits. ``SessionAccumulator`` sums per-query values across a session;
-``build_payload`` produces the dict to POST; ``post_statusline`` does
-the HTTP POST with errors swallowed so a down AgentPulse never breaks
-the chat flow.
+``build_payload`` produces the dict to POST.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-import urllib.error
-import urllib.request
-from pathlib import Path
 from typing import Any
 
-from personal_assistant_dashboard.agentpulse_config import (
-    CONFIG_PATH,
-    HTTP_TIMEOUT_S,
-    load_agentpulse_config,
-)
+from agentpulse.client import Session
 
 logger = logging.getLogger(__name__)
 
@@ -240,60 +230,6 @@ def build_payload(
     }
 
 
-def load_agentpulse_endpoint(
-    path: Path = CONFIG_PATH,
-) -> tuple[str, int] | None:
-    """Read AgentPulse host/port from its config file.
-
-    Thin adapter over ``load_agentpulse_config`` — returns just the
-    ``(host, port)`` tuple the statusline forwarder needs. Returns
-    ``None`` when the file is missing, malformed, or lacks required
-    keys; forwarding is silently skipped in that case.
-    """
-    config = load_agentpulse_config(path)
-    if config is None:
-        return None
-    return (config.host, config.port)
-
-
-def post_statusline(host: str, port: int, payload: dict[str, Any]) -> bool:
-    """POST a statusline payload to AgentPulse. Returns True on HTTP 200."""
-    url = f"http://{host}:{port}/statusline/claude"
-    body = json.dumps(payload).encode("utf-8")
-    session_id = payload.get("session_id", "?")
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
-            status = int(resp.status)
-            if 200 <= status < 300:
-                return True
-            _log_post_failure(session_id, f"HTTP {status}", payload)
-            return False
-    except urllib.error.HTTPError as exc:
-        _log_post_failure(session_id, f"HTTPError {exc.code}: {exc}", payload)
-        return False
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        _log_post_failure(session_id, f"{url} failed: {exc}", payload)
-        return False
-
-
-def _log_post_failure(session_id: str, reason: str, payload: dict[str, Any]) -> None:
-    """Emit DEBUG logs for a failed statusline POST.
-
-    Two records: one summarising the failure, one dumping the payload
-    that was sent. Splitting them keeps the primary log line short while
-    still preserving the full payload for post-mortem analysis when
-    DEBUG is enabled.
-    """
-    logger.debug("statusline POST session=%s failed: %s", session_id, reason)
-    logger.debug("statusline POST session=%s payload=%s", session_id, payload)
-
-
 class SeedResult:
     """Outcome of a one-shot seed attempt against AgentPulse.
 
@@ -307,13 +243,11 @@ class SeedResult:
       numeric field null still reports ``merged=True`` — AgentPulse had
       the session but had nothing to contribute.
     - ``merged=False``: AgentPulse was reachable but had no record of
-      this session (HTTP 404, or an unexpected response body). The
-      accumulator is left untouched — its local values are already
-      authoritative.
+      this session. The accumulator is left untouched — its local
+      values are already authoritative.
 
     ``ok`` is False only when AgentPulse was unreachable or returned an
-    unexpected error (5xx, connection refused, timeout, malformed body,
-    non-numeric totals). The caller must not POST in that state; the
+    unexpected error. The caller must not POST in that state; the
     accumulator keeps growing locally until a later seed attempt
     succeeds.
     """
@@ -327,9 +261,7 @@ class SeedResult:
 
 def merge_agentpulse_seed(
     acc: SessionAccumulator,
-    host: str,
-    port: int,
-    session_id: str,
+    session: Session | None,
 ) -> SeedResult:
     """Add AgentPulse's stored session totals to ``acc`` (one-shot).
 
@@ -339,59 +271,26 @@ def merge_agentpulse_seed(
     was offline; those counters are preserved and the stored totals are
     *added* so no data is lost in either direction.
 
+    ``session`` is the ``Session`` dataclass returned by
+    ``AgentPulseClient.session(id)`` — ``None`` when the session is
+    unknown to AgentPulse (client returns None on 404 or failure).
+
     Fields merged (all additive):
     - ``total_cost_usd``
     - ``total_input_tokens``
     - ``total_output_tokens``
 
-    Fields AgentPulse does not track at session level are left alone:
-    ``total_duration_ms``, ``total_api_duration_ms``, cache tokens.
-
     ``last_model_name`` is populated from AgentPulse only if the
     accumulator hasn't seen one yet (local takes precedence because it
     came from an actual SDK message).
     """
-    url = f"http://{host}:{port}/api/v1/sessions/{session_id}"
-    req = urllib.request.Request(url, method="GET")
-    try:
-        # urlopen raises HTTPError for 4xx/5xx and auto-follows 3xx, so a
-        # successful return guarantees 2xx — no explicit status check needed.
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
-            data = json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return SeedResult(ok=True, merged=False)
-        logger.debug("seed GET session=%s HTTPError %d: %s", session_id, exc.code, exc)
-        return SeedResult(ok=False, merged=False)
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        logger.debug("seed GET session=%s to %s failed: %s", session_id, url, exc)
-        return SeedResult(ok=False, merged=False)
-
-    if not isinstance(data, dict):
-        # Unexpected response shape — treat as no-data rather than error
+    if session is None:
         return SeedResult(ok=True, merged=False)
 
-    # Guard the numeric coercions — a malformed AgentPulse response (non-
-    # numeric strings, NaN/Inf sneaking through json) would otherwise raise
-    # ValueError out of this function. Treat as no-data rather than error.
-    try:
-        acc.session_id = session_id
-        cost = data.get("cost_usd")
-        if cost is not None:
-            acc.total_cost_usd += float(cost)
-        in_tokens = data.get("total_input_tokens")
-        if in_tokens is not None:
-            acc.total_input_tokens += int(in_tokens)
-        out_tokens = data.get("total_output_tokens")
-        if out_tokens is not None:
-            acc.total_output_tokens += int(out_tokens)
-        model_name = data.get("model_name")
-        if model_name and not acc.last_model_name:
-            acc.last_model_name = str(model_name)
-    except (TypeError, ValueError):
-        logger.debug("seed GET %s returned non-numeric totals", url)
-        return SeedResult(ok=False, merged=False)
-    # ``merged=True`` means AgentPulse returned a record for this session —
-    # even if every numeric field was null. The caller only branches on
-    # ``ok``, so the distinction is informational.
+    acc.session_id = session.session_id
+    acc.total_cost_usd += session.total_cost_usd
+    acc.total_input_tokens += session.total_input_tokens
+    acc.total_output_tokens += session.total_output_tokens
+    if session.model_name and not acc.last_model_name:
+        acc.last_model_name = session.model_name
     return SeedResult(ok=True, merged=True)

@@ -9,10 +9,10 @@ version = "0.1.0"
 description = "CLI-first personal task management with voice input, powered by Claude"
 requires-python = ">=3.12"
 dependencies = [
+    "agentpulse[client]",
     "claude-agent-sdk>=0.1.50",
     "local-transcribe @ git+https://github.com/jewzaam/local-transcribe.git@v0.5.0",
     "pyyaml>=6.0",
-    "websockets>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -48,7 +48,7 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["claude_agent_sdk.*", "local_transcribe.*", "local_transcribe_ui.*"]
+module = ["agentpulse.*", "claude_agent_sdk.*", "local_transcribe.*", "local_transcribe_ui.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

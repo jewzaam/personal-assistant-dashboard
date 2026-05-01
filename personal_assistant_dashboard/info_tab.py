@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from tkinter import ttk
 from typing import Any
 
-from personal_assistant_dashboard.agentpulse_client import AgentPulseClient
+from agentpulse.client import AgentPulseClient, ConnectionState, Session
 from personal_assistant_dashboard.config import (
     BG_WINDOW,
     COLOR_ERROR,
@@ -53,17 +53,15 @@ _STATE_LABELS: dict[str | None, str] = {
     None: "—",
 }
 
-# Sort key extractors: column id → function(dict) → sortable value
-_SortKey = Callable[[dict[str, Any]], Any]
+# Sort key extractors: column id → function(Session) → sortable value
+_SortKey = Callable[[Session], Any]
 _SORT_KEYS: dict[str, _SortKey] = {
-    "session": lambda s: s.get("session_id", "").lower(),
-    "state": lambda s: _STATE_LABELS.get(s.get("derived_state"), "—").lower(),
-    "project": lambda s: _project_name(s.get("cwd", "")).lower(),
-    "cost": lambda s: s.get("today_cost_usd", 0.0),
-    "ctx_pct": lambda s: s.get("context_used_pct", 0),
-    "tokens": lambda s: (
-        s.get("total_input_tokens", 0) + s.get("total_output_tokens", 0)
-    ),
+    "session": lambda s: s.session_id.lower(),
+    "state": lambda s: _STATE_LABELS.get(s.derived_state, "—").lower(),
+    "project": lambda s: _project_name(s.cwd).lower(),
+    "cost": lambda s: _today_cost(s),
+    "ctx_pct": lambda s: int(s.context_used_pct or 0),
+    "tokens": lambda s: s.total_input_tokens + s.total_output_tokens,
 }
 
 # Percentage thresholds for color coding
@@ -102,7 +100,7 @@ def short_model_name(name: str) -> str:
 def _format_cost(usd: float) -> str:
     """Format USD cost for display."""
     if usd == 0.0:
-        return "\u2014"
+        return "—"
     if usd < 0.01:
         return f"${usd:.3f}"
     return f"${usd:.2f}"
@@ -114,7 +112,7 @@ def _format_tokens(count: int, *, compact: bool = False) -> str:
     ``compact=True`` drops decimal precision (used in table rows).
     """
     if count == 0:
-        return "\u2014"
+        return "—"
     if count >= 1_000_000:
         if compact:
             return f"{round(count / 1_000_000)} M"
@@ -127,18 +125,25 @@ def _format_tokens(count: int, *, compact: bool = False) -> str:
     return str(count)
 
 
-def _format_limit(bucket: dict[str, Any] | None) -> str:
-    """Format a rate-limit bucket as '<reset> <pct>%' or '\u2014'."""
-    if not bucket or not isinstance(bucket, dict):
-        return "\u2014"
-    pct = bucket.get("utilization")
-    if pct is None:
-        return "\u2014"
-    resets_at = bucket.get("resets_at")
+def _today_cost(session: Session) -> float:
+    """Extract today's cost from a Session's cost_by_day mapping."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    return float(session.cost_by_day.get(today, 0.0))
+
+
+def _is_active(session: Session) -> bool:
+    """True when the session has not ended."""
+    return session.ended_at is None
+
+
+def _format_limit(utilization: float | None, resets_at: float | None) -> str:
+    """Format a rate-limit pair as '<reset> <pct>%' or '—'."""
+    if utilization is None:
+        return "—"
     reset_str = _format_reset_time(resets_at) if resets_at else ""
     if reset_str:
-        return f"{reset_str}: {int(pct)}%"
-    return f"{int(pct)}%"
+        return f"{reset_str}: {int(utilization)}%"
+    return f"{int(utilization)}%"
 
 
 def _format_reset_time(resets_at: float | int | None) -> str:
@@ -173,12 +178,9 @@ def _format_reset_time(resets_at: float | int | None) -> str:
     return f"{days}d{remaining_h}h"
 
 
-def _limit_pct(bucket: dict[str, Any] | None) -> int:
-    """Extract utilization percentage from a limit bucket, defaulting to 0."""
-    if not bucket or not isinstance(bucket, dict):
-        return 0
-    pct = bucket.get("utilization")
-    return int(pct) if pct is not None else 0
+def _limit_pct(utilization: float | None) -> int:
+    """Extract utilization percentage, defaulting to 0."""
+    return int(utilization) if utilization is not None else 0
 
 
 class InfoTab:
@@ -189,14 +191,14 @@ class InfoTab:
         parent: tk.Frame,
         root: tk.Tk,
         *,
-        client: AgentPulseClient,
+        client: AgentPulseClient | None,
         console_log: ConsoleLogCallback | None = None,
     ) -> None:
         self._parent = parent
         self._root = root
         self._client = client
         self._console_log = console_log
-        self._sessions: list[dict[str, Any]] = []
+        self._sessions: list[Session] = []
         self._sort_col: str | None = None
         self._sort_reverse: bool = False
 
@@ -223,7 +225,7 @@ class InfoTab:
 
         refresh_btn = tk.Button(
             header,
-            text="\u21bb",  # ↻
+            text="↻",  # ↻
             bg=BG_WINDOW,
             fg=FG_TEXT,
             font=FONT_NAME_HEADING,
@@ -310,12 +312,11 @@ class InfoTab:
 
     def _manual_refresh(self) -> None:
         """Handle manual refresh button click — triggers REST re-fetch."""
-        self._client.refresh()
+        if self._client is not None:
+            self._client.refresh()
 
     @staticmethod
-    def _drop_empty_inactive(
-        sessions: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+    def _drop_empty_inactive(sessions: list[Session]) -> list[Session]:
         """Hide inactive sessions that carry no usage data.
 
         An inactive row is dropped when cost, input tokens, and output
@@ -325,15 +326,15 @@ class InfoTab:
         sessions are always kept so they remain visible while still
         warming up.
         """
-        result: list[dict[str, Any]] = []
+        result: list[Session] = []
         for s in sessions:
-            if s.get("is_active", True):
+            if _is_active(s):
                 result.append(s)
                 continue
             has_data = (
-                (s.get("today_cost_usd") or 0.0) > 0
-                or (s.get("total_input_tokens") or 0) > 0
-                or (s.get("total_output_tokens") or 0) > 0
+                _today_cost(s) > 0
+                or s.total_input_tokens > 0
+                or s.total_output_tokens > 0
             )
             if has_data:
                 result.append(s)
@@ -341,17 +342,23 @@ class InfoTab:
 
     def _refresh(self) -> None:
         """Reload session data from the client and update the display."""
-        self._sessions = self._drop_empty_inactive(self._client.get_sessions())
+        raw = list(self._client.sessions()) if self._client is not None else []
+        self._sessions = self._drop_empty_inactive(raw)
         self._update_summary()
         self._sort_and_render()
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        active_count = sum(1 for s in self._sessions if s.get("is_active", True))
+        active_count = sum(1 for s in self._sessions if _is_active(s))
         closed_count = len(self._sessions) - active_count
         if closed_count:
             count_str = f"{active_count} active, {closed_count} closed"
         else:
             count_str = f"{active_count} process(es)"
-        self._status_label.configure(text=f"Last updated: {now}  \u2022  {count_str}")
+        status = f"Last updated: {now}  •  {count_str}"
+        if self._client is not None:
+            conn = self._client.connection_state()
+            if conn != ConnectionState.CONNECTED:
+                status += f"  •  {conn.value}"
+        self._status_label.configure(text=status)
 
     def _on_heading_click(self, col_id: str) -> None:
         """Sort by the clicked column, toggling direction on repeat click."""
@@ -364,10 +371,10 @@ class InfoTab:
 
     @staticmethod
     def _order_sessions(
-        sessions: list[dict[str, Any]],
+        sessions: list[Session],
         sort_col: str | None,
         reverse: bool,
-    ) -> list[dict[str, Any]]:
+    ) -> list[Session]:
         """Return sessions ordered active-first, then by ``sort_col``.
 
         Active sessions always group above inactive ones regardless of
@@ -378,7 +385,7 @@ class InfoTab:
         ordered = list(sessions)
         if sort_col and sort_col in _SORT_KEYS:
             ordered.sort(key=_SORT_KEYS[sort_col], reverse=reverse)
-        ordered.sort(key=lambda s: 0 if s.get("is_active", True) else 1)
+        ordered.sort(key=lambda s: 0 if _is_active(s) else 1)
         return ordered
 
     def _sort_and_render(self) -> None:
@@ -389,7 +396,7 @@ class InfoTab:
         # Update heading text to show sort indicator
         for col_id, heading, _w, _a in _COLUMNS:
             if col_id == self._sort_col:
-                arrow = " \u25bc" if self._sort_reverse else " \u25b2"
+                arrow = " ▼" if self._sort_reverse else " ▲"
                 self._tree.heading(col_id, text=heading + arrow)
             else:
                 self._tree.heading(col_id, text=heading)
@@ -398,18 +405,29 @@ class InfoTab:
     def _update_summary(self) -> None:
         """Update the aggregate summary label."""
         if not self._sessions:
+            if self._client is not None:
+                state = self._client.connection_state()
+                if state == ConnectionState.CONNECTING:
+                    self._summary_label.configure(text="Connecting...", fg=FG_DIM)
+                    return
+                if state == ConnectionState.DISCONNECTED:
+                    self._summary_label.configure(text="Disconnected", fg=FG_DIM)
+                    return
             self._summary_label.configure(text="No sessions", fg=FG_TEXT)
             return
 
-        total_cost = sum(s.get("today_cost_usd", 0.0) for s in self._sessions)
+        total_cost = sum(_today_cost(s) for s in self._sessions)
         total_tokens = sum(
-            s.get("total_input_tokens", 0) + s.get("total_output_tokens", 0)
-            for s in self._sessions
+            s.total_input_tokens + s.total_output_tokens for s in self._sessions
         )
 
-        limits = self._client.get_limits()
-        five_h = _format_limit(limits.get("five_hour"))
-        seven_d = _format_limit(limits.get("seven_day"))
+        limits = self._client.limits() if self._client is not None else None
+        five_h_util = limits.five_hour_utilization if limits else None
+        five_h_reset = limits.five_hour_resets_at if limits else None
+        seven_d_util = limits.seven_day_utilization if limits else None
+        seven_d_reset = limits.seven_day_resets_at if limits else None
+        five_h = _format_limit(five_h_util, five_h_reset)
+        seven_d = _format_limit(seven_d_util, seven_d_reset)
 
         parts = [
             _format_cost(total_cost),
@@ -419,16 +437,15 @@ class InfoTab:
             parts.append(five_h)
         if seven_d != "—":
             parts.append(seven_d)
-        self._summary_label.configure(text="  \u2022  ".join(parts))
+        self._summary_label.configure(text="  •  ".join(parts))
 
-        # Color based on worst rate limit utilization
         worst_pct = max(
-            _limit_pct(limits.get("five_hour")),
-            _limit_pct(limits.get("seven_day")),
+            _limit_pct(five_h_util),
+            _limit_pct(seven_d_util),
         )
         self._summary_label.configure(fg=_pct_color(worst_pct))
 
-    def _update_table(self, sessions: list[dict[str, Any]]) -> None:
+    def _update_table(self, sessions: list[Session]) -> None:
         """Rebuild the treeview rows."""
         self._tree.delete(*self._tree.get_children())
 
@@ -436,10 +453,9 @@ class InfoTab:
             return
 
         # Aggregate row first
-        total_cost = sum(s.get("today_cost_usd", 0.0) for s in sessions)
+        total_cost = sum(_today_cost(s) for s in sessions)
         total_tokens = sum(
-            s.get("total_input_tokens", 0) + s.get("total_output_tokens", 0)
-            for s in sessions
+            s.total_input_tokens + s.total_output_tokens for s in sessions
         )
 
         self._tree.insert(
@@ -458,16 +474,14 @@ class InfoTab:
 
         # Individual processes
         for s in sessions:
-            ctx_pct = int(s.get("context_used_pct") or 0)
-            active = s.get("is_active", True)
+            ctx_pct = int(s.context_used_pct or 0)
+            active = _is_active(s)
             tag = "closed" if not active else _pct_tag(ctx_pct)
-            ctx_str = f"{ctx_pct}%" if ctx_pct else "\u2014"
-            cost = s.get("today_cost_usd", 0.0)
-            session_tokens = s.get("total_input_tokens", 0) + s.get(
-                "total_output_tokens", 0
-            )
+            ctx_str = f"{ctx_pct}%" if ctx_pct else "—"
+            cost = _today_cost(s)
+            session_tokens = s.total_input_tokens + s.total_output_tokens
 
-            state_label = _STATE_LABELS.get(s.get("derived_state"), "—")
+            state_label = _STATE_LABELS.get(s.derived_state, "—")
 
             self._tree.insert(
                 "",
@@ -475,7 +489,7 @@ class InfoTab:
                 values=(
                     _session_key(s),
                     state_label,
-                    _project_name(s.get("cwd", "")),
+                    _project_name(s.cwd),
                     _format_cost(cost),
                     ctx_str,
                     _format_tokens(session_tokens, compact=True),
@@ -488,15 +502,15 @@ class InfoTab:
         return
 
 
-def _session_key(session: dict[str, Any]) -> str:
+def _session_key(session: Session) -> str:
     """Return a display key for a session row: ``<first-segment>..``.
 
-    Shows ``\u2014`` when the session_id is unknown so the column stays
+    Shows ``—`` when the session_id is unknown so the column stays
     aligned. The first 8 characters cover the UUID's first segment.
     """
-    sid = session.get("session_id") or ""
+    sid = session.session_id
     if not sid:
-        return "\u2014"
+        return "—"
     head = sid.split("-", 1)[0][:8]
     return f"{head}.."
 

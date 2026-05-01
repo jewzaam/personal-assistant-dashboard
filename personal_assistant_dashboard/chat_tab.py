@@ -53,11 +53,13 @@ class ChatTab:
         *,
         console_log: ConsoleLogCallback | None = None,
         notify_tab: NotifyTabCallback | None = None,
+        agentpulse_client: Any = None,
     ) -> None:
         self._parent = parent
         self._root = root
         self._console_log = console_log
         self._notify_tab = notify_tab
+        self._agentpulse_client = agentpulse_client
         self._on_external_send: Any = None
         self._client: Any = None
         self._streaming = False
@@ -387,6 +389,7 @@ class ChatTab:
             on_done=lambda: self._schedule(self._on_done),
             on_error=lambda e: self._schedule(self._on_error, e),
             on_usage=lambda m, c, p: self._schedule(self._on_usage, m, c, p),
+            agentpulse_client=self._agentpulse_client,
         )
         self._client.start()
 

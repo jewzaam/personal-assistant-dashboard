@@ -35,7 +35,7 @@ Coverage target: 80% on non-UI code. UI modules (`dashboard.py`, `*_tab.py`, `co
 
 - **`dashboard.py`** — main Tkinter window, tab management, window geometry
 - **`chat_tab.py`** — Chat tab with Claude Agent SDK streaming
-- **`chat_client.py`** — `ClaudeSDKClient` wrapper in background asyncio thread. Each `ResultMessage` is forwarded to AgentPulse's `/statusline/claude` endpoint via a queued single-writer worker thread (see `agentpulse_statusline.py`). Forwarding is seeded with AgentPulse's stored totals on first successful contact so restart-with-resume preserves lifetime cost.
+- **`chat_client.py`** — `ClaudeSDKClient` wrapper in background asyncio thread. Each `ResultMessage` is forwarded to AgentPulse via the shared `AgentPulseClient` (from `agentpulse[client]` library) through a queued single-writer worker thread. Statusline payload is built by `agentpulse_statusline.py`. Seeding merges AgentPulse's stored totals on first contact so restart-with-resume preserves lifetime cost.
 - **`settings_tab.py`** — settings editor with git checkpoint
 - **`config.py`** — constants (colors, fonts, timeouts)
 
@@ -46,8 +46,7 @@ Coverage target: 80% on non-UI code. UI modules (`dashboard.py`, `*_tab.py`, `co
 - **`usage_poller.py`** — Anthropic 5-hour quota polling with caching/backoff
 - **`gws_auth.py`** — GWS CLI OAuth scope checking
 - **`startup.py`** — XDG autostart `.desktop` file management
-- **`agentpulse_config.py`** — shared loader for `~/.claude/agentpulse/config.json`, used by both AgentPulse consumers.
-- **`agentpulse_statusline.py`** — forwards Chat tab SDK session usage (cost, tokens, context %) to AgentPulse's `/statusline/claude` endpoint. Per-session accumulator resets on clear (dashboard clear kills the subprocess — new PID = new process); merge-seed-on-first-contact preserves totals across dashboard restarts within the same session.
+- **`agentpulse_statusline.py`** — producer-side logic for Chat tab SDK session usage: `SessionAccumulator`, `build_payload`, context window lookup, model extraction, and seed merge. Transport (POST, session fetch) is handled by the `agentpulse[client]` library.
 
 ## Configuration
 

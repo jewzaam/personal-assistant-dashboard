@@ -4,14 +4,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import queue
 import socket
 import threading
-import urllib.request
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -28,15 +27,13 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
-from personal_assistant_dashboard.agentpulse_config import HTTP_TIMEOUT_S
+from agentpulse.client import AgentPulseClient
 from personal_assistant_dashboard.agentpulse_statusline import (
     SessionAccumulator,
     build_payload,
     extract_model_name,
-    load_agentpulse_endpoint,
     lookup_context_window,
     merge_agentpulse_seed,
-    post_statusline,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,8 +76,8 @@ async def _deny_unapproved(
 ) -> PermissionResultAllow | PermissionResultDeny:
     """Deny any tool call not covered by global settings allow rules.
 
-    Permission evaluation order: hooks → deny rules → permission mode →
-    allow rules → canUseTool callback.  If a call reaches this callback
+    Permission evaluation order: hooks -> deny rules -> permission mode ->
+    allow rules -> canUseTool callback.  If a call reaches this callback
     it was not auto-approved by the user's settings, so we deny it.
     """
     logger.info("denying unapproved tool call: %s", tool_name)
@@ -102,6 +99,7 @@ class ChatClient:
         on_done: Callable[[], None],
         on_error: Callable[[str], None],
         on_usage: Callable[[str, float, float], None] | None = None,
+        agentpulse_client: AgentPulseClient | None = None,
     ) -> None:
         self._on_text = on_text
         self._on_tool_use = on_tool_use
@@ -123,7 +121,7 @@ class ChatClient:
         # by clear(). None means: next connect starts a fresh session.
         self._next_resume_id: str | None = None
         # Serializes SDK lifecycle ops on the asyncio loop. Prevents a
-        # rapid clear→send sequence from racing: the in-flight disconnect
+        # rapid clear->send sequence from racing: the in-flight disconnect
         # holds the lock while it tears down, and the next connect waits
         # before spawning a new subprocess.
         self._sdk_lock: asyncio.Lock = asyncio.Lock()
@@ -149,9 +147,9 @@ class ChatClient:
         # outage produces a fresh warning.
         self._agentpulse_outage_warned = False
         self._ui_cost_seeded = False
-        self._agentpulse_endpoint: tuple[str, int] | None = load_agentpulse_endpoint()
-        if self._agentpulse_endpoint is None:
-            logger.info("AgentPulse statusline forwarding disabled (no config)")
+        self._agentpulse_client = agentpulse_client
+        if self._agentpulse_client is None:
+            logger.info("AgentPulse statusline forwarding disabled (no client)")
         # Single long-lived worker thread drains this queue and runs
         # record+seed+POST sequentially. One worker (not one-per-turn)
         # bounds concurrency and keeps the accumulator mutation totally
@@ -203,7 +201,7 @@ class ChatClient:
             )
             self._thread.start()
 
-        if self._next_resume_id and self._agentpulse_endpoint:
+        if self._next_resume_id and self._agentpulse_client is not None:
             threading.Thread(
                 target=self._eager_seed_ui,
                 args=(self._next_resume_id,),
@@ -235,7 +233,7 @@ class ChatClient:
     async def _connect(self) -> None:
         """Create and connect the SDK client using ``_next_resume_id``.
 
-        Reads ``self._next_resume_id`` for the resume target — None
+        Reads ``self._next_resume_id`` for the resume target -- None
         means start a fresh session (matches a CLI invocation with no
         ``--resume`` flag). The id is consumed on success so subsequent
         sends within the same SDK instance don't redundantly pass it.
@@ -474,11 +472,11 @@ class ChatClient:
         """Return the session ID for the current or next session, or None.
 
         States:
-        - Connected, ``ResultMessage`` seen → accumulator's session_id.
-        - Connected, no ``ResultMessage`` yet → None (id pending).
-        - Not connected, resume target set → the resume id (next send
+        - Connected, ``ResultMessage`` seen -> accumulator's session_id.
+        - Connected, no ``ResultMessage`` yet -> None (id pending).
+        - Not connected, resume target set -> the resume id (next send
           will resume to it, so it's the correct answer pre-send too).
-        - Not connected, no resume target (post-clear or fresh PA) →
+        - Not connected, no resume target (post-clear or fresh PA) ->
           None.
 
         The accumulator's id is reset by ``_clear`` so a stale id from
@@ -505,7 +503,7 @@ class ChatClient:
         the latest cumulative totals, so no data is permanently lost).
         When AgentPulse is not configured this is a no-op.
         """
-        if self._agentpulse_endpoint is None:
+        if self._agentpulse_client is None:
             return
         model_name = extract_model_name(msg.model_usage)
         task = _StatuslineTask(
@@ -566,24 +564,15 @@ class ChatClient:
 
         Runs once at start() on a throwaway thread so the Chat tab
         statusline shows the resumed session's lifetime cost immediately,
-        before the first turn completes. Uses the v2 session endpoint
-        which returns sessions regardless of active/inactive state.
+        before the first turn completes.
         """
-        assert self._agentpulse_endpoint is not None
-        host, port = self._agentpulse_endpoint
-        url = f"http://{host}:{port}/api/v2/sessions/{session_id}"
-        try:
-            with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT_S) as resp:
-                data = json.loads(resp.read())
-        except Exception:
-            logger.debug("eager seed fetch failed for session %s", session_id[:8])
+        assert self._agentpulse_client is not None
+        session = self._agentpulse_client.session(session_id)
+        if session is None:
+            logger.debug("eager seed: session %s not found", session_id[:8])
             return
-        if not isinstance(data, dict):
-            return
-        from personal_assistant_dashboard.agentpulse_client import _today_local_date
-
-        cost_by_day = data.get("cost_by_day") or {}
-        seed_cost = float(cost_by_day.get(_today_local_date(), 0.0))
+        today = datetime.now().strftime("%Y-%m-%d")
+        seed_cost = float(session.cost_by_day.get(today, 0.0))
         if seed_cost <= 0:
             return
         self._ui_cost_seeded = True
@@ -664,8 +653,7 @@ class ChatClient:
 
     def _process_statusline_task(self, task: _StatuslineTask) -> None:
         """Record, seed-if-needed, then POST one queued task."""
-        assert self._agentpulse_endpoint is not None
-        host, port = self._agentpulse_endpoint
+        assert self._agentpulse_client is not None
 
         with self._accumulator_lock:
             self._accumulator.record_result(
@@ -680,19 +668,18 @@ class ChatClient:
             need_seed = not self._accumulator_seeded
 
         if need_seed:
-            # Seed outside the lock — this is a blocking HTTP call and
-            # the threading standard forbids I/O while holding a lock.
+            # Seed outside the lock — this is a blocking call and the
+            # threading standard forbids I/O while holding a lock.
             # Safe to mutate the accumulator from here because this
             # worker is the single writer.
             cost_before = self._accumulator.total_cost_usd
-            seed = merge_agentpulse_seed(self._accumulator, host, port, task.session_id)
+            session = self._agentpulse_client.session(task.session_id)
+            seed = merge_agentpulse_seed(self._accumulator, session)
             if not seed.ok:
                 if not self._agentpulse_outage_warned:
                     logger.warning(
-                        "AgentPulse unreachable at %s:%d; statusline "
+                        "AgentPulse unreachable; statusline "
                         "forwarding deferred (will retry each turn)",
-                        host,
-                        port,
                     )
                     self._agentpulse_outage_warned = True
                 else:
@@ -722,15 +709,13 @@ class ChatClient:
                 cwd=str(WORK_DIR),
                 source_system=self._source_system,
             )
-        posted = post_statusline(host, port, payload)
+        posted = self._agentpulse_client.post_statusline(payload)
         if posted:
             self._agentpulse_outage_warned = False
         elif not self._agentpulse_outage_warned:
             logger.warning(
-                "statusline POST failed for session=%s at %s:%d; "
+                "statusline POST failed for session=%s; "
                 "data may be missing from the Info tab",
                 task.session_id,
-                host,
-                port,
             )
             self._agentpulse_outage_warned = True

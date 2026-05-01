@@ -268,6 +268,21 @@ class Dashboard:
 
         self._notebook = ttk.Notebook(main, style="Dark.TNotebook")
 
+        # AgentPulse client — created early so ChatTab and InfoTab can share it
+        from agentpulse.client import (
+            AgentPulseClient,
+            load_client_config,
+        )
+
+        self._agentpulse_config = load_client_config()
+        if self._agentpulse_config is not None:
+            self._agentpulse_client: AgentPulseClient | None = AgentPulseClient(
+                self._agentpulse_config,
+                marshaler=lambda f: self._root.after(0, f),
+            )
+        else:
+            self._agentpulse_client = None
+
         # Chat tab (default — first tab)
         chat_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(chat_frame, text="Chat")
@@ -279,6 +294,7 @@ class Dashboard:
             self._root,
             console_log=self.log_console,
             notify_tab=self._notify_tab,
+            agentpulse_client=self._agentpulse_client,
         )
 
         # Calendar tab
@@ -331,10 +347,8 @@ class Dashboard:
         info_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(info_frame, text="\u2139")
 
-        from personal_assistant_dashboard.agentpulse_client import AgentPulseClient
         from personal_assistant_dashboard.info_tab import InfoTab
 
-        self._agentpulse_client = AgentPulseClient(self._root, lambda: None)
         self._info_tab = InfoTab(
             info_frame,
             self._root,
@@ -387,7 +401,7 @@ class Dashboard:
             self._update_topbar_usage()
             self._seed_chat_status()
 
-        self._agentpulse_client._on_update = _on_agentpulse_update
+        self._on_agentpulse_update = _on_agentpulse_update
         self._update_topbar_usage()
 
         self._quick_chat_input = tk.Text(
@@ -489,9 +503,19 @@ class Dashboard:
         self._root.after(GEOMETRY_CAPTURE_DELAY_MS, self._capture_geometry)
         # Always start calendar data refresh (bells need fresh data)
         self._start_cal_refresh()
-        # Start AgentPulse streaming client
-        if hasattr(self, "_agentpulse_client"):
+        # Start AgentPulse streaming client — callbacks must be registered
+        # after start() because the library's sync facade drops them when
+        # the inner async client hasn't been created yet.
+        if self._agentpulse_client is not None:
             self._agentpulse_client.start()
+            self._agentpulse_client.on_change(self._on_agentpulse_update)
+            self._agentpulse_client.on_connection_state(
+                lambda _state: self._on_agentpulse_update()
+            )
+            # Bootstrap fires on_change during start(), before callbacks
+            # are registered. Repaint now to pick up the bootstrapped data.
+            self._on_agentpulse_update()
+            self._schedule_day_boundary_refresh()
         # Chat agent wakes on first user message — no startup greeting.
         # If there's no prior chat history, simulate the user typing "help"
         # and hitting Send so the built-in command handler shows the help.
@@ -506,17 +530,36 @@ class Dashboard:
         subsequent AgentPulse updates skip the lookup.
         """
         sid = self._resume_session_id
-        if not sid:
+        if not sid or self._agentpulse_client is None:
             return
-        for session in self._agentpulse_client.get_sessions():
-            if session.get("session_id") == sid:
-                self._chat_tab._on_usage(
-                    session.get("model_display_name", ""),
-                    session.get("today_cost_usd", 0.0),
-                    session.get("context_used_pct", 0.0),
-                )
-                self._resume_session_id = None
-                return
+        from personal_assistant_dashboard.info_tab import _today_cost
+
+        session = self._agentpulse_client.session(sid)
+        if session is not None:
+            self._chat_tab._on_usage(
+                session.model_name or "",
+                _today_cost(session),
+                float(session.context_used_pct or 0.0),
+            )
+            self._resume_session_id = None
+
+    def _schedule_day_boundary_refresh(self) -> None:
+        """Schedule a refresh callback for the next local midnight."""
+        now = datetime.now()
+        midnight = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        ms_until = max(1, int((midnight - now).total_seconds() * 1000))
+        try:
+            self._root.after(ms_until, self._on_day_boundary)
+        except (RuntimeError, tk.TclError):
+            pass
+
+    def _on_day_boundary(self) -> None:
+        """Day-boundary callback: refresh and reschedule."""
+        if self._agentpulse_client is not None:
+            self._agentpulse_client.refresh()
+        self._schedule_day_boundary_refresh()
 
     def _schedule(self, fn: Any, *args: Any) -> None:
         """Schedule a callback on the main thread from a background thread."""
@@ -632,6 +675,7 @@ class Dashboard:
         from personal_assistant_dashboard.info_tab import (
             _format_cost,
             _format_limit,
+            _today_cost,
         )
 
         if not hasattr(self, "_topbar_usage_var"):
@@ -640,11 +684,14 @@ class Dashboard:
         if not sessions:
             self._topbar_usage_text = ""
         else:
-            total_cost = sum(s.get("today_cost_usd", 0.0) for s in sessions)
+            total_cost = sum(_today_cost(s) for s in sessions)
             parts = [_format_cost(total_cost)]
-            if self._agentpulse_client.fetch_limits_enabled:
-                limits = self._agentpulse_client.get_limits()
-                parts.append(_format_limit(limits.get("five_hour")))
+            cfg = self._agentpulse_config
+            if self._agentpulse_client is not None and cfg and cfg.fetch_limits:
+                limits = self._agentpulse_client.limits()
+                five_h_util = limits.five_hour_utilization if limits else None
+                five_h_reset = limits.five_hour_resets_at if limits else None
+                parts.append(_format_limit(five_h_util, five_h_reset))
             self._topbar_usage_text = "  \u2022  ".join(parts)
         self._render_topbar_usage()
 
@@ -1852,7 +1899,7 @@ class Dashboard:
             self._settings_tab.on_destroy()
         if hasattr(self, "_info_tab"):
             self._info_tab.destroy()
-        if hasattr(self, "_agentpulse_client"):
+        if self._agentpulse_client is not None:
             self._agentpulse_client.stop()
         if restart:
             import os
