@@ -125,6 +125,20 @@ def _cmd_gui(args: argparse.Namespace) -> None:
     os.makedirs(WORK_DIR, exist_ok=True)
     os.chdir(WORK_DIR)
 
+    otel_attrs = os.environ.get("OTEL_RESOURCE_ATTRIBUTES")
+    if otel_attrs is not None:
+        _log = logging.getLogger("personal_assistant_dashboard")
+        _log.debug("OTEL_RESOURCE_ATTRIBUTES before: %s", otel_attrs)
+        parts = dict(p.split("=", 1) for p in otel_attrs.split(",") if "=" in p)
+        parts["project"] = str(WORK_DIR)
+        os.environ["OTEL_RESOURCE_ATTRIBUTES"] = ",".join(
+            f"{k}={v}" for k, v in parts.items()
+        )
+        _log.debug(
+            "OTEL_RESOURCE_ATTRIBUTES after: %s",
+            os.environ["OTEL_RESOURCE_ATTRIBUTES"],
+        )
+
     # Windows DPI awareness — must be called before Tk() is created
     if sys.platform == "win32":
         try:
