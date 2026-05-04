@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import platform
+import queue
 import subprocess
 import threading
 import tkinter as tk
@@ -275,13 +276,15 @@ class Dashboard:
         )
 
         self._agentpulse_config = load_client_config()
+        self._marshal_queue: queue.Queue[Callable[[], None]] = queue.Queue()
         if self._agentpulse_config is not None:
             self._agentpulse_client: AgentPulseClient | None = AgentPulseClient(
                 self._agentpulse_config,
-                marshaler=lambda f: self._root.after(0, f),
+                marshaler=lambda f: self._marshal_queue.put_nowait(f),
             )
         else:
             self._agentpulse_client = None
+        self._drain_marshal_queue()
 
         # Chat tab (default — first tab)
         chat_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
@@ -560,6 +563,19 @@ class Dashboard:
         if self._agentpulse_client is not None:
             self._agentpulse_client.refresh()
         self._schedule_day_boundary_refresh()
+
+    def _drain_marshal_queue(self) -> None:
+        """Poll the marshal queue and run queued callbacks on the main thread."""
+        try:
+            while True:
+                fn = self._marshal_queue.get_nowait()
+                fn()
+        except queue.Empty:
+            pass
+        try:
+            self._root.after(50, self._drain_marshal_queue)
+        except RuntimeError:
+            pass
 
     def _schedule(self, fn: Any, *args: Any) -> None:
         """Schedule a callback on the main thread from a background thread."""
@@ -2985,8 +3001,7 @@ class Dashboard:
 
             config = load_config(repo_path=self._state_path)
             calendar_ids = config.get("calendars", ["primary"])
-            self._root.after(
-                0,
+            self._schedule(
                 self._status_var.set,
                 f"Collecting from {len(calendar_ids)} calendar(s)...",
             )
