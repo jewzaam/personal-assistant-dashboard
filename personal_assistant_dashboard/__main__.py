@@ -10,6 +10,7 @@ import argparse
 import logging
 import logging.handlers
 import os
+import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -148,6 +149,8 @@ def _cmd_gui(args: argparse.Namespace) -> None:
         root, state_path=state_path, on_quit=root.quit, dpi_scale=dpi_scale
     )
     dashboard.show()
+
+    signal.signal(signal.SIGINT, lambda *_: root.after(0, dashboard._shutdown))
 
     # Auto-refresh and scope check on launch
     root.after(100, dashboard.refresh)
