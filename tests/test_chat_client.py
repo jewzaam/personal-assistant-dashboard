@@ -269,9 +269,10 @@ def test_stop_when_not_started_is_noop():
 # -- system prompt ------------------------------------------------------------
 
 
-def test_system_prompt_requires_claude_md():
-    assert "claude.md" in SYSTEM_PROMPT.lower()
-    assert "must" in SYSTEM_PROMPT.lower()
+def test_system_prompt_uses_claude_code_preset():
+    assert SYSTEM_PROMPT["type"] == "preset"
+    assert SYSTEM_PROMPT["preset"] == "claude_code"
+    assert "append" in SYSTEM_PROMPT
 
 
 # -- statusline forwarding ----------------------------------------------------

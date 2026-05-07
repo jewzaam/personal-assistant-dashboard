@@ -26,6 +26,7 @@ from claude_agent_sdk import (
     ToolPermissionContext,
     ToolUseBlock,
 )
+from claude_agent_sdk.types import SystemPromptPreset
 
 from agentpulse.client import AgentPulseClient
 from personal_assistant_dashboard.agentpulse_statusline import (
@@ -38,16 +39,14 @@ from personal_assistant_dashboard.agentpulse_statusline import (
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """\
-You are a personal assistant embedded in a desktop dashboard.
-
-CRITICAL: Your first action on every new conversation MUST be to Read the \
-file CLAUDE.md in your working directory. It contains your behavioral rules, \
-file permissions, source ranking, research methodology, and action item \
-filtering logic. Do not answer any user question until you have read it.
-
-Be direct and concise. If you cannot do something, say so clearly.\
-"""
+SYSTEM_PROMPT: SystemPromptPreset = {
+    "type": "preset",
+    "preset": "claude_code",
+    "append": (
+        "You are a personal assistant embedded in a desktop dashboard. "
+        "Be direct and concise. If you cannot do something, say so clearly."
+    ),
+}
 
 
 @dataclass(frozen=True)
