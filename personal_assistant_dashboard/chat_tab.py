@@ -373,8 +373,7 @@ class ChatTab:
             else "Connecting agent"
         )
         self._start_status_timer()
-        ts = self._format_timestamp()
-        self._client.send(f"[{ts}] {text}")
+        self._client.send(text)
 
     def _ensure_client(self) -> None:
         """Lazily create and start the chat client."""
