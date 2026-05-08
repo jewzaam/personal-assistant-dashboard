@@ -1114,6 +1114,9 @@ class Dashboard:
             return
         self._shaded = True
         w, h, x, y = self._winfo_frame_geometry()
+        # Save client-area coords — used by _unshade with fresh dy.
+        self._pre_shade_rootx = self._window.winfo_rootx()
+        self._pre_shade_rooty = self._window.winfo_rooty()
         logger.debug(
             "SHADE: winfo_frame=(%d,%d,%d,%d) rootx=%d rooty=%d "
             "geometry=%r dx=%d dy=%d",
@@ -1121,8 +1124,8 @@ class Dashboard:
             h,
             x,
             y,
-            self._window.winfo_rootx(),
-            self._window.winfo_rooty(),
+            self._pre_shade_rootx,
+            self._pre_shade_rooty,
             self._window.geometry(),
             self._frame_dx,
             self._frame_dy,
@@ -1140,6 +1143,25 @@ class Dashboard:
             width=self._s(MIN_WINDOW_WIDTH), height=self._s(MIN_WINDOW_HEIGHT_SHADED)
         )
         self._window.geometry(f"{w}x{self._s(SHADED_HEIGHT)}+{x}+{y}")
+        # Recompute frame offset while geometry() is fresh from the SET.
+        # dy can become stale if decorations change mid-session.
+        self._window.update_idletasks()
+        import re as _re
+
+        _gm = _re.match(r"\d+x\d+\+(-?\d+)\+(-?\d+)", self._window.geometry())
+        if _gm:
+            new_dx = self._window.winfo_rootx() - int(_gm.group(1))
+            new_dy = self._window.winfo_rooty() - int(_gm.group(2))
+            if new_dx != self._frame_dx or new_dy != self._frame_dy:
+                logger.debug(
+                    "SHADE: frame offset updated dx=%d->%d dy=%d->%d",
+                    self._frame_dx,
+                    new_dx,
+                    self._frame_dy,
+                    new_dy,
+                )
+                self._frame_dx = new_dx
+                self._frame_dy = new_dy
         if hasattr(self, "_chat_status_frame"):
             self._chat_status_frame.pack_forget()
         if hasattr(self, "_quick_chat_frame"):
@@ -1160,18 +1182,30 @@ class Dashboard:
             self._notebook.pack_forget()
         self._pack_main_layout()
         if self._unshaded_geometry:
-            # Use the full saved geometry — it has the correct position
-            # from before shade.  Don't re-derive position from winfo
-            # because the WM may have repositioned the shaded window
-            # (e.g., snapping the 36px-tall window to a different edge).
-            logger.debug(
-                "UNSHADE: restoring %r rootx=%d rooty=%d geometry=%r",
-                self._unshaded_geometry,
-                self._window.winfo_rootx(),
-                self._window.winfo_rooty(),
-                self._window.geometry(),
-            )
-            self._window.geometry(self._unshaded_geometry)
+            import re
+
+            m = re.match(r"(\d+)x(\d+)", self._unshaded_geometry)
+            if m:
+                w, h = m.group(1), m.group(2)
+                # Recompute frame position from saved client coords + current
+                # (possibly refreshed) dy.  This survives stale dy at shade
+                # time because _shade recomputes dy after its geometry() SET.
+                fx = self._pre_shade_rootx - self._frame_dx
+                fy = self._pre_shade_rooty - self._frame_dy
+                logger.debug(
+                    "UNSHADE: restoring %sx%s+%d+%d (client %d,%d) "
+                    "rootx=%d rooty=%d geometry=%r",
+                    w,
+                    h,
+                    fx,
+                    fy,
+                    self._pre_shade_rootx,
+                    self._pre_shade_rooty,
+                    self._window.winfo_rootx(),
+                    self._window.winfo_rooty(),
+                    self._window.geometry(),
+                )
+                self._window.geometry(f"{w}x{h}+{fx}+{fy}")
         # Restore the tab that was active before shading
         if hasattr(self, "_pre_shade_tab") and self._pre_shade_tab:
             self._notebook.select(self._pre_shade_tab)  # type: ignore[union-attr]
