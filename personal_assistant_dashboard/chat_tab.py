@@ -53,13 +53,11 @@ class ChatTab:
         *,
         console_log: ConsoleLogCallback | None = None,
         notify_tab: NotifyTabCallback | None = None,
-        agentpulse_client: Any = None,
     ) -> None:
         self._parent = parent
         self._root = root
         self._console_log = console_log
         self._notify_tab = notify_tab
-        self._agentpulse_client = agentpulse_client
         self._on_external_send: Any = None
         self._client: Any = None
         self._streaming = False
@@ -275,10 +273,10 @@ class ChatTab:
         if self._status_label:
             self._status_label.config(fg=color)
 
-    def _on_usage(self, model: str, cost_usd: float, used_pct: float) -> None:
-        """Update the right-side usage display with model, cost, and context %."""
+    def _on_usage(self, model: str, used_pct: float) -> None:
+        """Update the right-side usage display with model and context %."""
         short = short_model_name(model)
-        self._usage_var.set(f"{short}  ${cost_usd:.2f}  {used_pct}%")
+        self._usage_var.set(f"{short}  {used_pct}%")
 
     def _stop(self) -> None:
         """Interrupt the current response."""
@@ -387,8 +385,7 @@ class ChatTab:
             on_tool_use=lambda t: self._schedule(self._on_tool_use, t),
             on_done=lambda: self._schedule(self._on_done),
             on_error=lambda e: self._schedule(self._on_error, e),
-            on_usage=lambda m, c, p: self._schedule(self._on_usage, m, c, p),
-            agentpulse_client=self._agentpulse_client,
+            on_usage=lambda m, p: self._schedule(self._on_usage, m, p),
         )
         self._client.start()
 

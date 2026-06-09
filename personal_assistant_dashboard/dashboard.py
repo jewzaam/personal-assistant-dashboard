@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import platform
-import queue
 import subprocess
 import threading
 import tkinter as tk
@@ -269,23 +268,6 @@ class Dashboard:
 
         self._notebook = ttk.Notebook(main, style="Dark.TNotebook")
 
-        # AgentPulse client — created early so ChatTab and InfoTab can share it
-        from agentpulse.client import (
-            AgentPulseClient,
-            load_client_config,
-        )
-
-        self._agentpulse_config = load_client_config()
-        self._marshal_queue: queue.Queue[Callable[[], None]] = queue.Queue()
-        if self._agentpulse_config is not None:
-            self._agentpulse_client: AgentPulseClient | None = AgentPulseClient(
-                self._agentpulse_config,
-                marshaler=lambda f: self._marshal_queue.put_nowait(f),
-            )
-        else:
-            self._agentpulse_client = None
-        self._drain_marshal_queue()
-
         # Chat tab (default — first tab)
         chat_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(chat_frame, text="Chat")
@@ -297,7 +279,6 @@ class Dashboard:
             self._root,
             console_log=self.log_console,
             notify_tab=self._notify_tab,
-            agentpulse_client=self._agentpulse_client,
         )
 
         # Calendar tab
@@ -345,19 +326,14 @@ class Dashboard:
             clear_persistent_bell=self._clear_persistent_bell,
         )
 
-        # Info tab — usage/cost/quota display, also selected during shade
+        # Info tab — static about page, also selected during shade
         # so all real tabs can show notification dots
         info_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(info_frame, text="\u2139")
 
         from personal_assistant_dashboard.info_tab import InfoTab
 
-        self._info_tab = InfoTab(
-            info_frame,
-            self._root,
-            client=self._agentpulse_client,
-            console_log=self.log_console,
-        )
+        self._info_tab = InfoTab(info_frame, self._root)
         self._info_tab_id = str(info_frame)
 
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -390,22 +366,6 @@ class Dashboard:
         self._quick_chat_frame = tk.Frame(main, bg=BG_WINDOW)
         self._pack_main_layout()
         self._build_checkpoint_overlay()
-
-        # Identify the resume session so we can seed the status bar from
-        # AgentPulse when data arrives.
-        from personal_assistant_dashboard.chat_client import ChatClient
-
-        self._resume_session_id = ChatClient._find_last_session(WORK_DIR)
-
-        # Now that InfoTab and the top-bar overlay both exist, wire the
-        # AgentPulse callback to refresh both on every update.
-        def _on_agentpulse_update() -> None:
-            self._info_tab._refresh()
-            self._update_topbar_usage()
-            self._seed_chat_status()
-
-        self._on_agentpulse_update = _on_agentpulse_update
-        self._update_topbar_usage()
 
         self._quick_chat_input = tk.Text(
             self._quick_chat_frame,
@@ -506,76 +466,12 @@ class Dashboard:
         self._root.after(GEOMETRY_CAPTURE_DELAY_MS, self._capture_geometry)
         # Always start calendar data refresh (bells need fresh data)
         self._start_cal_refresh()
-        # Start AgentPulse streaming client — callbacks must be registered
-        # after start() because the library's sync facade drops them when
-        # the inner async client hasn't been created yet.
-        if self._agentpulse_client is not None:
-            self._agentpulse_client.start()
-            self._agentpulse_client.on_change(self._on_agentpulse_update)
-            self._agentpulse_client.on_connection_state(
-                lambda _state: self._on_agentpulse_update()
-            )
-            # Bootstrap fires on_change during start(), before callbacks
-            # are registered. Repaint now to pick up the bootstrapped data.
-            self._on_agentpulse_update()
-            self._schedule_day_boundary_refresh()
         # Chat agent wakes on first user message — no startup greeting.
         # If there's no prior chat history, simulate the user typing "help"
         # and hitting Send so the built-in command handler shows the help.
         if not self._chat_tab.load_history():
             self._quick_chat_input.insert("1.0", "help")
             self._on_quick_chat_send()
-
-    def _seed_chat_status(self) -> None:
-        """Populate the chat status bar from AgentPulse on resume.
-
-        Runs once: clears ``_resume_session_id`` after seeding so
-        subsequent AgentPulse updates skip the lookup.
-        """
-        sid = self._resume_session_id
-        if not sid or self._agentpulse_client is None:
-            return
-        from personal_assistant_dashboard.info_tab import _today_cost
-
-        session = self._agentpulse_client.session(sid)
-        if session is not None:
-            self._chat_tab._on_usage(
-                session.model_name or "",
-                _today_cost(session),
-                float(session.context_used_pct or 0.0),
-            )
-            self._resume_session_id = None
-
-    def _schedule_day_boundary_refresh(self) -> None:
-        """Schedule a refresh callback for the next local midnight."""
-        now = datetime.now()
-        midnight = (now + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        ms_until = max(1, int((midnight - now).total_seconds() * 1000))
-        try:
-            self._root.after(ms_until, self._on_day_boundary)
-        except (RuntimeError, tk.TclError):
-            pass
-
-    def _on_day_boundary(self) -> None:
-        """Day-boundary callback: refresh and reschedule."""
-        if self._agentpulse_client is not None:
-            self._agentpulse_client.refresh()
-        self._schedule_day_boundary_refresh()
-
-    def _drain_marshal_queue(self) -> None:
-        """Poll the marshal queue and run queued callbacks on the main thread."""
-        try:
-            while True:
-                fn = self._marshal_queue.get_nowait()
-                fn()
-        except queue.Empty:
-            pass
-        try:
-            self._root.after(50, self._drain_marshal_queue)
-        except RuntimeError:
-            pass
 
     def _schedule(self, fn: Any, *args: Any) -> None:
         """Schedule a callback on the main thread from a background thread."""
@@ -680,49 +576,9 @@ class Dashboard:
             last_x = x
         return last_x
 
-    def _update_topbar_usage(self) -> None:
-        """Refresh the cost + 5h limit text next to the Checkpoint button.
-
-        Reads the already-filtered session list from the info tab so the
-        figure matches what's shown in the info tab header. The 5h limit
-        is only appended when ``fetch_limits`` is enabled in the
-        AgentPulse config.
-        """
-        from personal_assistant_dashboard.info_tab import (
-            _format_cost,
-            _format_limit,
-            _today_cost,
-        )
-
-        if not hasattr(self, "_topbar_usage_var"):
-            return
-        sessions = getattr(self._info_tab, "_sessions", [])
-        if not sessions:
-            self._topbar_usage_text = ""
-        else:
-            total_cost = sum(_today_cost(s) for s in sessions)
-            parts = [_format_cost(total_cost)]
-            cfg = self._agentpulse_config
-            if self._agentpulse_client is not None and cfg and cfg.fetch_limits:
-                limits = self._agentpulse_client.limits()
-                five_h_util = limits.five_hour_utilization if limits else None
-                five_h_reset = limits.five_hour_resets_at if limits else None
-                parts.append(_format_limit(five_h_util, five_h_reset))
-            self._topbar_usage_text = "  \u2022  ".join(parts)
-        self._render_topbar_usage()
-
     def _render_topbar_usage(self) -> None:
-        """Show the desired usage text, or hide it if tabs would overlap."""
-        if not hasattr(self, "_topbar_usage_var"):
-            return
-        # Show the desired text, then measure. If the overlay frame's
-        # left edge would collide with the rightmost tab, hide the text
-        # so the tab labels stay visible.
-        self._topbar_usage_var.set(self._topbar_usage_text)
-        self._checkpoint_frame.update_idletasks()
-        frame_x = self._checkpoint_frame.winfo_x()
-        tabs_end = self._notebook_tabs_end_x()
-        if frame_x < tabs_end + 4:
+        """No-op \u2014 usage display removed."""
+        if hasattr(self, "_topbar_usage_var"):
             self._topbar_usage_var.set("")
 
     def _checkpoint(self) -> None:
@@ -1949,8 +1805,6 @@ class Dashboard:
             self._settings_tab.on_destroy()
         if hasattr(self, "_info_tab"):
             self._info_tab.destroy()
-        if self._agentpulse_client is not None:
-            self._agentpulse_client.stop()
         if restart:
             import os
             import sys

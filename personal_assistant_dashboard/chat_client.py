@@ -5,12 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import queue
-import socket
+import re
 import threading
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -28,15 +24,6 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import SystemPromptPreset
 
-from agentpulse.client import AgentPulseClient
-from personal_assistant_dashboard.agentpulse_statusline import (
-    SessionAccumulator,
-    build_payload,
-    extract_model_name,
-    lookup_context_window,
-    merge_agentpulse_seed,
-)
-
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT: SystemPromptPreset = {
@@ -48,24 +35,45 @@ SYSTEM_PROMPT: SystemPromptPreset = {
     ),
 }
 
-
-@dataclass(frozen=True)
-class _StatuslineTask:
-    """Per-turn payload queued for the statusline worker thread."""
-
-    session_id: str
-    total_cost_usd: float | None
-    usage: dict[str, Any] | None
-    duration_ms: int
-    duration_api_ms: int
-    model_name: str
-    turn_snapshot: dict[str, Any] | None
+DEFAULT_CONTEXT_WINDOW = 200_000
+_1M_CONTEXT_WINDOW = 1_000_000
+_1M_RE = re.compile(r"\[1m\]")
 
 
-# Max queued tasks. In practice one-in-flight is typical; the cap bounds
-# memory under sustained AgentPulse slowness. On overflow the oldest
-# task is dropped (newest has the latest cumulative totals anyway).
-_STATUSLINE_QUEUE_MAX = 8
+def lookup_context_window(model_name: str) -> int:
+    """Return the context window size for a Claude model."""
+    if not model_name:
+        return DEFAULT_CONTEXT_WINDOW
+    if _1M_RE.search(model_name):
+        return _1M_CONTEXT_WINDOW
+    if re.match(r"^claude-", model_name):
+        return DEFAULT_CONTEXT_WINDOW
+    logger.warning(
+        "unknown Claude model %r; defaulting context window to %d",
+        model_name,
+        DEFAULT_CONTEXT_WINDOW,
+    )
+    return DEFAULT_CONTEXT_WINDOW
+
+
+def extract_model_name(model_usage: dict[str, Any] | None) -> str:
+    """Pull the model identifier out of a ``ResultMessage.model_usage`` dict."""
+    if not model_usage:
+        return ""
+    if len(model_usage) == 1:
+        return next(iter(model_usage))
+
+    def _output_tokens(value: Any) -> int:
+        if isinstance(value, dict):
+            return int(value.get("outputTokens") or 0)
+        return 0
+
+    return sorted(
+        model_usage.items(),
+        key=lambda kv: (-_output_tokens(kv[1]), kv[0]),
+    )[
+        0
+    ][0]
 
 
 async def _deny_unapproved(
@@ -73,12 +81,7 @@ async def _deny_unapproved(
     tool_input: dict[str, Any],
     context: ToolPermissionContext,
 ) -> PermissionResultAllow | PermissionResultDeny:
-    """Deny any tool call not covered by global settings allow rules.
-
-    Permission evaluation order: hooks -> deny rules -> permission mode ->
-    allow rules -> canUseTool callback.  If a call reaches this callback
-    it was not auto-approved by the user's settings, so we deny it.
-    """
+    """Deny any tool call not covered by global settings allow rules."""
     logger.info("denying unapproved tool call: %s", tool_name)
     return PermissionResultDeny(
         behavior="deny",
@@ -97,8 +100,7 @@ class ChatClient:
         on_tool_use: Callable[[str], None],
         on_done: Callable[[], None],
         on_error: Callable[[str], None],
-        on_usage: Callable[[str, float, float], None] | None = None,
-        agentpulse_client: AgentPulseClient | None = None,
+        on_usage: Callable[[str, float], None] | None = None,
     ) -> None:
         self._on_text = on_text
         self._on_tool_use = on_tool_use
@@ -111,82 +113,19 @@ class ChatClient:
         self._client: ClaudeSDKClient | None = None
         self._running = False
         self._receiving = False
-        # Guards SDK client lifecycle state: _loop, _thread, _client,
-        # _running, _receiving. Held briefly around start/stop and send.
         self._lock = threading.Lock()
-        # Resume target for the next SDK connect. Captured at start() so
-        # the UI can choose its initial button label (Cont vs Send)
-        # without forcing an early connect. Consumed by _connect, cleared
-        # by clear(). None means: next connect starts a fresh session.
         self._next_resume_id: str | None = None
-        # Serializes SDK lifecycle ops on the asyncio loop. Prevents a
-        # rapid clear->send sequence from racing: the in-flight disconnect
-        # holds the lock while it tears down, and the next connect waits
-        # before spawning a new subprocess.
         self._sdk_lock: asyncio.Lock = asyncio.Lock()
-
-        # Per-session usage accumulator. Reset on clear() because the
-        # dashboard kills the SDK subprocess (new PID = new process from
-        # AgentPulse's perspective). On first successful contact with
-        # AgentPulse the accumulator is seeded with any pre-existing
-        # stored totals for the current session_id so restart-with-resume
-        # resumes the full lifetime cost. ``_accumulator_seeded`` gates
-        # posting: while it's False we keep accumulating locally but
-        # never POST, so a down or recovering AgentPulse can't be
-        # overwritten with our incomplete in-memory view.
-        self._accumulator = SessionAccumulator()
-        # Guards the accumulator and its seeded flag. Separate from
-        # _lock because the statusline worker thread holds this during
-        # record+seed+build_payload and must not compete with SDK
-        # lifecycle operations.
-        self._accumulator_lock = threading.Lock()
-        self._accumulator_seeded = False
-        # Tracks whether we have emitted a warning for the current
-        # AgentPulse outage. Reset on successful seed/POST so a later
-        # outage produces a fresh warning.
-        self._agentpulse_outage_warned = False
-        self._ui_cost_seeded = False
-        self._agentpulse_client = agentpulse_client
-        if self._agentpulse_client is None:
-            logger.info("AgentPulse statusline forwarding disabled (no client)")
-        # Single long-lived worker thread drains this queue and runs
-        # record+seed+POST sequentially. One worker (not one-per-turn)
-        # bounds concurrency and keeps the accumulator mutation totally
-        # single-threaded. Lazy-started on first forward call so tests
-        # that don't call ``start()`` don't spin up a thread.
-        self._statusline_queue: queue.Queue[_StatuslineTask | None] = queue.Queue(
-            maxsize=_STATUSLINE_QUEUE_MAX
-        )
-        self._statusline_thread: threading.Thread | None = None
-        self._source_system = socket.gethostname()
-        # Latest top-level AssistantMessage.usage, captured as the tool
-        # loop runs. ``ResultMessage.usage`` is aggregated across every
-        # API call in the turn (can exceed window size), so for the
-        # current-context snapshot we want the last single-call usage
-        # before the turn ended.
         self._last_assistant_usage: dict[str, Any] | None = None
-        # UI-side running totals for the on_usage callback. These mirror
-        # the accumulator's values but are maintained on the asyncio
-        # thread to avoid cross-thread lock contention. Seeded from
-        # CHAT_MODEL so context % uses the correct window size before
-        # the first ResultMessage arrives.
         from personal_assistant_dashboard.config import CHAT_MODEL
 
-        self._ui_total_cost: float = 0.0
         self._ui_context_pct: float = 0.0
         self._ui_model_name: str = CHAT_MODEL
-        self._accumulator.last_model_name = CHAT_MODEL
 
     # -- lifecycle -----------------------------------------------------------
 
     def start(self) -> None:
-        """Spin up the background asyncio loop. SDK connect is deferred.
-
-        The expensive work (subprocess spawn + initialize handshake)
-        runs on the first ``send()`` so the user can choose between
-        resuming the prior session and starting fresh (via ``clear()``)
-        before any session state is established.
-        """
+        """Spin up the background asyncio loop. SDK connect is deferred."""
         from personal_assistant_dashboard.config import WORK_DIR
 
         with self._lock:
@@ -199,14 +138,6 @@ class ChatClient:
                 target=self._run_loop, daemon=True, name="chat-client"
             )
             self._thread.start()
-
-        if self._next_resume_id and self._agentpulse_client is not None:
-            threading.Thread(
-                target=self._eager_seed_ui,
-                args=(self._next_resume_id,),
-                daemon=True,
-                name="chat-eager-seed",
-            ).start()
 
     def _run_loop(self) -> None:
         """Entry point for the background thread."""
@@ -230,13 +161,7 @@ class ChatClient:
         return latest.stem
 
     async def _connect(self) -> None:
-        """Create and connect the SDK client using ``_next_resume_id``.
-
-        Reads ``self._next_resume_id`` for the resume target -- None
-        means start a fresh session (matches a CLI invocation with no
-        ``--resume`` flag). The id is consumed on success so subsequent
-        sends within the same SDK instance don't redundantly pass it.
-        """
+        """Create and connect the SDK client."""
         from personal_assistant_dashboard.config import CHAT_MODEL, WORK_DIR
 
         resume = self._next_resume_id
@@ -256,12 +181,7 @@ class ChatClient:
         logger.info("chat client connected")
 
     async def _ensure_connected(self) -> None:
-        """Connect under the SDK lifecycle lock; subsequent callers wait.
-
-        Held across the connect so a rapid second send doesn't spawn a
-        second subprocess, and so a clear()-triggered disconnect can't
-        race a connect for the new session.
-        """
+        """Connect under the SDK lifecycle lock."""
         async with self._sdk_lock:
             if self._client is not None:
                 return
@@ -296,18 +216,6 @@ class ChatClient:
         if loop_ref:
             loop_ref.close()
 
-        # Shut down the statusline worker cleanly so in-flight POSTs
-        # complete before the process exits. Sentinel None tells the
-        # loop to break after draining already-queued tasks.
-        if self._statusline_thread is not None and self._statusline_thread.is_alive():
-            from personal_assistant_dashboard.config import TIMEOUT_THREAD_JOIN_S
-
-            try:
-                self._statusline_queue.put(None, timeout=1)
-            except queue.Full:
-                logger.debug("statusline queue full at stop; forcing shutdown")
-            self._statusline_thread.join(timeout=TIMEOUT_THREAD_JOIN_S)
-
         with self._lock:
             self._loop = None
             self._thread = None
@@ -320,10 +228,7 @@ class ChatClient:
     # -- messaging -----------------------------------------------------------
 
     def send(self, text: str) -> None:
-        """Send a user message (thread-safe, called from TkInter thread).
-
-        Triggers a lazy SDK connect if this is the first send.
-        """
+        """Send a user message (thread-safe, called from TkInter thread)."""
         with self._lock:
             loop_ref = self._loop
         if not loop_ref:
@@ -348,9 +253,6 @@ class ChatClient:
                 self._receiving = True
                 asyncio.ensure_future(self._receive_loop())
         except Exception:
-            # Log the full exception for diagnostics but surface a
-            # generic, non-sensitive message to the UI — raw SDK stack
-            # traces and internal paths don't help the user.
             logger.exception("failed to send message")
             self._on_error("Failed to send message. See logs for details.")
 
@@ -372,13 +274,8 @@ class ChatClient:
     def _handle_message(self, msg: Any) -> None:
         """Route an SDK message to the appropriate UI callback."""
         if isinstance(msg, AssistantMessage):
-            # Capture main-agent per-call usage for the turn snapshot.
-            # Skip subagent messages — their context is not the main
-            # conversation's current occupancy.
             if msg.usage and msg.parent_tool_use_id is None:
                 self._last_assistant_usage = dict(msg.usage)
-            # Text is already displayed via StreamEvent deltas — only
-            # handle non-text blocks here to avoid duplication.
             for block in msg.content:
                 if isinstance(block, ToolUseBlock):
                     self._on_tool_use(block.name)
@@ -398,7 +295,6 @@ class ChatClient:
             else:
                 turn_snapshot = self._last_assistant_usage
                 self._last_assistant_usage = None
-                self._forward_statusline(msg, turn_snapshot)
                 self._fire_usage_callback(msg, turn_snapshot)
                 self._on_done()
         elif isinstance(msg, SystemMessage):
@@ -414,14 +310,7 @@ class ChatClient:
             asyncio.run_coroutine_threadsafe(self._client.interrupt(), loop_ref)
 
     def clear(self) -> None:
-        """Reset conversation: tear down the SDK; next send is a fresh session.
-
-        Unlike the CLI's ``/clear`` (which keeps the subprocess alive
-        and preserves process-scoped totals), the dashboard's clear
-        kills the SDK subprocess — the next send spawns a new one with
-        a new PID. All cost/token totals are reset so the new session
-        starts clean from AgentPulse's perspective.
-        """
+        """Reset conversation: tear down the SDK; next send is a fresh session."""
         self._next_resume_id = None
         with self._lock:
             loop_ref = self._loop
@@ -430,24 +319,11 @@ class ChatClient:
         asyncio.run_coroutine_threadsafe(self._clear(), loop_ref)
 
     async def _clear(self) -> None:
-        """Async portion of clear: full accumulator reset + SDK teardown.
-
-        The dashboard's clear kills the SDK subprocess and the next send
-        spawns a new one (new PID). From AgentPulse's perspective this is
-        a new process, so we reset everything — no cost carries over.
-        """
+        """Async portion of clear: SDK teardown."""
         async with self._sdk_lock:
-            with self._accumulator_lock:
-                from personal_assistant_dashboard.config import CHAT_MODEL
-
-                self._accumulator.reset()
-                self._accumulator.last_model_name = CHAT_MODEL
-                self._accumulator_seeded = False
-            self._ui_cost_seeded = False
-            self._ui_total_cost = 0.0
             self._ui_context_pct = 0.0
             if self._on_usage:
-                self._on_usage(self._ui_model_name, 0.0, 0.0)
+                self._on_usage(self._ui_model_name, 0.0)
             if self._client is not None:
                 try:
                     await self._disconnect()
@@ -455,12 +331,7 @@ class ChatClient:
                     logger.exception("disconnect during clear failed")
 
     def has_resume_target(self) -> bool:
-        """True if the next ``send()`` will resume a prior session.
-
-        Used by the UI to label the primary action button: ``Cont`` when
-        this returns True, ``Send`` otherwise. Becomes False once the
-        SDK is connected (resume id consumed) or after ``clear()``.
-        """
+        """True if the next ``send()`` will resume a prior session."""
         return self._next_resume_id is not None and self._client is None
 
     def is_connected(self) -> bool:
@@ -468,70 +339,10 @@ class ChatClient:
         return self._client is not None
 
     def get_active_session_id(self) -> str | None:
-        """Return the session ID for the current or next session, or None.
-
-        States:
-        - Connected, ``ResultMessage`` seen -> accumulator's session_id.
-        - Connected, no ``ResultMessage`` yet -> None (id pending).
-        - Not connected, resume target set -> the resume id (next send
-          will resume to it, so it's the correct answer pre-send too).
-        - Not connected, no resume target (post-clear or fresh PA) ->
-          None.
-
-        The accumulator's id is reset by ``_clear`` so a stale id from
-        the prior session can't leak through after clear.
-        """
-        if self._client is not None:
-            sid = self._accumulator.session_id
-            return sid or None
+        """Return the session ID for the current or next session, or None."""
         return self._next_resume_id
 
-    # -- statusline forwarding ----------------------------------------------
-
-    def _forward_statusline(
-        self,
-        msg: ResultMessage,
-        turn_snapshot: dict[str, Any] | None,
-    ) -> None:
-        """Queue a statusline forward task for the background worker.
-
-        Called from the asyncio loop. The worker thread drains the queue
-        sequentially; one-turn-at-a-time processing keeps the accumulator
-        single-threaded and bounds concurrency under slow AgentPulse. On
-        queue overflow the oldest queued task is dropped (the newest has
-        the latest cumulative totals, so no data is permanently lost).
-        When AgentPulse is not configured this is a no-op.
-        """
-        if self._agentpulse_client is None:
-            return
-        model_name = extract_model_name(msg.model_usage)
-        task = _StatuslineTask(
-            session_id=msg.session_id,
-            total_cost_usd=msg.total_cost_usd,
-            usage=dict(msg.usage) if msg.usage else None,
-            duration_ms=msg.duration_ms,
-            duration_api_ms=msg.duration_api_ms,
-            model_name=model_name,
-            turn_snapshot=turn_snapshot,
-        )
-        self._ensure_statusline_worker()
-        try:
-            self._statusline_queue.put_nowait(task)
-        except queue.Full:
-            # Drop oldest and retry. Newest task has the latest
-            # cumulative totals — nothing of value is lost.
-            try:
-                self._statusline_queue.get_nowait()
-                self._statusline_queue.task_done()
-            except queue.Empty:
-                pass
-            try:
-                self._statusline_queue.put_nowait(task)
-            except queue.Full:
-                logger.debug(
-                    "statusline queue full after drop; dropping turn session=%s",
-                    msg.session_id,
-                )
+    # -- usage callback ------------------------------------------------------
 
     def _fire_usage_callback(
         self,
@@ -541,8 +352,6 @@ class ChatClient:
         """Update UI-side usage totals and fire the on_usage callback."""
         if self._on_usage is None:
             return
-        if msg.total_cost_usd is not None:
-            self._ui_total_cost += float(msg.total_cost_usd)
         model_name = extract_model_name(msg.model_usage)
         if model_name:
             self._ui_model_name = model_name
@@ -556,165 +365,4 @@ class ChatClient:
             self._ui_context_pct = round(
                 (ctx_used / window_size * 100) if window_size else 0.0, 1
             )
-        self._on_usage(self._ui_model_name, self._ui_total_cost, self._ui_context_pct)
-
-    def _eager_seed_ui(self, session_id: str) -> None:
-        """Fetch stored session cost from AgentPulse and seed the UI.
-
-        Runs once at start() on a throwaway thread so the Chat tab
-        statusline shows the resumed session's lifetime cost immediately,
-        before the first turn completes.
-        """
-        assert self._agentpulse_client is not None
-        session = self._agentpulse_client.session(session_id)
-        if session is None:
-            logger.debug("eager seed: session %s not found", session_id[:8])
-            return
-        today = datetime.now().strftime("%Y-%m-%d")
-        seed_cost = float(session.cost_by_day.get(today, 0.0))
-        if seed_cost <= 0:
-            return
-        self._ui_cost_seeded = True
-        with self._lock:
-            loop_ref = self._loop
-        if loop_ref is None:
-            return
-        loop_ref.call_soon_threadsafe(self._apply_seed_to_ui_sync, seed_cost)
-        logger.info("eager UI seed session=%s cost=%.4f", session_id[:8], seed_cost)
-
-    def _apply_seed_to_ui(self, seed_delta: float) -> None:
-        """Add the seed cost delta to the UI counter and fire the callback.
-
-        Called from the statusline worker thread after a successful seed.
-        Skipped when the eager seed already populated the UI to prevent
-        double-counting.
-        """
-        if self._ui_cost_seeded:
-            return
-        with self._lock:
-            loop_ref = self._loop
-        if loop_ref is None:
-            return
-        loop_ref.call_soon_threadsafe(self._apply_seed_to_ui_sync, seed_delta)
-
-    def _apply_seed_to_ui_sync(self, seed_delta: float) -> None:
-        """Asyncio-thread half: add seed delta and notify the UI."""
-        self._ui_total_cost += seed_delta
-        if self._on_usage:
-            self._on_usage(
-                self._ui_model_name, self._ui_total_cost, self._ui_context_pct
-            )
-
-    def _ensure_statusline_worker(self) -> None:
-        """Start the statusline worker thread if it isn't running yet."""
-        if self._statusline_thread is None or not self._statusline_thread.is_alive():
-            t = threading.Thread(
-                target=self._statusline_worker_loop,
-                daemon=True,
-                name="statusline-post",
-            )
-            self._statusline_thread = t
-            t.start()
-
-    def _statusline_worker_loop(self) -> None:
-        """Drain the statusline queue until the shutdown sentinel arrives."""
-        while True:
-            task = self._statusline_queue.get()
-            try:
-                if task is None:
-                    break
-                try:
-                    self._process_statusline_task(task)
-                except Exception:
-                    logger.exception(
-                        "statusline worker crashed for session=%s",
-                        task.session_id,
-                    )
-            finally:
-                self._statusline_queue.task_done()
-
-    def _get_subprocess_pid(self) -> int:
-        """Return the SDK-spawned claude CLI subprocess PID.
-
-        AgentPulse hooks walk process ancestry to find the claude CLI
-        and report that PID; the statusline must report the same PID so
-        hook events and statusline events correlate. Reaches into SDK
-        internals (``_transport._process``) — there is no public API for
-        this in claude-agent-sdk. Falls back to the dashboard PID when
-        the SDK isn't connected or uses a custom transport without a
-        ``_process`` attribute.
-        """
-        client = self._client
-        transport = getattr(client, "_transport", None) if client else None
-        process = getattr(transport, "_process", None) if transport else None
-        pid = getattr(process, "pid", None) if process else None
-        return int(pid) if pid is not None else os.getpid()
-
-    def _process_statusline_task(self, task: _StatuslineTask) -> None:
-        """Record, seed-if-needed, then POST one queued task."""
-        assert self._agentpulse_client is not None
-
-        with self._accumulator_lock:
-            self._accumulator.record_result(
-                session_id=task.session_id,
-                total_cost_usd=task.total_cost_usd,
-                usage=task.usage,
-                duration_ms=task.duration_ms,
-                duration_api_ms=task.duration_api_ms,
-                model_name=task.model_name,
-            )
-            self._accumulator.record_turn_snapshot(task.turn_snapshot)
-            need_seed = not self._accumulator_seeded
-
-        if need_seed:
-            # Seed outside the lock — this is a blocking call and the
-            # threading standard forbids I/O while holding a lock.
-            # Safe to mutate the accumulator from here because this
-            # worker is the single writer.
-            cost_before = self._accumulator.total_cost_usd
-            session = self._agentpulse_client.session(task.session_id)
-            seed = merge_agentpulse_seed(self._accumulator, session)
-            if not seed.ok:
-                if not self._agentpulse_outage_warned:
-                    logger.warning(
-                        "AgentPulse unreachable; statusline "
-                        "forwarding deferred (will retry each turn)",
-                    )
-                    self._agentpulse_outage_warned = True
-                else:
-                    logger.debug(
-                        "statusline post deferred — AgentPulse still unreachable"
-                    )
-                return
-            with self._accumulator_lock:
-                self._accumulator_seeded = True
-            seed_delta = self._accumulator.total_cost_usd - cost_before
-            if seed_delta > 0:
-                self._apply_seed_to_ui(seed_delta)
-            logger.info(
-                "AgentPulse seeded session=%s merged=%s total_cost_usd=%.4f",
-                task.session_id,
-                seed.merged,
-                self._accumulator.total_cost_usd,
-            )
-
-        from personal_assistant_dashboard.config import WORK_DIR
-
-        pid = self._get_subprocess_pid()
-        with self._accumulator_lock:
-            payload = build_payload(
-                self._accumulator,
-                pid=pid,
-                cwd=str(WORK_DIR),
-                source_system=self._source_system,
-            )
-        posted = self._agentpulse_client.post_statusline(payload)
-        if posted:
-            self._agentpulse_outage_warned = False
-        elif not self._agentpulse_outage_warned:
-            logger.warning(
-                "statusline POST failed for session=%s; "
-                "data may be missing from the Info tab",
-                task.session_id,
-            )
-            self._agentpulse_outage_warned = True
+        self._on_usage(self._ui_model_name, self._ui_context_pct)

@@ -13,6 +13,8 @@ from personal_assistant_dashboard.chat_client import (
     SYSTEM_PROMPT,
     ChatClient,
     _deny_unapproved,
+    extract_model_name,
+    lookup_context_window,
 )
 
 # -- _deny_unapproved --------------------------------------------------------
@@ -36,18 +38,48 @@ def test_deny_unapproved_any_tool():
     assert "not in the allowed" in result.message
 
 
+# -- lookup_context_window ---------------------------------------------------
+
+
+def test_lookup_context_window_base_model():
+    assert lookup_context_window("claude-opus-4-7") == 200_000
+
+
+def test_lookup_context_window_1m_variant():
+    assert lookup_context_window("claude-opus-4-7[1m]") == 1_000_000
+
+
+def test_lookup_context_window_empty():
+    assert lookup_context_window("") == 200_000
+
+
+# -- extract_model_name ------------------------------------------------------
+
+
+def test_extract_model_name_empty():
+    assert extract_model_name(None) == ""
+    assert extract_model_name({}) == ""
+
+
+def test_extract_model_name_single_key():
+    assert extract_model_name({"claude-opus-4-7": {}}) == "claude-opus-4-7"
+
+
+def test_extract_model_name_multi_picks_highest_output():
+    usage = {
+        "claude-haiku-4-5": {"outputTokens": 10},
+        "claude-opus-4-7": {"outputTokens": 500},
+    }
+    assert extract_model_name(usage) == "claude-opus-4-7"
+
+
 # -- _handle_message ---------------------------------------------------------
 
 _MODEL = "claude-sonnet-4-5-20250514"
 
 
 def _make_client(**overrides: object) -> ChatClient:
-    """Create a ChatClient with mock callbacks, without starting it.
-
-    AgentPulse forwarding is disabled by default (agentpulse_client=None)
-    so tests don't depend on (or hit) a running AgentPulse. Individual
-    tests re-enable it by setting ``_agentpulse_client`` to a MagicMock.
-    """
+    """Create a ChatClient with mock callbacks, without starting it."""
     defaults = {
         "on_text": MagicMock(),
         "on_tool_use": MagicMock(),
@@ -275,32 +307,7 @@ def test_system_prompt_uses_claude_code_preset():
     assert "append" in SYSTEM_PROMPT
 
 
-# -- statusline forwarding ----------------------------------------------------
-
-
-def _drain_statusline_queue(client, timeout: float = 2.0) -> None:
-    """Wait for all queued statusline tasks to be processed.
-
-    Replaces the old per-message thread-join pattern: the ChatClient now
-    has a single long-lived worker thread draining a queue. Tests call
-    this after _handle_message to ensure the task was picked up and
-    processed before asserting on side effects.
-    """
-    import threading
-
-    if client._statusline_thread is None:
-        return
-    # Use the queue's join() which waits for task_done() to be called
-    # for every put. Run it in a helper thread so the test can time
-    # out rather than hanging forever if the worker wedges.
-    done = threading.Event()
-
-    def _wait() -> None:
-        client._statusline_queue.join()
-        done.set()
-
-    threading.Thread(target=_wait, daemon=True).start()
-    done.wait(timeout=timeout)
+# -- assistant usage snapshot -------------------------------------------------
 
 
 def _make_result_msg(
@@ -327,246 +334,11 @@ def _make_result_msg(
     )
 
 
-class _FakeSeed:
-    """Replaces ``merge_agentpulse_seed`` with a scripted response."""
-
-    def __init__(self, ok: bool, merged: bool = False, add_cost: float = 0.0):
-        self.ok = ok
-        self.merged = merged
-        self.add_cost = add_cost
-        self.calls = 0
-
-    def __call__(self, acc, session):
-        from personal_assistant_dashboard.agentpulse_statusline import SeedResult
-
-        self.calls += 1
-        if self.ok and self.merged and self.add_cost:
-            acc.total_cost_usd += self.add_cost
-        return SeedResult(ok=self.ok, merged=self.merged)
-
-
-def test_statusline_posts_after_successful_seed():
-    """First ResultMessage accumulates, seed succeeds, POST goes out."""
-    client = _make_client()
-    mock_ap = MagicMock()
-    client._agentpulse_client = mock_ap
-    seed = _FakeSeed(ok=True, merged=True, add_cost=1.00)
-    captured: dict[str, object] = {}
-
-    mock_ap.session.return_value = None
-    mock_ap.post_statusline.side_effect = lambda payload: (
-        captured.update({"payload": payload}) or True
-    )
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-        side_effect=seed,
-    ):
-        client._handle_message(_make_result_msg(total_cost_usd=0.05))
-        _drain_statusline_queue(client)
-
-    assert seed.calls == 1
-    assert client._accumulator_seeded is True
-    # Local $0.05 + merged $1.00 = $1.05
-    assert client._accumulator.total_cost_usd == pytest.approx(1.05)
-    assert captured["payload"]["cost"]["total_cost_usd"] == pytest.approx(1.05)
-
-
-def test_statusline_defers_post_when_seed_fails():
-    """Seed failure → accumulator updated locally, no POST goes out."""
-    client = _make_client()
-    mock_ap = MagicMock()
-    client._agentpulse_client = mock_ap
-    seed = _FakeSeed(ok=False)
-
-    mock_ap.session.return_value = None
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-        side_effect=seed,
-    ):
-        client._handle_message(_make_result_msg(total_cost_usd=0.05))
-        _drain_statusline_queue(client)
-
-    assert seed.calls == 1
-    assert client._accumulator_seeded is False
-    # Local accumulation preserved
-    assert client._accumulator.total_cost_usd == pytest.approx(0.05)
-    mock_ap.post_statusline.assert_not_called()
-
-
-def test_statusline_recovers_after_agentpulse_returns():
-    """Offline → accumulate without posting. Online → seed merges all local
-    totals and POST reflects the combined cumulative."""
-    client = _make_client()
-    mock_ap = MagicMock()
-    client._agentpulse_client = mock_ap
-
-    # First two turns: AgentPulse down, seed fails
-    down_seed = _FakeSeed(ok=False)
-    mock_ap.session.return_value = None
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-        side_effect=down_seed,
-    ):
-        client._handle_message(_make_result_msg(total_cost_usd=0.10))
-        _drain_statusline_queue(client)
-        client._handle_message(_make_result_msg(total_cost_usd=0.20))
-        _drain_statusline_queue(client)
-    assert down_seed.calls == 2
-    assert client._accumulator.total_cost_usd == pytest.approx(0.30)
-    mock_ap.post_statusline.assert_not_called()
-    assert client._accumulator_seeded is False
-
-    # Third turn: AgentPulse back up, seed merges $2.00 stored prior
-    up_seed = _FakeSeed(ok=True, merged=True, add_cost=2.00)
-    captured: dict[str, object] = {}
-
-    mock_ap.post_statusline.side_effect = lambda payload: (
-        captured.update({"payload": payload}) or True
-    )
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-        side_effect=up_seed,
-    ):
-        client._handle_message(_make_result_msg(total_cost_usd=0.05))
-        _drain_statusline_queue(client)
-
-    assert up_seed.calls == 1
-    assert client._accumulator_seeded is True
-    # $0.30 (accumulated offline) + $0.05 (this turn) + $2.00 (merged) = $2.35
-    assert client._accumulator.total_cost_usd == pytest.approx(2.35)
-    assert captured["payload"]["cost"]["total_cost_usd"] == pytest.approx(2.35)
-
-
-def test_statusline_seeds_only_once_per_process():
-    """After a successful seed, subsequent turns don't re-seed."""
-    client = _make_client()
-    mock_ap = MagicMock()
-    client._agentpulse_client = mock_ap
-    seed = _FakeSeed(ok=True, merged=False)
-
-    mock_ap.session.return_value = None
-    mock_ap.post_statusline.return_value = True
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-        side_effect=seed,
-    ):
-        client._handle_message(_make_result_msg(session_id="s1"))
-        _drain_statusline_queue(client)
-        client._handle_message(_make_result_msg(session_id="s1"))
-        _drain_statusline_queue(client)
-        client._handle_message(_make_result_msg(session_id="s1"))
-        _drain_statusline_queue(client)
-
-    assert seed.calls == 1  # seeded once, never again
-
-
-def test_statusline_seed_404_proceeds_with_local_values():
-    """Session not in AgentPulse (404) → seed ok with no merge; POST uses local."""
-    client = _make_client()
-    mock_ap = MagicMock()
-    client._agentpulse_client = mock_ap
-    seed = _FakeSeed(ok=True, merged=False)
-    captured: dict[str, object] = {}
-
-    mock_ap.session.return_value = None
-    mock_ap.post_statusline.side_effect = lambda payload: (
-        captured.update({"payload": payload}) or True
-    )
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-        side_effect=seed,
-    ):
-        client._handle_message(_make_result_msg(total_cost_usd=0.07))
-        _drain_statusline_queue(client)
-
-    assert client._accumulator_seeded is True
-    assert client._accumulator.total_cost_usd == pytest.approx(0.07)
-    assert captured["payload"]["cost"]["total_cost_usd"] == pytest.approx(0.07)
-
-
-def test_statusline_skips_forwarding_when_agentpulse_not_configured():
-    """No AgentPulse config → neither seed nor POST attempted."""
-    client = _make_client()
-    assert client._agentpulse_client is None
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed"
-    ) as mock_seed:
-        client._handle_message(_make_result_msg())
-        _drain_statusline_queue(client)
-
-    mock_seed.assert_not_called()
-    # Accumulator untouched when AgentPulse isn't configured at all
-    assert client._accumulator.total_cost_usd == 0.0
-
-
-def test_assistant_message_usage_populates_turn_snapshot_on_post():
-    """Per-call usage captured during the tool loop drives ``used_percentage``."""
-    from claude_agent_sdk import AssistantMessage, TextBlock
-
-    client = _make_client()
-    mock_ap = MagicMock()
-    client._agentpulse_client = mock_ap
-    seed = _FakeSeed(ok=True, merged=False)
-    captured: dict[str, object] = {}
-
-    mock_ap.session.return_value = None
-    mock_ap.post_statusline.side_effect = lambda payload: (
-        captured.update({"payload": payload}) or True
-    )
-
-    # Simulate a tool loop: two main-agent calls, last one wins.
-    client._handle_message(
-        AssistantMessage(
-            content=[TextBlock(text="")],
-            model="claude-opus-4-7",
-            usage={
-                "input_tokens": 5,
-                "cache_read_input_tokens": 30_000,
-                "cache_creation_input_tokens": 1_000,
-            },
-        )
-    )
-    client._handle_message(
-        AssistantMessage(
-            content=[TextBlock(text="")],
-            model="claude-opus-4-7",
-            usage={
-                "input_tokens": 10,
-                "cache_read_input_tokens": 50_000,
-                "cache_creation_input_tokens": 2_000,
-            },
-        )
-    )
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-        side_effect=seed,
-    ):
-        client._handle_message(_make_result_msg(model="claude-opus-4-7"))
-        _drain_statusline_queue(client)
-
-    ctx = captured["payload"]["context_window"]
-    # (10 + 50_000 + 2_000) / 200_000 * 100 = 26.005 → 26.0
-    assert ctx["used_percentage"] == pytest.approx(26.0)
-    assert ctx["current_usage"]["input_tokens"] == 10
-    assert ctx["current_usage"]["cache_read_input_tokens"] == 50_000
-    # Snapshot consumed — next turn starts fresh.
-    assert client._last_assistant_usage is None
-
-
 def test_subagent_assistant_message_usage_ignored():
     """AssistantMessages from subagents don't update the main-turn snapshot."""
     from claude_agent_sdk import AssistantMessage, TextBlock
 
     client = _make_client()
-    # Main-agent call first.
     client._handle_message(
         AssistantMessage(
             content=[TextBlock(text="")],
@@ -574,7 +346,6 @@ def test_subagent_assistant_message_usage_ignored():
             usage={"input_tokens": 1, "cache_read_input_tokens": 100},
         )
     )
-    # Subagent call with parent_tool_use_id set — should be ignored.
     client._handle_message(
         AssistantMessage(
             content=[TextBlock(text="")],
@@ -614,270 +385,15 @@ def test_assistant_message_without_usage_leaves_snapshot_untouched():
     }
 
 
-def test_error_result_message_does_not_forward():
-    """Error results skip statusline forwarding entirely and signal on_error."""
-    from claude_agent_sdk import ResultMessage
-
-    client = _make_client()
-    mock_ap = MagicMock()
-    client._agentpulse_client = mock_ap
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed"
-    ) as mock_seed:
-        # Send a ResultMessage with is_error=True and errors populated —
-        # both assert_not_called for forwarding AND that on_error fired.
-        msg = ResultMessage(
-            subtype="result",
-            duration_ms=100,
-            duration_api_ms=90,
-            is_error=True,
-            num_turns=1,
-            session_id="s1",
-            errors=["boom"],
-        )
-        client._handle_message(msg)
-        _drain_statusline_queue(client)
-
-    mock_seed.assert_not_called()
-    mock_ap.post_statusline.assert_not_called()
-    assert client._accumulator.total_cost_usd == 0.0
-    # UI must see the error — otherwise a silent swallow would regress.
-    client._on_error.assert_called_once_with("boom")
-
-
-def test_seed_failure_logs_warning_once(caplog):
-    """First seed failure emits WARNING; repeats drop to DEBUG."""
-    import logging
-
-    client = _make_client()
-    mock_ap = MagicMock()
-    client._agentpulse_client = mock_ap
-    seed = _FakeSeed(ok=False)
-
-    mock_ap.session.return_value = None
-
-    with (
-        caplog.at_level(
-            logging.DEBUG, logger="personal_assistant_dashboard.chat_client"
-        ),
-        patch(
-            "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-            side_effect=seed,
-        ),
-    ):
-        client._handle_message(_make_result_msg())
-        _drain_statusline_queue(client)
-        client._handle_message(_make_result_msg())
-        _drain_statusline_queue(client)
-
-    warnings = [
-        r
-        for r in caplog.records
-        if r.levelno == logging.WARNING and "AgentPulse unreachable" in r.message
-    ]
-    debugs = [
-        r
-        for r in caplog.records
-        if r.levelno == logging.DEBUG and "still unreachable" in r.message
-    ]
-    assert len(warnings) == 1
-    assert len(debugs) >= 1  # second turn logs at DEBUG
-
-
-def test_stop_cleanly_shuts_down_statusline_worker():
-    """stop() joins the worker thread after draining in-flight tasks."""
-    client = _make_client()
-    mock_ap = MagicMock()
-    client._agentpulse_client = mock_ap
-    # Must simulate a running state so stop() proceeds past its guard.
-    client._running = True
-    client._loop = MagicMock()
-    client._thread = MagicMock()
-
-    mock_ap.session.return_value = None
-    mock_ap.post_statusline.return_value = True
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-        side_effect=_FakeSeed(ok=True, merged=False),
-    ):
-        client._handle_message(_make_result_msg())
-        _drain_statusline_queue(client)
-        worker = client._statusline_thread
-        assert worker is not None
-        assert worker.is_alive()
-        client.stop()
-        # Worker thread is joined by stop().
-        assert not worker.is_alive()
-
-
-def test_multiple_back_to_back_results_all_post():
-    """Queue-backed worker processes every turn in order without dropping
-    any (well below the queue cap)."""
-    client = _make_client()
-    mock_ap = MagicMock()
-    client._agentpulse_client = mock_ap
-    seed = _FakeSeed(ok=True, merged=False)
-    posts: list[dict] = []
-
-    mock_ap.session.return_value = None
-    mock_ap.post_statusline.side_effect = lambda payload: (
-        posts.append(payload) or True
-    )
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-        side_effect=seed,
-    ):
-        for i in range(4):
-            client._handle_message(_make_result_msg(total_cost_usd=0.01 * (i + 1)))
-        _drain_statusline_queue(client, timeout=5.0)
-
-    # 4 turns should produce 4 POSTs with monotonically increasing cost.
-    assert len(posts) == 4
-    costs = [p["cost"]["total_cost_usd"] for p in posts]
-    assert costs == sorted(costs)
-    # Final cumulative cost: 0.01 + 0.02 + 0.03 + 0.04 = 0.10
-    assert costs[-1] == pytest.approx(0.10)
-
-
-# -- statusline PID -----------------------------------------------------------
-
-
-def _wire_fake_subprocess(client: ChatClient, pid: int) -> MagicMock:
-    """Attach a mock SDK client whose transport process has the given PID.
-
-    Returns the inner ``_process`` mock so tests can mutate ``.pid`` to
-    simulate a reconnect (after ``clear()`` tears down the SDK, the next
-    send spawns a new subprocess with a new PID).
-    """
-    fake_process = MagicMock()
-    fake_process.pid = pid
-    fake_transport = MagicMock()
-    fake_transport._process = fake_process
-    client._client = MagicMock()
-    client._client._transport = fake_transport
-    return fake_process
-
-
-def test_statusline_pid_comes_from_sdk_subprocess():
-    """PID in payload is the SDK subprocess PID, matching what the hook reports.
-
-    The hook walks process ancestry to find the ``claude`` CLI process
-    and reports that PID. Sending the dashboard's ``os.getpid()`` instead
-    means hook events and statusline events can't be correlated.
-    """
-    client = _make_client()
-    mock_ap = MagicMock()
-    client._agentpulse_client = mock_ap
-    _wire_fake_subprocess(client, pid=46264)
-    captured: dict[str, object] = {}
-
-    mock_ap.session.return_value = None
-    mock_ap.post_statusline.side_effect = lambda payload: (
-        captured.update({"payload": payload}) or True
-    )
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-        side_effect=_FakeSeed(ok=True, merged=False),
-    ):
-        client._handle_message(_make_result_msg())
-        _drain_statusline_queue(client)
-
-    assert captured["payload"]["pid"] == 46264
-
-
-def test_statusline_pid_falls_back_when_subprocess_unavailable():
-    """No SDK client attached → fall back to os.getpid() rather than crash.
-
-    Defensive: in normal flow the worker only runs after a ResultMessage
-    so the subprocess must exist, but a custom transport without
-    ``_process`` or a torn-down client mid-shutdown shouldn't take the
-    forwarder down.
-    """
-    import os
-
-    client = _make_client()
-    mock_ap = MagicMock()
-    client._agentpulse_client = mock_ap
-    client._client = None
-    captured: dict[str, object] = {}
-
-    mock_ap.session.return_value = None
-    mock_ap.post_statusline.side_effect = lambda payload: (
-        captured.update({"payload": payload}) or True
-    )
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-        side_effect=_FakeSeed(ok=True, merged=False),
-    ):
-        client._handle_message(_make_result_msg())
-        _drain_statusline_queue(client)
-
-    assert captured["payload"]["pid"] == os.getpid()
-
-
-def test_statusline_pid_reread_each_post():
-    """PID is re-read each post so /clear reconnect (new subprocess) is reflected."""
-    client = _make_client()
-    mock_ap = MagicMock()
-    client._agentpulse_client = mock_ap
-    fake_process = _wire_fake_subprocess(client, pid=1111)
-    posts: list[dict] = []
-
-    mock_ap.session.return_value = None
-    mock_ap.post_statusline.side_effect = lambda payload: (
-        posts.append(payload) or True
-    )
-
-    with patch(
-        "personal_assistant_dashboard.chat_client.merge_agentpulse_seed",
-        side_effect=_FakeSeed(ok=True, merged=False),
-    ):
-        client._handle_message(_make_result_msg())
-        _drain_statusline_queue(client)
-        fake_process.pid = 2222  # simulate reconnect: new subprocess
-        client._handle_message(_make_result_msg())
-        _drain_statusline_queue(client)
-
-    assert [p["pid"] for p in posts] == [1111, 2222]
-
-
-def test_fake_seed_matches_real_merge_signature():
-    """Regression guard: _FakeSeed must match merge_agentpulse_seed's signature.
-
-    Uses inspect.signature to compare — a parameter drift in the real
-    function would fail this test rather than silently pass the mocked
-    ones above.
-    """
-    import inspect
-
-    from personal_assistant_dashboard.agentpulse_statusline import (
-        merge_agentpulse_seed,
-    )
-
-    real_params = list(inspect.signature(merge_agentpulse_seed).parameters)
-    fake = _FakeSeed(ok=True)
-    # _FakeSeed.__call__ has (self, acc, session)
-    fake_params = list(inspect.signature(fake.__call__).parameters)
-    assert fake_params == real_params
-
-
 # -- on_usage callback -------------------------------------------------------
 
 
-def test_usage_callback_fires_with_cumulative_cost():
-    """on_usage receives cumulative cost across turns."""
+def test_usage_callback_fires_per_turn():
+    """on_usage fires once per turn."""
     client = _make_client()
     client._handle_message(_make_result_msg(total_cost_usd=0.05))
     client._handle_message(_make_result_msg(total_cost_usd=0.03))
     assert client._on_usage.call_count == 2
-    # Second call should have cumulative $0.08
-    _model, cost, _pct = client._on_usage.call_args_list[1].args
-    assert cost == pytest.approx(0.08)
 
 
 def test_usage_callback_fires_with_context_pct():
@@ -897,7 +413,7 @@ def test_usage_callback_fires_with_context_pct():
         )
     )
     client._handle_message(_make_result_msg(model="claude-opus-4-7"))
-    _model, _cost, pct = client._on_usage.call_args.args
+    _model, pct = client._on_usage.call_args.args
     # (10 + 50_000 + 2_000) / 200_000 * 100 = 26.005 → 26.0
     assert pct == pytest.approx(26.0)
 
@@ -919,7 +435,7 @@ def test_usage_callback_respects_1m_context_window():
         )
     )
     client._handle_message(_make_result_msg(model="claude-opus-4-7[1m]"))
-    _model, _cost, pct = client._on_usage.call_args.args
+    _model, pct = client._on_usage.call_args.args
     # 100_000 / 1_000_000 * 100 = 10.0
     assert pct == pytest.approx(10.0)
 
@@ -931,21 +447,11 @@ def test_usage_callback_not_fired_on_error_result():
     client._on_usage.assert_not_called()
 
 
-def test_usage_callback_works_without_agentpulse():
-    """on_usage fires even when AgentPulse is not configured."""
-    client = _make_client()
-    assert client._agentpulse_client is None
-    client._handle_message(_make_result_msg(total_cost_usd=0.10))
-    client._on_usage.assert_called_once()
-    _model, cost, _pct = client._on_usage.call_args.args
-    assert cost == pytest.approx(0.10)
-
-
 def test_usage_callback_passes_model_name():
     """on_usage passes the model name from the ResultMessage."""
     client = _make_client()
     client._handle_message(_make_result_msg(model="claude-opus-4-7[1m]"))
-    model, _cost, _pct = client._on_usage.call_args.args
+    model, _pct = client._on_usage.call_args.args
     assert model == "claude-opus-4-7[1m]"
 
 
@@ -966,12 +472,12 @@ def test_usage_callback_preserves_pct_when_no_snapshot():
         )
     )
     client._handle_message(_make_result_msg(total_cost_usd=0.05))
-    _model1, _cost1, pct1 = client._on_usage.call_args.args
+    _model1, pct1 = client._on_usage.call_args.args
     assert pct1 == pytest.approx(20.0)
 
     # Second turn with no assistant usage snapshot
     client._handle_message(_make_result_msg(total_cost_usd=0.03))
-    _model2, _cost2, pct2 = client._on_usage.call_args.args
+    _model2, pct2 = client._on_usage.call_args.args
     assert pct2 == pytest.approx(20.0)  # unchanged
 
 
@@ -1080,13 +586,7 @@ def test_connect_with_none_resume_starts_fresh_session():
 
 
 def test_clear_drops_resume_id_synchronously():
-    """Sync clear() drops the resume target immediately for UI updates.
-
-    The async portion (SDK teardown) runs on the loop, but
-    ``_next_resume_id`` is dropped first so ``has_resume_target()``
-    returns the right value when the chat tab refreshes its button
-    label right after calling ``clear()``.
-    """
+    """Sync clear() drops the resume target immediately for UI updates."""
     client = _make_client()
     client._next_resume_id = "session-abc"
     assert client._client is None
@@ -1098,11 +598,11 @@ def test_clear_drops_resume_id_synchronously():
 
 
 def test_clear_async_disconnects_when_connected():
-    """_clear (async) tears down the SDK; clear() is responsible for the sync drop."""
+    """_clear (async) tears down the SDK."""
     client = _make_client()
     sdk = _make_sdk_mock()
     client._client = sdk
-    client._next_resume_id = None  # already dropped by sync clear()
+    client._next_resume_id = None
 
     asyncio.run(client._clear())
 
@@ -1110,24 +610,17 @@ def test_clear_async_disconnects_when_connected():
     assert client._client is None
 
 
-def test_clear_works_when_receiving_flag_set():
-    """Regression: ``_receiving`` tracks the receive loop's lifetime, not
-    turn-in-progress. It's set on the first send and only cleared when
-    the SDK disconnects, so gating ``clear()`` on it would block every
-    clear after the first send. The UI disables the Clear button
-    during an actual turn — that's the real lock.
-    """
+def test_clear_resets_ui_context_pct():
+    """UI-side context % resets on clear and fires the callback with zero."""
     client = _make_client()
     sdk = _make_sdk_mock()
     client._client = sdk
-    client._next_resume_id = None  # consumed by the initial connect
-    client._receiving = True  # receive loop alive post-first-send
+    client._ui_context_pct = 55.0
 
-    client.clear()  # sync drop
-    asyncio.run(client._clear())  # async tear-down
+    asyncio.run(client._clear())
 
-    sdk.disconnect.assert_awaited_once()
-    assert client._client is None
+    assert client._ui_context_pct == 0.0
+    client._on_usage.assert_called_once_with(client._ui_model_name, 0.0)
 
 
 def test_send_after_clear_starts_fresh_session():
@@ -1135,7 +628,7 @@ def test_send_after_clear_starts_fresh_session():
     client = _make_client()
     client._next_resume_id = "session-abc"
 
-    client.clear()  # sync drops resume id (no loop attached, async portion skipped)
+    client.clear()
     assert client._next_resume_id is None
 
     sdk = _make_sdk_mock()
@@ -1151,98 +644,6 @@ def test_send_after_clear_starts_fresh_session():
     options = mock_cls.call_args.kwargs["options"]
     assert options.resume is None
     sdk.query.assert_awaited_once_with("hello")
-
-
-def test_get_active_session_id_when_connected():
-    """Active session id returned when SDK is up and a ResultMessage seen."""
-    client = _make_client()
-    client._client = MagicMock()
-    client._accumulator.session_id = "session-abc"
-    assert client.get_active_session_id() == "session-abc"
-
-
-def test_get_active_session_id_returns_resume_target_pre_connect():
-    """Pre-first-send with a resume target → return the resume id.
-
-    On dashboard restart, the user has a session waiting to resume —
-    the next send will pick it up. ``session_id`` should report it now,
-    not after the user has sent something.
-    """
-    client = _make_client()
-    client._client = None
-    client._next_resume_id = "session-xyz"
-    # Accumulator has no session_id yet — only set after a ResultMessage
-    client._accumulator.session_id = ""
-    assert client.get_active_session_id() == "session-xyz"
-
-
-def test_get_active_session_id_none_after_clear():
-    """Post-clear with no resume target and no SDK → None."""
-    client = _make_client()
-    client._client = None
-    client._next_resume_id = None
-    client._accumulator.session_id = "stale-session-abc"  # leftover
-    assert client.get_active_session_id() is None
-
-
-def test_get_active_session_id_none_before_first_result():
-    """SDK connected but no ResultMessage yet → still None (id unknown)."""
-    client = _make_client()
-    client._client = MagicMock()
-    client._accumulator.session_id = ""
-    assert client.get_active_session_id() is None
-
-
-def test_clear_resets_session_id():
-    """Regression: after clear, get_active_session_id must not leak the
-    prior session's id. Otherwise the dashboard's ``session_id`` command
-    reports the old session even though the SDK has been wiped.
-    """
-    client = _make_client()
-    sdk = _make_sdk_mock()
-    client._client = sdk
-    client._accumulator.session_id = "old-session-abc"
-
-    asyncio.run(client._clear())
-
-    assert client._accumulator.session_id == ""
-    assert client.get_active_session_id() is None
-
-
-def test_clear_resets_accumulator_totals():
-    """Clear kills the subprocess (new PID), so cumulative totals must
-    reset — otherwise the new session inherits the old session's cost.
-    """
-    client = _make_client()
-    sdk = _make_sdk_mock()
-    client._client = sdk
-    client._accumulator.session_id = "old-session"
-    client._accumulator.total_cost_usd = 42.0
-    client._accumulator.total_input_tokens = 10000
-    client._accumulator.total_output_tokens = 5000
-    client._accumulator_seeded = True
-
-    asyncio.run(client._clear())
-
-    assert client._accumulator.total_cost_usd == 0.0
-    assert client._accumulator.total_input_tokens == 0
-    assert client._accumulator.total_output_tokens == 0
-    assert client._accumulator_seeded is False
-
-
-def test_clear_resets_ui_cost():
-    """UI-side cost resets on clear and fires the callback with zeros."""
-    client = _make_client()
-    sdk = _make_sdk_mock()
-    client._client = sdk
-    client._ui_total_cost = 42.0
-    client._ui_context_pct = 55.0
-
-    asyncio.run(client._clear())
-
-    assert client._ui_total_cost == 0.0
-    assert client._ui_context_pct == 0.0
-    client._on_usage.assert_called_once_with(client._ui_model_name, 0.0, 0.0)
 
 
 def test_send_lazy_connects_with_pending_resume():

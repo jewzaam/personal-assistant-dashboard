@@ -42,8 +42,7 @@ def _block_urlopen(request: pytest.FixtureRequest) -> object:
     """Block real HTTP calls globally.
 
     Any test that needs urlopen must patch it explicitly. This prevents
-    a missed mock from reaching the network (or a local AgentPulse
-    instance) during unit tests.
+    a missed mock from reaching the network during unit tests.
     """
     if "integration" in request.keywords:
         yield
