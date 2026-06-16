@@ -3427,9 +3427,13 @@ class Dashboard:
         self._all_changes = changes
         from personal_assistant_dashboard.utils import filter_dismissed_missed_meetings
 
-        self._missed_meetings = filter_dismissed_missed_meetings(
-            missed_meetings or [], self._dismissed_conflicts
-        )
+        self._missed_meetings = [
+            e
+            for e in filter_dismissed_missed_meetings(
+                missed_meetings or [], self._dismissed_conflicts
+            )
+            if not _is_solo_event(e)
+        ]
         self._render_current_day(preserve_scroll=True)
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._status_var.set(f"Updated at {timestamp}")
@@ -3438,6 +3442,8 @@ class Dashboard:
         today_str = date.today().isoformat()
         changes_by_key: dict[str, Any] = {}
         for c in changes:
+            if _is_solo_event(c.event):
+                continue
             start = c.event.get("start", "")
             touches_today = start.startswith(today_str)
             # Also check previous event for time_changed (moved FROM today)
@@ -3478,7 +3484,7 @@ class Dashboard:
         has_unaccepted = any(
             _user_response_status(e) == "needsAction"
             for e in today_events
-            if e.get("attendees")  # skip user's own events with no attendees
+            if not _is_solo_event(e)
         )
         today_conflict_ids = self._resolve_conflict_ids(today_events)
         if has_unaccepted or today_conflict_ids or self._missed_meetings:
@@ -3895,6 +3901,14 @@ def _user_response_status(event: CalendarEvent) -> str:
         status: str = user_att.get("response_status", "needsAction")
         return status
     return "accepted"  # No attendees = likely user's own event
+
+
+def _is_solo_event(event: CalendarEvent) -> bool:
+    attendees = event.get("attendees", [])
+    if not attendees:
+        return True
+    non_self = [a for a in attendees if not a.get("self")]
+    return len(non_self) == 0
 
 
 def _is_one_on_one(event: dict[str, Any]) -> bool:
