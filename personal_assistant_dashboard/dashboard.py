@@ -452,6 +452,7 @@ class Dashboard:
         # Calendar navigation: j/k and arrow keys (guarded for text inputs)
         self._window.bind("<Key-j>", self._on_nav_next)
         self._window.bind("<Key-k>", self._on_nav_prev)
+        self._window.bind("<Key-t>", self._on_nav_today)
         self._window.bind("<Left>", self._on_nav_prev)
         self._window.bind("<Right>", self._on_nav_next)
 
@@ -670,6 +671,7 @@ class Dashboard:
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=self._s(8),
+            underline=0,
         ).pack(side=tk.LEFT, padx=(self._s(8), 0))
 
         tk.Button(
@@ -2030,7 +2032,9 @@ class Dashboard:
     def _bind_menu_key(self, key: str, command: Any) -> None:
         """Bind a keyboard shortcut active only while the context menu is shown."""
         seq = f"<KeyPress-{key}>"
-        self._root.bind_all(seq, lambda _e: command())
+        self._root.bind_all(
+            seq, lambda _e: None if self._is_text_focused() else command()
+        )
         self._menu_key_bindings.append(seq)
 
     def _on_right_click(self, event: Any) -> None:
@@ -2129,7 +2133,16 @@ class Dashboard:
                 self._toggle_dismiss_conflict(eid)
 
             menu.add_separator()
-            menu.add_command(label=dismiss_label, command=_toggle_dismiss)
+            if in_conflict or is_dismissed:
+                c_index = dismiss_label.index("c", dismiss_label.index("onflict") - 1)
+                menu.add_command(
+                    label=dismiss_label,
+                    command=_toggle_dismiss,
+                    underline=c_index,
+                )
+                shortcuts.append(("c", _toggle_dismiss))
+            else:
+                menu.add_command(label=dismiss_label, command=_toggle_dismiss)
 
         try:
             menu.tk_popup(event.x_root, event.y_root)
@@ -2665,6 +2678,14 @@ class Dashboard:
         self._update_date_label()
         self._render_current_day()
         self._extend_range_if_needed()
+
+    def _on_nav_today(self, _event: Any = None) -> str | None:
+        if self._is_text_focused() or not self._notebook:
+            return None
+        tab_id = self._notebook.select()
+        if str(tab_id) == self._cal_tab_id:
+            self._go_today()
+        return "break"
 
     def _go_today(self) -> None:
         self._dismiss_context_menu()
