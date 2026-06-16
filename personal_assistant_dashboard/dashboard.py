@@ -155,6 +155,9 @@ class Dashboard:
         self._context_menu: tk.Menu | None = None
         self._menu_timer: str | None = None
         self._menu_key_bindings: list[str] = []
+        self._pending_click_timer: str | None = None
+        self._pending_click_event: Any = None
+        self._user_email: str | None = None
         self._tooltip: tk.Toplevel | None = None
         self._tooltip_tag: str | None = None
         self._tooltip_timer: str | None = None
@@ -772,6 +775,7 @@ class Dashboard:
         # Right-click context menu
         self._canvas.bind("<Button-3>", self._on_right_click)
         self._canvas.bind("<Button-1>", self._on_left_click)
+        self._canvas.bind("<Double-1>", self._on_double_click)
         self._canvas.bind("<Motion>", self._on_hover)
         self._canvas.bind("<Leave>", self._hide_tooltip)
 
@@ -1874,7 +1878,7 @@ class Dashboard:
             lines.append(f"  {status.reauth_command}")
             lines.append("")
             lines.append(
-                "Logout clears the cached token so the new" " scopes take effect."
+                "Logout clears the cached token so the new scopes take effect."
             )
 
         if status.missing_optional:
@@ -1927,17 +1931,23 @@ class Dashboard:
         """Schedule tooltip after a delay on hover."""
         if not self._canvas:
             return
-        item = self._canvas.find_closest(
-            self._canvas.canvasx(event.x),
-            self._canvas.canvasy(event.y),
-        )
-        if not item:
-            self._hide_tooltip()
-            return
-
-        tags = self._canvas.gettags(item[0])
-        evt_tag = next((t for t in tags if t.startswith("evt_")), None)
-        if not evt_tag or evt_tag not in self._canvas_event_map:
+        cx = self._canvas.canvasx(event.x)
+        cy = self._canvas.canvasy(event.y)
+        hit = self._canvas.find_overlapping(cx - 1, cy - 1, cx + 1, cy + 1)
+        evt_tag = None
+        for item_id in hit:
+            tags = self._canvas.gettags(item_id)
+            evt_tag = next(
+                (
+                    t
+                    for t in tags
+                    if t.startswith("evt_") and t in self._canvas_event_map
+                ),
+                None,
+            )
+            if evt_tag:
+                break
+        if not evt_tag:
             self._hide_tooltip()
             return
 
@@ -2045,16 +2055,23 @@ class Dashboard:
         # Dismiss any existing menu first
         self._dismiss_context_menu()
 
-        item = self._canvas.find_closest(
-            self._canvas.canvasx(event.x),
-            self._canvas.canvasy(event.y),
-        )
-        if not item:
-            return
-
-        tags = self._canvas.gettags(item[0])
-        evt_tag = next((t for t in tags if t.startswith("evt_")), None)
-        if not evt_tag or evt_tag not in self._canvas_event_map:
+        cx = self._canvas.canvasx(event.x)
+        cy = self._canvas.canvasy(event.y)
+        hit = self._canvas.find_overlapping(cx - 1, cy - 1, cx + 1, cy + 1)
+        evt_tag = None
+        for item_id in hit:
+            tags = self._canvas.gettags(item_id)
+            evt_tag = next(
+                (
+                    t
+                    for t in tags
+                    if t.startswith("evt_") and t in self._canvas_event_map
+                ),
+                None,
+            )
+            if evt_tag:
+                break
+        if not evt_tag:
             return
 
         cal_event = self._canvas_event_map[evt_tag]
@@ -2200,26 +2217,45 @@ class Dashboard:
         return cmd
 
     def _on_left_click(self, event: Any) -> None:
-        """Show event details in side panel, or collapse on background click."""
+        """Defer single-click 200ms so double-click can cancel it."""
         if not self._canvas:
             return
         self._canvas.focus_set()
-
-        item = self._canvas.find_closest(
-            self._canvas.canvasx(event.x),
-            self._canvas.canvasy(event.y),
+        if self._pending_click_timer:
+            self._root.after_cancel(self._pending_click_timer)
+        self._pending_click_event = event
+        self._pending_click_timer = self._root.after(
+            200,
+            self._do_single_click,
         )
-        if not item:
+
+    def _do_single_click(self) -> None:
+        """Execute deferred single-click action."""
+        self._pending_click_timer = None
+        event = self._pending_click_event
+        if not event or not self._canvas:
+            return
+
+        cx = self._canvas.canvasx(event.x)
+        cy = self._canvas.canvasy(event.y)
+        hit = self._canvas.find_overlapping(cx - 1, cy - 1, cx + 1, cy + 1)
+        evt_tag = None
+        for item_id in hit:
+            tags = self._canvas.gettags(item_id)
+            evt_tag = next(
+                (
+                    t
+                    for t in tags
+                    if t.startswith("evt_") and t in self._canvas_event_map
+                ),
+                None,
+            )
+            if evt_tag:
+                break
+        if not evt_tag:
             self._hide_detail_panel()
             return
 
-        tags = self._canvas.gettags(item[0])
-        evt_tag = next((t for t in tags if t.startswith("evt_")), None)
-        if not evt_tag or evt_tag not in self._canvas_event_map:
-            self._hide_detail_panel()
-            return
-
-        # Toggle: clicking the same event again collapses the panel
         if evt_tag == self._selected_event_tag and self._detail_visible:
             self._hide_detail_panel()
             return
@@ -2227,6 +2263,391 @@ class Dashboard:
         cal_event = self._canvas_event_map[evt_tag]
         self._selected_event_tag = evt_tag
         self._show_event_details(cal_event)
+
+    def _on_double_click(self, event: Any) -> None:
+        """Quick-add event on double-click in blank canvas area."""
+        if self._pending_click_timer:
+            self._root.after_cancel(self._pending_click_timer)
+            self._pending_click_timer = None
+        if not self._canvas:
+            return
+
+        cx = self._canvas.canvasx(event.x)
+        cy = self._canvas.canvasy(event.y)
+        hit = self._canvas.find_overlapping(cx - 1, cy - 1, cx + 1, cy + 1)
+        for item_id in hit:
+            tags = self._canvas.gettags(item_id)
+            if any(t.startswith("evt_") and t in self._canvas_event_map for t in tags):
+                return
+
+        date_str = self._current_date.strftime("%Y-%m-%d")
+        day_events = _filter_events_for_date(self._all_events, date_str)
+        earliest, _latest = _day_time_range(day_events)
+
+        canvas_y = self._canvas.canvasy(event.y)
+        clicked_hour = earliest + (canvas_y / self._s(HOUR_HEIGHT))
+        clicked_hour = round(clicked_hour * 4) / 4  # nearest 15 min
+
+        timed = sorted(
+            [e for e in day_events if not e.get("all_day", False)],
+            key=lambda e: e["start"],
+        )
+        prev_end: float | None = None
+        next_start: float | None = None
+        for e in timed:
+            e_end = _parse_hour(e["end"])
+            if e_end <= clicked_hour:
+                prev_end = e_end
+        for e in timed:
+            e_start = _parse_hour(e["start"])
+            if e_start >= clicked_hour:
+                next_start = e_start
+                break
+
+        fill_gap_minutes: int | None = None
+        if prev_end is not None and next_start is not None:
+            gap_hours = next_start - prev_end
+            if 0 < gap_hours <= 1.5:
+                fill_gap_minutes = int(gap_hours * 60)
+                start_hour = prev_end
+            else:
+                start_hour = clicked_hour
+        else:
+            start_hour = clicked_hour
+
+        self._show_quick_add_popup(start_hour, fill_gap_minutes, next_start)
+
+    def _show_quick_add_popup(
+        self,
+        start_hour: float,
+        fill_gap_minutes: int | None,
+        next_start: float | None,
+    ) -> None:
+        PREVIEW_TAG = "quick_add_preview"
+
+        date_str = self._current_date.strftime("%Y-%m-%d")
+        day_events = _filter_events_for_date(self._all_events, date_str)
+        earliest, _latest = _day_time_range(day_events)
+
+        current_start = [start_hour]
+
+        def _format_time(h: float) -> str:
+            return f"{int(h):02d}:{int((h - int(h)) * 60):02d}"
+
+        def _compute_end() -> float:
+            dur = duration_var.get()
+            if (
+                dur == "fill"
+                and fill_gap_minutes is not None
+                and next_start is not None
+            ):
+                return next_start
+            return current_start[0] + int(dur) / 60
+
+        def _update_preview() -> None:
+            if not self._canvas:
+                return
+            self._canvas.delete(PREVIEW_TAG)
+            s = current_start[0]
+            e = _compute_end()
+            canvas_width = max(self._canvas.winfo_width(), self._s(CANVAS_MIN_WIDTH))
+            avail = (
+                canvas_width - self._s(EVENT_LEFT_MARGIN) - self._s(EVENT_RIGHT_MARGIN)
+            )
+            x1 = self._s(EVENT_LEFT_MARGIN) + 1
+            x2 = x1 + avail - 2
+            y1 = self._s(int((s - earliest) * HOUR_HEIGHT))
+            y2 = self._s(int((e - earliest) * HOUR_HEIGHT))
+            if y2 - y1 < self._s(MIN_BLOCK_HEIGHT):
+                y2 = y1 + self._s(MIN_BLOCK_HEIGHT)
+            self._canvas.create_rectangle(
+                x1,
+                y1,
+                x2,
+                y2,
+                fill=COLOR_CONFLICT,
+                outline=COLOR_BORDER_TENTATIVE,
+                width=1,
+                dash=(4, 4),
+                tags=PREVIEW_TAG,
+            )
+            label = f"{_format_time(s)} {title_var.get().strip() or 'GSD: '}"
+            self._canvas.create_text(
+                x1 + 4,
+                y1 + 2,
+                text="⚠",
+                fill=COLOR_ALERT,
+                font=self._font_body,
+                anchor=tk.NW,
+                tags=PREVIEW_TAG,
+            )
+            self._canvas.create_text(
+                x1 + 4 + self._s(16),
+                y1 + 2,
+                text=label,
+                fill=COLOR_EVENT_TEXT,
+                font=self._font_body,
+                anchor=tk.NW,
+                tags=PREVIEW_TAG,
+            )
+
+        popup = tk.Toplevel(self._root)
+        popup.title("Quick Add Event")
+        popup.configure(bg=BG_WINDOW)
+        popup.geometry(f"{self._s(340)}x{self._s(220)}")
+        popup.transient(self._window)
+        popup.update_idletasks()
+        popup.grab_set()
+
+        # Title — label and entry on same row
+        title_frame = tk.Frame(popup, bg=BG_WINDOW)
+        title_frame.pack(fill=tk.X, padx=self._s(PAD), pady=(self._s(PAD), 0))
+        tk.Label(
+            title_frame,
+            text="Title:",
+            bg=BG_WINDOW,
+            fg=FG_TEXT,
+            font=self._font_body,
+        ).pack(side=tk.LEFT)
+        title_var = tk.StringVar(value="GSD: ")
+        title_entry = tk.Entry(
+            title_frame,
+            textvariable=title_var,
+            bg=BG_INPUT,
+            fg=FG_TEXT,
+            font=self._font_body,
+            insertbackground=FG_TEXT,
+        )
+        title_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(self._s(4), 0))
+        title_entry.icursor(tk.END)
+        title_entry.focus_set()
+
+        # Start time with -/+ buttons
+        time_frame = tk.Frame(popup, bg=BG_WINDOW)
+        time_frame.pack(fill=tk.X, padx=self._s(PAD), pady=(self._s(4), 0))
+
+        tk.Label(
+            time_frame,
+            text="Start:",
+            bg=BG_WINDOW,
+            fg=FG_TEXT,
+            font=self._font_body,
+        ).pack(side=tk.LEFT)
+
+        time_label = tk.Label(
+            time_frame,
+            text=_format_time(start_hour),
+            bg=BG_WINDOW,
+            fg=FG_TEXT,
+            font=self._font_body,
+            width=5,
+        )
+
+        def _adjust_start(delta: float) -> None:
+            current_start[0] = round((current_start[0] + delta) * 4) / 4
+            if current_start[0] < 0:
+                current_start[0] = 0
+            if current_start[0] > 23.75:
+                current_start[0] = 23.75
+            time_label.configure(text=_format_time(current_start[0]))
+            _update_preview()
+
+        tk.Button(
+            time_frame,
+            text="◀",
+            command=lambda: _adjust_start(-0.25),
+            bg=COLOR_BUTTON,
+            fg=FG_TEXT,
+            font=self._font_body,
+            relief=tk.FLAT,
+            padx=self._s(4),
+        ).pack(side=tk.LEFT, padx=(self._s(4), 0))
+        time_label.pack(side=tk.LEFT)
+        tk.Button(
+            time_frame,
+            text="▶",
+            command=lambda: _adjust_start(0.25),
+            bg=COLOR_BUTTON,
+            fg=FG_TEXT,
+            font=self._font_body,
+            relief=tk.FLAT,
+            padx=self._s(4),
+        ).pack(side=tk.LEFT)
+
+        # Duration options
+        duration_var = tk.StringVar()
+        duration_frame = tk.Frame(popup, bg=BG_WINDOW)
+        duration_frame.pack(
+            fill=tk.X, padx=self._s(PAD), pady=(self._s(4), self._s(PAD))
+        )
+
+        options: list[tuple[str, str]] = []
+        if fill_gap_minutes is not None:
+            options.append((f"Fill gap ({fill_gap_minutes}m)", "fill"))
+            duration_var.set("fill")
+        options.extend(
+            [
+                ("30 minutes", "30"),
+                ("1 hour", "60"),
+                ("2 hours", "120"),
+            ]
+        )
+        if fill_gap_minutes is None:
+            duration_var.set("30")
+
+        for label, val in options:
+            tk.Radiobutton(
+                duration_frame,
+                text=label,
+                variable=duration_var,
+                value=val,
+                bg=BG_WINDOW,
+                fg=FG_TEXT,
+                font=self._font_body,
+                selectcolor=BG_WINDOW,
+                activebackground=BG_WINDOW,
+                activeforeground=FG_TEXT,
+                command=_update_preview,
+            ).pack(anchor=tk.W)
+
+        # Buttons
+        btn_frame = tk.Frame(popup, bg=BG_WINDOW)
+        btn_frame.pack(fill=tk.X, padx=self._s(PAD), pady=(0, self._s(PAD)))
+
+        def _cancel() -> None:
+            if self._canvas:
+                self._canvas.delete(PREVIEW_TAG)
+            popup.destroy()
+
+        def _save() -> None:
+            title = title_var.get().strip()
+            if not title:
+                return
+            evt_start = current_start[0]
+            evt_end = _compute_end()
+            if self._canvas:
+                self._canvas.delete(PREVIEW_TAG)
+            popup.destroy()
+            self._create_quick_event(title, evt_start, evt_end)
+
+        tk.Button(
+            btn_frame,
+            text="Save",
+            command=_save,
+            bg=FG_ACCENT,
+            fg=COLOR_WHITE,
+            font=self._font_body,
+            relief=tk.FLAT,
+            activebackground=COLOR_BUTTON_ACTIVE,
+            padx=self._s(8),
+            underline=0,
+        ).pack(side=tk.RIGHT, padx=(self._s(4), 0))
+        tk.Button(
+            btn_frame,
+            text="Cancel",
+            command=_cancel,
+            bg=COLOR_BUTTON,
+            fg=FG_TEXT,
+            font=self._font_body,
+            relief=tk.FLAT,
+            activebackground=COLOR_BUTTON_ACTIVE,
+            padx=self._s(8),
+        ).pack(side=tk.RIGHT)
+
+        popup.bind("<Escape>", lambda _: _cancel())
+        popup.bind("<Return>", lambda _: _save())
+        popup.protocol("WM_DELETE_WINDOW", _cancel)
+
+        _update_preview()
+
+    def _get_user_email(self) -> str | None:
+        if self._user_email:
+            return self._user_email
+        for event in self._all_events:
+            for att in event.get("attendees", []):
+                if att.get("self") and att.get("email"):
+                    self._user_email = att["email"]
+                    return self._user_email
+        return None
+
+    def _create_quick_event(
+        self,
+        title: str,
+        start_hour: float,
+        end_hour: float,
+    ) -> None:
+        self._status_var.set(f"Creating {title}...")
+        thread = threading.Thread(
+            target=self._do_create_quick_event,
+            args=(title, start_hour, end_hour),
+            daemon=True,
+            name="create-quick-event",
+        )
+        thread.start()
+
+    def _do_create_quick_event(
+        self,
+        title: str,
+        start_hour: float,
+        end_hour: float,
+    ) -> None:
+        current = self._current_date
+        start_h = int(start_hour)
+        start_m = int((start_hour - start_h) * 60)
+        end_h = int(end_hour)
+        end_m = int((end_hour - end_h) * 60)
+
+        tz = datetime.now().astimezone().strftime("%z")
+        tz_formatted = tz[:3] + ":" + tz[3:]
+        start_iso = (
+            f"{current.isoformat()}T{start_h:02d}:{start_m:02d}:00{tz_formatted}"
+        )
+        end_iso = f"{current.isoformat()}T{end_h:02d}:{end_m:02d}:00{tz_formatted}"
+
+        event_body: dict[str, Any] = {
+            "summary": title,
+            "start": {"dateTime": start_iso},
+            "end": {"dateTime": end_iso},
+            "colorId": "11",  # red
+        }
+
+        user_email = self._get_user_email()
+        if user_email:
+            event_body["attendees"] = [
+                {"email": user_email, "responseStatus": "tentative"},
+            ]
+
+        params = json.dumps({"calendarId": "primary"})
+        body = json.dumps(event_body)
+
+        try:
+            result = run_cmd(
+                [
+                    "gws",
+                    "calendar",
+                    "events",
+                    "insert",
+                    "--params",
+                    params,
+                    "--json",
+                    body,
+                ],
+                timeout=15,
+            )
+            logger.info(
+                "GWS insert %s: exit=%d",
+                title,
+                result.returncode,
+            )
+            if result.returncode != 0:
+                err = result.stderr.strip() or result.stdout.strip()
+                self._schedule(self._status_var.set, f"Error: {err[:80]}")
+                return
+        except Exception as exc:
+            self._schedule(self._status_var.set, f"Error: {exc}")
+            return
+
+        self._do_refresh()
 
     def _show_event_details(self, cal_event: CalendarEvent) -> None:
         """Show event details in the inline side panel."""
