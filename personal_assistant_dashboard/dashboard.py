@@ -154,6 +154,7 @@ class Dashboard:
         self._auto_shade_timer: str | None = None
         self._context_menu: tk.Menu | None = None
         self._menu_timer: str | None = None
+        self._menu_key_bindings: list[str] = []
         self._tooltip: tk.Toplevel | None = None
         self._tooltip_tag: str | None = None
         self._tooltip_timer: str | None = None
@@ -2009,6 +2010,12 @@ class Dashboard:
 
     def _dismiss_context_menu(self) -> None:
         """Destroy the current context menu and cancel its timer."""
+        for seq in self._menu_key_bindings:
+            try:
+                self._root.unbind_all(seq)
+            except tk.TclError:
+                pass
+        self._menu_key_bindings.clear()
         if self._menu_timer:
             self._root.after_cancel(self._menu_timer)
             self._menu_timer = None
@@ -2019,6 +2026,12 @@ class Dashboard:
             except tk.TclError:
                 pass
             self._context_menu = None
+
+    def _bind_menu_key(self, key: str, command: Any) -> None:
+        """Bind a keyboard shortcut active only while the context menu is shown."""
+        seq = f"<KeyPress-{key}>"
+        self._root.bind_all(seq, lambda _e: command())
+        self._menu_key_bindings.append(seq)
 
     def _on_right_click(self, event: Any) -> None:
         """Show context menu for the clicked event."""
@@ -2055,6 +2068,7 @@ class Dashboard:
 
         # Join Meeting — available when event has a video conference link
         meeting_url = self._get_meeting_url(cal_event)
+        shortcuts: list[tuple[str, Any]] = []
         if meeting_url:
 
             def _join_meeting(url: str = meeting_url or "") -> None:
@@ -2072,19 +2086,20 @@ class Dashboard:
 
         is_organizer = cal_event.get("organizer_self", False)
 
-        for label, status_val in [
-            ("Accept", "accepted"),
-            ("Maybe", "tentative"),
-            ("Decline", "declined"),
+        for label, status_val, shortcut in [
+            ("Accept", "accepted", "a"),
+            ("Maybe", "tentative", "m"),
+            ("Decline", "declined", "d"),
         ]:
             if response == status_val:
-                menu.add_command(label=label, state=tk.DISABLED)
+                menu.add_command(label=label, state=tk.DISABLED, underline=0)
             else:
 
                 def _make_cmd(s: str = status_val) -> None:
                     menu_action(s)
 
-                menu.add_command(label=label, command=_make_cmd)
+                menu.add_command(label=label, command=_make_cmd, underline=0)
+                shortcuts.append((shortcut, _make_cmd))
 
         if is_organizer:
 
@@ -2120,6 +2135,9 @@ class Dashboard:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+        for key, cmd in shortcuts:
+            self._bind_menu_key(key, cmd)
 
         # Auto-dismiss after 5 seconds
         self._menu_timer = self._root.after(MENU_TIMEOUT_MS, self._dismiss_context_menu)
