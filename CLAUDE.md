@@ -84,6 +84,15 @@ The rename dropped meeting transcript pipeline dependencies and made the workspa
 - **Click handling:** Single-click defers 200ms, double-click cancels it (Linux Tkinter fires `<ButtonRelease-1>` before `<Double-1>`).
 - **Canvas focus:** Calendar canvas uses `takefocus=True` with explicit click-to-focus binding.
 
+## Keyboard shortcuts
+
+Two shortcut patterns:
+
+- **Always-on shortcuts** (j/k/t for calendar nav): bound via `_window.bind("<Key-X>", handler)`. Handlers guard with `_is_text_focused()` (returns True if a Text/Entry/Combobox has focus) AND check the active tab is the calendar tab via `_cal_tab_id`. Adding new always-on shortcuts must follow this same pattern.
+- **Transient menu shortcuts** (a/m/d/c for right-click context menu actions): bound via `_bind_menu_key()` which uses `_root.bind_all()` and records the sequence in `_menu_key_bindings`. All bindings are removed in `_dismiss_context_menu()`. These also guard `_is_text_focused()` inside `_bind_menu_key`. Menu shortcuts only exist while the context menu is visible.
+
+**Critical:** All keyboard shortcuts must guard `_is_text_focused()` — `bind_all` fires even when text input widgets have focus. The guard is general-purpose (checks widget type), not per-shortcut.
+
 ## Autostart
 
 `~/.config/autostart/pa-dashboard.desktop` launches the dashboard on GNOME login. Points to this repo's venv and module.
