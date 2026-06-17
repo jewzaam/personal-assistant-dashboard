@@ -2306,10 +2306,12 @@ class Dashboard:
 
         fill_gap_minutes: int | None = None
         if prev_end is not None and next_start is not None:
-            gap_hours = next_start - prev_end
-            if 0 < gap_hours <= 1.5:
-                fill_gap_minutes = int(gap_hours * 60)
-                start_hour = prev_end
+            # Snap to next 15-min boundary (e.g. :55 → :00)
+            snapped_start = -(-prev_end * 4 // 1) / 4  # ceil to quarter hour
+            gap_minutes = int((next_start - snapped_start) * 60)
+            if snapped_start < next_start and 0 < gap_minutes <= 90:
+                fill_gap_minutes = gap_minutes
+                start_hour = snapped_start
             else:
                 start_hour = clicked_hour
         else:
