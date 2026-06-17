@@ -46,7 +46,7 @@ from personal_assistant_dashboard.config import (
     COLOR_NORMAL,
     COLOR_NOTIFICATION_BELL,
     COLOR_NOW_LINE,
-    COLOR_ONEONE,
+    GCAL_COLORS,
     COLOR_PROGRESS,
     COLOR_SECTION_HEADER,
     COLOR_SUCCESS,
@@ -158,6 +158,7 @@ class Dashboard:
         self._pending_click_timer: str | None = None
         self._pending_click_event: Any = None
         self._user_email: str | None = None
+        self._quick_add_preview_fn: Any = None
         self._tooltip: tk.Toplevel | None = None
         self._tooltip_tag: str | None = None
         self._tooltip_timer: str | None = None
@@ -406,8 +407,8 @@ class Dashboard:
         self._quick_chat_input.bind("<Return>", self._on_quick_chat_send)
         self._quick_chat_input.bind("<Shift-Return>", lambda e: None)  # allow newline
         self._quick_chat_input.bind("<Control-BackSpace>", self._on_ctrl_backspace)
-        self._quick_chat_input.bind("<Up>", self._on_history_prev)
-        self._quick_chat_input.bind("<Down>", self._on_history_next)
+        self._quick_chat_input.bind("<Down>", self._on_history_prev)
+        self._quick_chat_input.bind("<Up>", self._on_history_next)
 
         self._quick_send_btn = tk.Button(
             btn_frame,
@@ -717,7 +718,6 @@ class Dashboard:
         legend.pack(side=tk.RIGHT, padx=(0, self._s(8)))
         for label_text, color in [
             ("meeting", COLOR_NORMAL),
-            ("1:1", COLOR_ONEONE),
             ("conflict", COLOR_CONFLICT),
         ]:
             swatch = tk.Frame(legend, bg=color, width=self._s(10), height=self._s(10))
@@ -2350,6 +2350,9 @@ class Dashboard:
             if not self._canvas:
                 return
             self._canvas.delete(PREVIEW_TAG)
+            cur_date_str = self._current_date.strftime("%Y-%m-%d")
+            cur_events = _filter_events_for_date(self._all_events, cur_date_str)
+            cur_earliest, _cur_latest = _day_time_range(cur_events)
             s = current_start[0]
             e = _compute_end()
             canvas_width = max(self._canvas.winfo_width(), self._s(CANVAS_MIN_WIDTH))
@@ -2358,8 +2361,8 @@ class Dashboard:
             )
             x1 = self._s(EVENT_LEFT_MARGIN) + 1
             x2 = x1 + avail - 2
-            y1 = self._s(int((s - earliest) * HOUR_HEIGHT))
-            y2 = self._s(int((e - earliest) * HOUR_HEIGHT))
+            y1 = self._s(int((s - cur_earliest) * HOUR_HEIGHT))
+            y2 = self._s(int((e - cur_earliest) * HOUR_HEIGHT))
             if y2 - y1 < self._s(MIN_BLOCK_HEIGHT):
                 y2 = y1 + self._s(MIN_BLOCK_HEIGHT)
             self._canvas.create_rectangle(
@@ -2456,7 +2459,7 @@ class Dashboard:
 
         tk.Button(
             time_frame,
-            text="◀",
+            text="▲",
             command=lambda: _adjust_start(-0.25),
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
@@ -2467,7 +2470,7 @@ class Dashboard:
         time_label.pack(side=tk.LEFT)
         tk.Button(
             time_frame,
-            text="▶",
+            text="▼",
             command=lambda: _adjust_start(0.25),
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
@@ -2517,6 +2520,7 @@ class Dashboard:
         btn_frame.pack(fill=tk.X, padx=self._s(PAD), pady=(0, self._s(PAD)))
 
         def _cancel() -> None:
+            self._quick_add_preview_fn = None
             if self._canvas:
                 self._canvas.delete(PREVIEW_TAG)
             popup.destroy()
@@ -2527,6 +2531,7 @@ class Dashboard:
                 return
             evt_start = current_start[0]
             evt_end = _compute_end()
+            self._quick_add_preview_fn = None
             if self._canvas:
                 self._canvas.delete(PREVIEW_TAG)
             popup.destroy()
@@ -2558,9 +2563,12 @@ class Dashboard:
 
         popup.bind("<Escape>", lambda _: _cancel())
         popup.bind("<Return>", lambda _: _save())
+        popup.bind("<Up>", lambda _: _adjust_start(-0.25))
+        popup.bind("<Down>", lambda _: _adjust_start(0.25))
         popup.protocol("WM_DELETE_WINDOW", _cancel)
 
         _update_preview()
+        self._quick_add_preview_fn = _update_preview
 
     def _get_user_email(self) -> str | None:
         if self._user_email:
@@ -3684,19 +3692,15 @@ class Dashboard:
 
             event_id = event.get("id", "")
             is_conflict = event_id in conflict_ids
-            is_oneone = _is_one_on_one(event)
             response = _user_response_status(event)
 
             # Canvas tag for right-click identification
             tag = f"evt_{event_id}"
             self._canvas_event_map[tag] = event
 
-            if is_conflict:
-                category_color = COLOR_CONFLICT
-            elif is_oneone:
-                category_color = COLOR_ONEONE
-            else:
-                category_color = COLOR_NORMAL
+            # Fill color from Google Calendar colorId, fallback to default
+            color_id = event.get("color_id", "")
+            category_color = GCAL_COLORS.get(color_id, COLOR_NORMAL)
 
             # Border encodes response status
             event_text_color = COLOR_EVENT_TEXT
@@ -3770,6 +3774,17 @@ class Dashboard:
                     tags=tag,
                 )
                 text_x += self._s(16)
+            elif is_conflict:
+                self._canvas.create_text(
+                    text_x,
+                    y1 + text_pad,
+                    text="⚠",
+                    fill=COLOR_CONFLICT,
+                    font=self._font_body,
+                    anchor=tk.NW,
+                    tags=tag,
+                )
+                text_x += self._s(16)
             elif response == "needsAction":
                 self._canvas.create_text(
                     text_x,
@@ -3829,6 +3844,9 @@ class Dashboard:
                 self._canvas.yview_moveto(0)
         else:
             self._canvas.yview_moveto(0)
+
+        if self._quick_add_preview_fn:
+            self._quick_add_preview_fn()
 
 
 def _render_html_description(
@@ -3911,15 +3929,6 @@ def _is_solo_event(event: CalendarEvent) -> bool:
         return True
     non_self = [a for a in attendees if not a.get("self")]
     return len(non_self) == 0
-
-
-def _is_one_on_one(event: dict[str, Any]) -> bool:
-    attendees = event.get("attendees", [])
-    non_self = [a for a in attendees if not a.get("self")]
-    if len(non_self) != 1:
-        return False
-    summary = event.get("summary", "").lower()
-    return any(m in summary for m in ["1:1", "1 on 1", "1-on-1", "/"])
 
 
 def _parse_hour(time_str: str) -> float:
