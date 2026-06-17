@@ -257,6 +257,7 @@ def _normalize_event(raw: dict[str, Any]) -> CalendarEvent:
         "html_link": raw.get("htmlLink"),
         "event_type": raw.get("eventType", "default"),
         "recurring_event_id": raw.get("recurringEventId"),
+        "color_id": raw.get("colorId", ""),
         "description": raw.get("description", ""),
         "location": raw.get("location", ""),
         "attachments": [

@@ -49,6 +49,7 @@ class CalendarEvent(TypedDict, total=False):
     description: str
     location: str
     attachments: list[Attachment]
+    color_id: str
 
 
 class Participant(TypedDict, total=False):

@@ -45,9 +45,24 @@ COLOR_STOP_BUTTON = "#6b3a3a"
 COLOR_STOP_BUTTON_ACTIVE = "#7a4444"
 
 # Colors — semantic (calendar, meetings, events)
-COLOR_CONFLICT = "#B85450"  # muted red — conflict category
-COLOR_NORMAL = "#357E63"  # teal green — regular meetings
-COLOR_ONEONE = "#4272A4"  # steel blue — 1:1s
+COLOR_CONFLICT = "#E5A035"  # orange — conflict indicator
+COLOR_NORMAL = "#357E63"  # teal green — default event fill (no colorId)
+
+
+# Google Calendar colorId → hex (dark-theme-friendly variants)
+GCAL_COLORS: dict[str, str] = {
+    "1": "#6E7BA4",  # Lavender
+    "2": "#5A7D5A",  # Sage
+    "3": "#8E6BAD",  # Grape
+    "4": "#D47483",  # Flamingo
+    "5": "#C4A84D",  # Banana
+    "6": "#D4813D",  # Tangerine
+    "7": "#4A9EB5",  # Peacock
+    "8": "#6B6B6B",  # Graphite
+    "9": "#5A6ABF",  # Blueberry
+    "10": "#4A8C5C",  # Basil
+    "11": "#B85450",  # Tomato (red)
+}
 COLOR_EVENT_TEXT = "#FFFFFF"  # white text on event blocks
 COLOR_EVENT_TEXT_SECONDARY = "#C0C0C0"  # secondary text
 COLOR_CHANGE_NEW = "#98c379"
