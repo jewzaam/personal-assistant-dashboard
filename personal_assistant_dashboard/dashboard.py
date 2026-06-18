@@ -618,7 +618,7 @@ class Dashboard:
     def _build_calendar_tab(self, cal_tab: tk.Frame) -> None:
         """Build the calendar tab with nav, changes, canvas, and bindings."""
         assert self._window is not None
-        # Top bar: nav + legend + refresh
+        # Top bar: nav + refresh
         top_bar = tk.Frame(cal_tab, bg=BG_WINDOW)
         top_bar.pack(fill=tk.X, pady=(0, self._s(PAD)))
 
@@ -714,23 +714,6 @@ class Dashboard:
         ).pack(side=tk.RIGHT, padx=(0, self._s(8)))
 
         # Legend (right side, before status)
-        legend = tk.Frame(top_bar, bg=BG_WINDOW)
-        legend.pack(side=tk.RIGHT, padx=(0, self._s(8)))
-        for label_text, color in [
-            ("meeting", COLOR_NORMAL),
-            ("conflict", COLOR_CONFLICT),
-        ]:
-            swatch = tk.Frame(legend, bg=color, width=self._s(10), height=self._s(10))
-            swatch.pack(side=tk.LEFT, padx=(0, 2))
-            swatch.pack_propagate(False)
-            tk.Label(
-                legend,
-                text=label_text,
-                bg=BG_WINDOW,
-                fg=FG_DIM,
-                font=self._font_body,
-            ).pack(side=tk.LEFT, padx=(0, self._s(8)))
-
         # Calendar area — PanedWindow for canvas + detail panel
         self._calendar_frame = tk.Frame(cal_tab, bg=BG_WINDOW)
         self._calendar_frame.pack(fill=tk.BOTH, expand=True)
