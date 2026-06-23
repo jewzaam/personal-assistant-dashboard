@@ -3553,7 +3553,7 @@ class Dashboard:
         for hour in range(earliest, latest + 1):
             y = (hour - earliest) * self._s(HOUR_HEIGHT)
             self._canvas.create_line(
-                self._s(TIME_LABEL_WIDTH),
+                0,
                 y,
                 canvas_width,
                 y,
