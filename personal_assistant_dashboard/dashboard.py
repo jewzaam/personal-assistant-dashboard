@@ -2248,7 +2248,7 @@ class Dashboard:
         self._show_event_details(cal_event)
 
     def _on_double_click(self, event: Any) -> None:
-        """Quick-add event on double-click in blank canvas area."""
+        """Quick-add event on double-click in blank area, or edit a solo event."""
         if self._pending_click_timer:
             self._root.after_cancel(self._pending_click_timer)
             self._pending_click_timer = None
@@ -2258,10 +2258,31 @@ class Dashboard:
         cx = self._canvas.canvasx(event.x)
         cy = self._canvas.canvasy(event.y)
         hit = self._canvas.find_overlapping(cx - 1, cy - 1, cx + 1, cy + 1)
+        hit_event: CalendarEvent | None = None
         for item_id in hit:
             tags = self._canvas.gettags(item_id)
-            if any(t.startswith("evt_") and t in self._canvas_event_map for t in tags):
+            for t in tags:
+                if t.startswith("evt_") and t in self._canvas_event_map:
+                    hit_event = self._canvas_event_map[t]
+                    break
+            if hit_event:
+                break
+
+        if hit_event:
+            if not _is_solo_event(hit_event):
                 return
+            evt_start = _parse_hour(hit_event["start"])
+            evt_end = _parse_hour(hit_event["end"])
+            duration_min = int((evt_end - evt_start) * 60)
+            self._show_quick_add_popup(
+                evt_start,
+                None,
+                None,
+                editing_event=hit_event,
+                editing_title=hit_event.get("summary", ""),
+                editing_duration=duration_min,
+            )
+            return
 
         date_str = self._current_date.strftime("%Y-%m-%d")
         day_events = _filter_events_for_date(self._all_events, date_str)
@@ -2307,6 +2328,9 @@ class Dashboard:
         start_hour: float,
         fill_gap_minutes: int | None,
         next_start: float | None,
+        editing_event: CalendarEvent | None = None,
+        editing_title: str | None = None,
+        editing_duration: int | None = None,
     ) -> None:
         PREVIEW_TAG = "quick_add_preview"
 
@@ -2380,7 +2404,7 @@ class Dashboard:
             )
 
         popup = tk.Toplevel(self._root)
-        popup.title("Quick Add Event")
+        popup.title("Edit Event" if editing_event else "Quick Add Event")
         popup.configure(bg=BG_WINDOW)
         popup.geometry(f"{self._s(340)}x{self._s(220)}")
         popup.transient(self._window)
@@ -2397,7 +2421,7 @@ class Dashboard:
             fg=FG_TEXT,
             font=self._font_body,
         ).pack(side=tk.LEFT)
-        title_var = tk.StringVar(value="GSD: ")
+        title_var = tk.StringVar(value=editing_title if editing_title else "GSD: ")
         title_entry = tk.Entry(
             title_frame,
             textvariable=title_var,
@@ -2473,6 +2497,8 @@ class Dashboard:
         if fill_gap_minutes is not None:
             options.append((f"Fill gap ({fill_gap_minutes}m)", "fill"))
             duration_var.set("fill")
+        if editing_duration and str(editing_duration) not in ("30", "60", "120"):
+            options.append((f"{editing_duration} minutes", str(editing_duration)))
         options.extend(
             [
                 ("30 minutes", "30"),
@@ -2480,7 +2506,9 @@ class Dashboard:
                 ("2 hours", "120"),
             ]
         )
-        if fill_gap_minutes is None:
+        if editing_duration:
+            duration_var.set(str(editing_duration))
+        elif fill_gap_minutes is None:
             duration_var.set("30")
 
         for label, val in options:
@@ -2518,7 +2546,8 @@ class Dashboard:
             if self._canvas:
                 self._canvas.delete(PREVIEW_TAG)
             popup.destroy()
-            self._create_quick_event(title, evt_start, evt_end)
+            old_event_id = editing_event.get("id", "") if editing_event else ""
+            self._create_quick_event(title, evt_start, evt_end, old_event_id)
 
         tk.Button(
             btn_frame,
@@ -2568,11 +2597,13 @@ class Dashboard:
         title: str,
         start_hour: float,
         end_hour: float,
+        old_event_id: str = "",
     ) -> None:
-        self._status_var.set(f"Creating {title}...")
+        action = "Updating" if old_event_id else "Creating"
+        self._status_var.set(f"{action} {title}...")
         thread = threading.Thread(
             target=self._do_create_quick_event,
-            args=(title, start_hour, end_hour),
+            args=(title, start_hour, end_hour, old_event_id),
             daemon=True,
             name="create-quick-event",
         )
@@ -2583,7 +2614,19 @@ class Dashboard:
         title: str,
         start_hour: float,
         end_hour: float,
+        old_event_id: str = "",
     ) -> None:
+        if old_event_id:
+            del_params = json.dumps({"calendarId": "primary", "eventId": old_event_id})
+            try:
+                run_cmd(
+                    ["gws", "calendar", "events", "delete", "--params", del_params],
+                    timeout=15,
+                )
+            except Exception as exc:
+                self._schedule(self._status_var.set, f"Error deleting: {exc}")
+                return
+
         current = self._current_date
         start_h = int(start_hour)
         start_m = int((start_hour - start_h) * 60)
