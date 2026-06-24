@@ -3529,6 +3529,7 @@ class Dashboard:
             self._clear_persistent_bell("Calendar")
 
         # Log missed meetings to console with clickable Meet link (once each)
+        current_missed_ids = {e.get("id", "") for e in self._missed_meetings}
         for evt in self._missed_meetings:
             evt_id = evt.get("id", "")
             if evt_id in self._logged_missed_ids:
@@ -3544,6 +3545,22 @@ class Dashboard:
                 link=meet_link,
                 link_label="Join",
             )
+
+        # Log resolution for previously-missed meetings that cleared
+        resolved_ids = self._logged_missed_ids - current_missed_ids
+        if resolved_ids:
+            all_events_by_id = {e.get("id", ""): e for e in events}
+            for rid in resolved_ids:
+                resolved_evt = all_events_by_id.get(rid)
+                if resolved_evt:
+                    summary = resolved_evt.get("summary", "Unknown meeting")
+                    start = resolved_evt.get("start", "")
+                    time_part = start[11:16] if len(start) > 16 else start
+                    self.log_console(
+                        f"[Calendar] resolved — {time_part} {summary}",
+                        "success",
+                    )
+            self._logged_missed_ids -= resolved_ids
 
         self._update_cal_countdown()
 
@@ -3692,7 +3709,7 @@ class Dashboard:
 
         # Layout and draw events
         self._canvas_event_map.clear()
-        positioned = _layout_events(day_events, earliest)
+        positioned = _layout_events(day_events, earliest, self._dismissed_conflicts)
 
         available_width = (
             canvas_width - self._s(EVENT_LEFT_MARGIN) - self._s(EVENT_RIGHT_MARGIN)
@@ -3986,10 +4003,27 @@ def _day_time_range(
     return start, end
 
 
+def _event_column_priority(event: CalendarEvent, dismissed: set[str]) -> int:
+    """Lower number = further left in overlapping clusters."""
+    is_solo = _is_solo_event(event)
+    is_dismissed = event.get("id", "") in dismissed
+    response = _user_response_status(event)
+    if is_solo:
+        return 50 + (1 if is_dismissed else 0)
+    if response == "accepted":
+        return 10 + (1 if is_dismissed else 0)
+    if response == "tentative":
+        return 20 + (1 if is_dismissed else 0)
+    # needsAction or other
+    return 30 + (1 if is_dismissed else 0)
+
+
 def _layout_events(
     events: list[CalendarEvent],
     earliest_hour: int,
+    dismissed_conflicts: set[str] | None = None,
 ) -> list[dict[str, Any]]:
+    dismissed = dismissed_conflicts or set()
     timed = [
         e
         for e in events
@@ -4023,6 +4057,8 @@ def _layout_events(
 
     positioned: list[dict[str, Any]] = []
     for cluster in clusters:
+        # Sort by priority within cluster: accepted → tentative → solo/GSD
+        cluster.sort(key=lambda e: _event_column_priority(e, dismissed))
         num_cols = len(cluster)
         for col, event in enumerate(cluster):
             start_h = _parse_hour(event["start"])
