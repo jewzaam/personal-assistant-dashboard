@@ -4121,12 +4121,8 @@ def _find_active_meetings(
         except ValueError:
             continue
         if start <= now < end:
-            # No meeting code + sole attendee → nothing to join, skip alert
             if not event.get("hangout_link"):
-                attendees = event.get("attendees") or []
-                others = [a for a in attendees if not a.get("self")]
-                if not others:
-                    continue
+                continue
             active.append(event)
     return active
 

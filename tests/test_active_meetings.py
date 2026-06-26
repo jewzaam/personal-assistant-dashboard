@@ -173,8 +173,8 @@ def test_self_only_attendee_no_meet_code_excluded():
     assert _find_active_meetings([event]) == []
 
 
-def test_multiple_attendees_no_meet_code_included():
-    """In-person meeting with other attendees but no meet code → alert."""
+def test_multiple_attendees_no_meet_code_excluded():
+    """No meet link → no way to assess join state → no alert."""
     now = datetime.now(timezone.utc)
     event = _make_event(
         start=now - timedelta(minutes=10),
@@ -184,4 +184,4 @@ def test_multiple_attendees_no_meet_code_included():
     event["attendees"].append(
         {"email": "other@example.com", "self": False, "response_status": "accepted"}
     )
-    assert len(_find_active_meetings([event])) == 1
+    assert _find_active_meetings([event]) == []
