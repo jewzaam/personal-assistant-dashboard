@@ -3840,6 +3840,23 @@ class Dashboard:
                 )
                 text_x += self._s(16)
 
+            # 1:1 declined indicator
+            attendees = event.get("attendees", [])
+            non_self = [a for a in attendees if not a.get("self")]
+            if len(non_self) == 1:
+                other = non_self[0]
+                if other.get("response_status") == "declined":
+                    self._canvas.create_text(
+                        text_x,
+                        y1 + text_pad,
+                        text="\u2716",
+                        fill=COLOR_ALERT,
+                        font=self._font_body,
+                        anchor=tk.NW,
+                        tags=tag,
+                    )
+                    text_x += self._s(16)
+
             self._canvas.create_text(
                 text_x,
                 y1 + text_pad,
