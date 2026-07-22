@@ -33,6 +33,8 @@ from personal_assistant_dashboard.config import (
     COLOR_BUTTON,
     COLOR_BUTTON_ACTIVE,
     COLOR_CONFLICT,
+    COLOR_DECLINED,
+    COLOR_DISABLED_BG,
     COLOR_ERROR,
     COLOR_EVENT_TEXT,
     COLOR_GRID_LINE,
@@ -139,6 +141,7 @@ class Dashboard:
         self._date_var = tk.StringVar()
         self._current_date: date = date.today()
         self._all_events: list[CalendarEvent] = []
+        self._show_declined_var = tk.BooleanVar(value=False)
         self._canvas_event_map: dict[str, CalendarEvent] = {}
         self._all_conflicts: list[Any] = []
         self._all_changes: list[Any] = []
@@ -690,6 +693,29 @@ class Dashboard:
             cursor="hand2",
             padx=4,
         ).pack(side=tk.LEFT, padx=(4, 0))
+
+        def _toggle_declined() -> None:
+            on = self._show_declined_var.get()
+            self._declined_btn.configure(fg=COLOR_DECLINED if on else FG_DIM)
+            self._render_current_day()
+
+        self._declined_btn = tk.Checkbutton(
+            nav,
+            text="Declined",
+            variable=self._show_declined_var,
+            command=_toggle_declined,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            selectcolor=BG_WINDOW,
+            activebackground=BG_WINDOW,
+            activeforeground=FG_TEXT,
+            font=self._font_body,
+            relief=tk.FLAT,
+            cursor="hand2",
+            indicatoron=False,
+            padx=self._s(6),
+        )
+        self._declined_btn.pack(side=tk.LEFT, padx=(self._s(8), 0))
 
         # Scope status indicator (green/red dot)
         self._scope_indicator = tk.Label(
@@ -3684,7 +3710,10 @@ class Dashboard:
         self._canvas.delete("all")
 
         date_str = self._current_date.strftime("%Y-%m-%d")
-        day_events = _filter_events_for_date(self._all_events, date_str)
+        show_declined = self._show_declined_var.get()
+        day_events = _filter_events_for_date(
+            self._all_events, date_str, show_declined=show_declined
+        )
 
         now = datetime.now().astimezone()
         is_today = self._current_date == date.today()
@@ -3747,7 +3776,21 @@ class Dashboard:
 
             # Border encodes response status
             event_text_color = COLOR_EVENT_TEXT
-            if response == "accepted":
+            if response == "declined":
+                # ponytail: dim fill + red dashed border for declined
+                self._canvas.create_rectangle(
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    fill=COLOR_DISABLED_BG,
+                    outline=COLOR_DECLINED,
+                    width=1,
+                    dash=(4, 4),
+                    tags=tag,
+                )
+                event_text_color = FG_DIM
+            elif response == "accepted":
                 self._canvas.create_rectangle(
                     x1,
                     y1,
@@ -4130,6 +4173,8 @@ def _find_active_meetings(
 def _filter_events_for_date(
     all_events: list[CalendarEvent],
     date_str: str,
+    *,
+    show_declined: bool = False,
 ) -> list[CalendarEvent]:
     """Filter events for a specific date, excluding declined and work location."""
     day_events = []
@@ -4137,12 +4182,13 @@ def _filter_events_for_date(
         start = event.get("start", "")
         if date_str not in start:
             continue
-        user_att = next(
-            (a for a in event.get("attendees", []) if a.get("self")),
-            None,
-        )
-        if user_att and user_att.get("response_status") == "declined":
-            continue
+        if not show_declined:
+            user_att = next(
+                (a for a in event.get("attendees", []) if a.get("self")),
+                None,
+            )
+            if user_att and user_att.get("response_status") == "declined":
+                continue
         if event.get("event_type") == "workingLocation":
             continue
         day_events.append(event)
