@@ -3184,7 +3184,7 @@ class Dashboard:
         popup = tk.Toplevel(self._root)
         popup.title("Go to date")
         popup.configure(bg=BG_WINDOW)
-        popup.geometry(f"{self._s(340)}x{self._s(320)}")
+        popup.geometry(f"{self._s(400)}x{self._s(320)}")
         popup.transient(self._window)
         popup.update_idletasks()
         popup.grab_set()
