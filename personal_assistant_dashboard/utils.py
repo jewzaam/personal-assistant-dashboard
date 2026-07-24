@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import IO, Any, Callable
 
 import yaml
 
@@ -54,11 +54,8 @@ def format_event_time(time_str: str) -> str:
         return time_str[:5]
 
 
-def atomic_write_json(path: Path, data: Any, **json_kwargs: Any) -> None:
-    """Write JSON data atomically using a temp file + os.replace().
-
-    Prevents file corruption if the process is killed mid-write.
-    """
+def _atomic_write(path: Path, writer: Callable[[IO[str]], Any]) -> None:
+    """Write a file atomically using a temp file + os.replace()."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_path = tempfile.mkstemp(
         dir=path.parent,
@@ -67,7 +64,7 @@ def atomic_write_json(path: Path, data: Any, **json_kwargs: Any) -> None:
     )
     try:
         with os.fdopen(fd, "w") as f:
-            json.dump(data, f, **json_kwargs)
+            writer(f)
         os.replace(temp_path, path)
     except Exception:
         try:
@@ -75,26 +72,16 @@ def atomic_write_json(path: Path, data: Any, **json_kwargs: Any) -> None:
         except OSError:
             pass
         raise
+
+
+def atomic_write_json(path: Path, data: Any, **json_kwargs: Any) -> None:
+    """Write JSON data atomically. Prevents corruption if killed mid-write."""
+    _atomic_write(path, lambda f: json.dump(data, f, **json_kwargs))
 
 
 def atomic_write_text(path: Path, content: str) -> None:
-    """Write text atomically using a temp file + os.replace()."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    )
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(content)
-        os.replace(temp_path, path)
-    except Exception:
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            pass
-        raise
+    """Write text atomically. Prevents corruption if killed mid-write."""
+    _atomic_write(path, lambda f: f.write(content))
 
 
 _MEETING_URL_PATTERN = re.compile(
