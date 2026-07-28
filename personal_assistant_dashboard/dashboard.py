@@ -2813,9 +2813,6 @@ class Dashboard:
         notes_frame = tk.Frame(panel, bg=BG_WINDOW)
         notes_frame.pack(fill=tk.X, padx=self._s(8), pady=(0, 4))
 
-        event_id = cal_event.get("id", "")
-        existing_notes = find_notes_file(event_id) if event_id else None
-
         open_notes_btn: tk.Button | None = None
 
         def _generate_prep(evt: CalendarEvent = cal_event) -> None:
@@ -2841,10 +2838,12 @@ class Dashboard:
             command=_generate_prep,
         ).pack(side=tk.LEFT, padx=1)
 
-        def _open_notes(eid: str = event_id) -> None:
+        def _open_notes(evt: CalendarEvent = cal_event) -> None:
+            eid = evt.get("id", "")
             filepath = find_notes_file(eid) if eid else None
-            if filepath:
-                open_notes_file(filepath)
+            if not filepath:
+                filepath = create_notes_file(evt)
+            open_notes_file(filepath)
 
         open_notes_btn = tk.Button(
             notes_frame,
@@ -2857,7 +2856,6 @@ class Dashboard:
             pady=1,
             cursor="hand2",
             command=_open_notes,
-            state=tk.NORMAL if existing_notes else tk.DISABLED,
         )
         open_notes_btn.pack(side=tk.LEFT, padx=1)
 
