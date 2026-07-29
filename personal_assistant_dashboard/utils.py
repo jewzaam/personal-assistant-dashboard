@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -15,6 +16,8 @@ from typing import IO, Any, Callable
 import yaml
 
 from personal_assistant_dashboard.models import CalendarEvent
+
+_logger = logging.getLogger(__name__)
 
 
 def run_cmd(
@@ -107,6 +110,100 @@ def get_meeting_url(event: CalendarEvent) -> str | None:
             match = _MEETING_URL_PATTERN.search(text)
             if match:
                 return match.group(0)
+    return None
+
+
+# ponytail: session-level cache, refreshed on app restart
+_gdoc_tab_cache: dict[str, dict[str, str]] = {}
+
+
+def get_gdoc_tab_url(doc_id: str, tab_name: str) -> str | None:
+    """Return a direct Google Docs URL for a tab matching tab_name."""
+    from personal_assistant_dashboard.config import GWS_BINARY
+
+    if doc_id not in _gdoc_tab_cache:
+        try:
+            result = run_cmd(
+                [
+                    GWS_BINARY,
+                    "docs",
+                    "documents",
+                    "get",
+                    "--params",
+                    json.dumps({"documentId": doc_id, "includeTabsContent": True}),
+                ],
+                timeout=15,
+            )
+            if result.returncode == 0:
+                doc = json.loads(result.stdout)
+                tabs: dict[str, str] = {}
+
+                def _collect(tab_list: list[dict[str, Any]]) -> None:
+                    for tab in tab_list:
+                        props = tab.get("tabProperties", {})
+                        title = props.get("title", "")
+                        tab_id = props.get("tabId", "")
+                        if title and tab_id:
+                            tabs[title.lower()] = tab_id
+                        _collect(tab.get("childTabs", []))
+
+                _collect(doc.get("tabs", []))
+                _gdoc_tab_cache[doc_id] = tabs
+            else:
+                _logger.warning("gws docs get failed: %s", result.stderr[:200])
+                return None
+        except (OSError, json.JSONDecodeError) as exc:
+            _logger.warning("Tab lookup failed: %s", exc)
+            return None
+
+    tab_id = _gdoc_tab_cache.get(doc_id, {}).get(tab_name.lower())
+    if tab_id:
+        return f"https://docs.google.com/document/d/{doc_id}/edit?tab={tab_id}"
+    return None
+
+
+_directory_name_cache: dict[str, str | None] = {}
+
+
+def resolve_display_name(email: str) -> str | None:
+    """Resolve an email to a display name via the People directory API."""
+    from personal_assistant_dashboard.config import GWS_BINARY
+
+    if email in _directory_name_cache:
+        return _directory_name_cache[email]
+
+    try:
+        result = run_cmd(
+            [
+                GWS_BINARY,
+                "people",
+                "people",
+                "searchDirectoryPeople",
+                "--params",
+                json.dumps(
+                    {
+                        "query": email,
+                        "readMask": "names,emailAddresses",
+                        "sources": "DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE",
+                    }
+                ),
+            ],
+            timeout=10,
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            for person in data.get("people", []):
+                emails = [
+                    e.get("value", "").lower() for e in person.get("emailAddresses", [])
+                ]
+                if email.lower() in emails:
+                    name: str | None = person.get("names", [{}])[0].get("displayName")
+                    _directory_name_cache[email] = name
+                    return name
+    except (OSError, json.JSONDecodeError) as exc:
+        _logger.warning("Directory lookup failed: %s", exc)
+
+    _directory_name_cache[email] = None
     return None
 
 
