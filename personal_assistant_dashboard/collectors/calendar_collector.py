@@ -247,6 +247,7 @@ def _normalize_event(raw: dict[str, Any]) -> CalendarEvent:
         "attendees": [
             {
                 "email": a.get("email", ""),
+                "display_name": a.get("displayName", ""),
                 "response_status": a.get("responseStatus", "needsAction"),
                 "self": a.get("self", False),
                 "optional": a.get("optional", False),

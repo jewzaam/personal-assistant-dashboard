@@ -47,6 +47,7 @@ from personal_assistant_dashboard.config import (
     COLOR_MENU_FG,
     COLOR_NORMAL,
     COLOR_NOTIFICATION_BELL,
+    ONE_ON_ONE_DOC_ID,
     COLOR_NOW_LINE,
     GCAL_COLORS,
     COLOR_PROGRESS,
@@ -94,6 +95,8 @@ from personal_assistant_dashboard.state_repo import DEFAULT_STATE_PATH
 from personal_assistant_dashboard.utils import (
     atomic_write_json,
     format_event_time,
+    get_gdoc_tab_url,
+    resolve_display_name,
     run_cmd,
 )
 
@@ -2916,6 +2919,33 @@ class Dashboard:
         if links_added:
             text.insert(tk.END, "\n\n")
 
+        # 1:1 notes link
+        non_self = [a for a in attendees if not a.get("self")]
+        if len(non_self) == 1:
+            other = non_self[0]
+            other_email = other.get("email", "")
+            other_name = (
+                other.get("display_name", "")
+                or resolve_display_name(other_email)
+                or other_email
+            )
+            tab_url = get_gdoc_tab_url(ONE_ON_ONE_DOC_ID, other_name)
+            text.insert(tk.END, "Notes\n", "section")
+            link_tag = f"link_1on1_{id(cal_event)}"
+            if tab_url:
+                insert_link(f"1:1 — {other_name}", tab_url, link_tag)
+            else:
+                doc_url = (
+                    f"https://docs.google.com/document/d/" f"{ONE_ON_ONE_DOC_ID}/edit"
+                )
+                insert_link(f"1:1 — {other_name}", doc_url, link_tag)
+                text.insert(
+                    tk.END,
+                    f'  (no tab "{other_name}")',
+                    "dim",
+                )
+            text.insert(tk.END, "\n\n")
+
         # Description
         if description:
             text.insert(tk.END, "Description\n", "section")
@@ -3462,6 +3492,18 @@ class Dashboard:
                 attended = find_attended_event_ids(missed)
                 if attended:
                     missed = [e for e in missed if e.get("id", "") not in attended]
+
+            # Warm 1:1 caches in background
+            get_gdoc_tab_url(ONE_ON_ONE_DOC_ID, "")
+            today_str = today.strftime("%Y-%m-%d")
+            for evt in all_events:
+                if today_str not in evt.get("start", ""):
+                    continue
+                non_self = [a for a in evt.get("attendees", []) if not a.get("self")]
+                if len(non_self) == 1:
+                    email = non_self[0].get("email", "")
+                    if email:
+                        resolve_display_name(email)
 
             self._schedule(
                 self._on_data_loaded,

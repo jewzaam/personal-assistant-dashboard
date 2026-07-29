@@ -176,6 +176,11 @@ def _resolve_chat_model() -> str:
 
 WORK_DIR = _resolve_work_dir()
 CHAT_MODEL = _resolve_chat_model()
+ONE_ON_ONE_DOC_ID: str = str(
+    _load_pa_config().get(
+        "one_on_one_doc_id", "1L1urJl7-2WffrwtSLPKOIsC5PPiarK9OcoJRg6NiQiE"
+    )
+)
 
 # Commands
 GWS_BINARY = "gws"

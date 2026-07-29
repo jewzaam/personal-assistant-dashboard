@@ -14,6 +14,7 @@ class Attendee(TypedDict, total=False):
     """A calendar event attendee."""
 
     email: str
+    display_name: str
     response_status: str
     self: bool
     optional: bool
