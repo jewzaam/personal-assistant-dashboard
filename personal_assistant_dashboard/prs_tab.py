@@ -18,6 +18,7 @@ from personal_assistant_dashboard.config import (
     BG_WINDOW,
     COLOR_BUTTON,
     COLOR_BUTTON_ACTIVE,
+    COLOR_DECLINED,
     COLOR_LINK,
     COLOR_SECTION_HEADER,
     FG_DIM,
@@ -100,6 +101,7 @@ class PrsTab:
         self._row_widgets: dict[str, tk.Button] = {}
         self._newest_first = False
         self._show_drafts_var = tk.BooleanVar(value=False)
+        self._show_dismissed_var = tk.BooleanVar(value=False)
         self._font_body = "app_body"
         self._font_heading = "app_heading"
         self._load_dismissed()
@@ -166,6 +168,29 @@ class PrsTab:
         )
         self._drafts_btn.pack(side=tk.LEFT, padx=(PAD, 0))
 
+        def _toggle_dismissed() -> None:
+            on = self._show_dismissed_var.get()
+            self._dismissed_btn.configure(fg=COLOR_DECLINED if on else FG_DIM)
+            self._render()
+
+        self._dismissed_btn = tk.Checkbutton(
+            top,
+            text="Dismissed",
+            variable=self._show_dismissed_var,
+            command=_toggle_dismissed,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            selectcolor=BG_WINDOW,
+            activebackground=BG_WINDOW,
+            activeforeground=FG_TEXT,
+            font=self._font_body,
+            relief=tk.FLAT,
+            cursor="hand2",
+            indicatoron=False,
+            padx=6,
+        )
+        self._dismissed_btn.pack(side=tk.LEFT, padx=(PAD, 0))
+
         tk.Button(
             top,
             text="Reset Dismissed",
@@ -207,6 +232,14 @@ class PrsTab:
         self._text.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self._text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Scroll text and stop propagation to Notebook
+        def _scroll_text(event: Any) -> str:
+            self._text.yview_scroll(-1 if event.num == 4 else 1, "units")
+            return "break"
+
+        self._text.bind("<Button-4>", _scroll_text)
+        self._text.bind("<Button-5>", _scroll_text)
 
         self._text.tag_configure(
             "section", foreground=COLOR_SECTION_HEADER, font=self._font_heading
@@ -279,14 +312,23 @@ class PrsTab:
 
     def _render_section(self, title: str, prs: list[dict[str, Any]]) -> None:
         show_drafts = self._show_drafts_var.get()
-        visible = [
-            p
-            for p in prs
-            if p.get("html_url", "") not in self._dismissed
-            and (show_drafts or not p.get("draft", False))
-        ]
+        show_dismissed = self._show_dismissed_var.get()
 
-        self._text.insert(tk.END, f"{title} ({len(visible)})\n", "section")
+        def _include(p: dict[str, Any]) -> bool:
+            url = p.get("html_url", "")
+            is_dismissed = url in self._dismissed
+            if is_dismissed and not show_dismissed:
+                return False
+            if not show_drafts and p.get("draft", False):
+                return False
+            return True
+
+        visible = [p for p in prs if _include(p)]
+        active_count = sum(
+            1 for p in visible if p.get("html_url", "") not in self._dismissed
+        )
+
+        self._text.insert(tk.END, f"{title} ({active_count})\n", "section")
 
         if not visible:
             self._text.insert(tk.END, "  None\n\n", "dim")
@@ -317,27 +359,48 @@ class PrsTab:
         repo = _repo_from_url(pr.get("repository_url", ""))
         age = _age_str(pr.get("created_at", ""))
         draft = pr.get("draft", False)
+        is_dismissed = url in self._dismissed
 
-        # Age (fixed width for alignment) + dismiss button + content
         self._text.insert(tk.END, f"{age:>4} ", "age")
 
-        def _make_dismiss(u: str = url) -> None:
-            self._dismiss_pr(u)
+        if is_dismissed:
 
-        btn = tk.Button(
-            self._text,
-            text="×",
-            command=_make_dismiss,
-            bg=BG_OUTPUT,
-            fg=FG_DIM,
-            font=self._font_body,
-            relief=tk.FLAT,
-            activebackground=COLOR_BUTTON_ACTIVE,
-            cursor="hand2",
-            padx=1,
-            pady=0,
-            borderwidth=0,
-        )
+            def _make_restore(u: str = url) -> None:
+                self._restore_pr(u)
+
+            btn = tk.Button(
+                self._text,
+                text="+",
+                command=_make_restore,
+                bg=BG_OUTPUT,
+                fg=COLOR_DECLINED,
+                font=self._font_body,
+                relief=tk.FLAT,
+                activebackground=COLOR_BUTTON_ACTIVE,
+                cursor="hand2",
+                padx=1,
+                pady=0,
+                borderwidth=0,
+            )
+        else:
+
+            def _make_dismiss(u: str = url) -> None:
+                self._dismiss_pr(u)
+
+            btn = tk.Button(
+                self._text,
+                text="×",
+                command=_make_dismiss,
+                bg=BG_OUTPUT,
+                fg=FG_DIM,
+                font=self._font_body,
+                relief=tk.FLAT,
+                activebackground=COLOR_BUTTON_ACTIVE,
+                cursor="hand2",
+                padx=1,
+                pady=0,
+                borderwidth=0,
+            )
         self._text.window_create(tk.END, window=btn)
 
         pr_text = f" {repo}  #{number} {title}"
@@ -345,10 +408,14 @@ class PrsTab:
             pr_text = f" {repo}  [draft] #{number} {title}"
         link_tag = f"link_{id(pr)}"
         self._text.insert(tk.END, pr_text, link_tag)
-        self._text.tag_configure(
-            link_tag,
-            foreground=FG_DIM if draft else COLOR_LINK,
-        )
+
+        if is_dismissed:
+            fg = COLOR_DECLINED
+        elif draft:
+            fg = FG_DIM
+        else:
+            fg = COLOR_LINK
+        self._text.tag_configure(link_tag, foreground=fg)
 
         def _open_pr(e: Any, u: str = url) -> None:
             webbrowser.open(u)
@@ -370,6 +437,11 @@ class PrsTab:
 
     def _dismiss_pr(self, url: str) -> None:
         self._dismissed.add(url)
+        self._save_dismissed()
+        self._render()
+
+    def _restore_pr(self, url: str) -> None:
+        self._dismissed.discard(url)
         self._save_dismissed()
         self._render()
 
