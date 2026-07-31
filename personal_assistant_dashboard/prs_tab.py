@@ -114,7 +114,7 @@ class PrsTab:
 
         tk.Button(
             top,
-            text="\U0001f504",
+            text="↻",
             command=self.refresh,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
