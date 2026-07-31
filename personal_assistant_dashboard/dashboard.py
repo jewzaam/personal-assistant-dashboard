@@ -1002,9 +1002,14 @@ class Dashboard:
 
     def _shade(self) -> None:
         """Collapse window to just the tab strip."""
+        import traceback
+
         if self._shaded or not self._window:
             return
         self._shaded = True
+        logger.debug(
+            "SHADE triggered:\n%s", "".join(traceback.format_stack()[-6:-1]).strip()
+        )
         w, h, x, y = self._winfo_frame_geometry()
         # Save client-area coords — used by _unshade with fresh dy.
         self._pre_shade_rootx = self._window.winfo_rootx()
@@ -1061,9 +1066,14 @@ class Dashboard:
 
     def _unshade(self) -> None:
         """Restore window from shaded state."""
+        import traceback
+
         if not self._shaded or not self._window:
             return
         self._shaded = False
+        logger.debug(
+            "UNSHADE triggered:\n%s", "".join(traceback.format_stack()[-6:-1]).strip()
+        )
         self._window.minsize(
             width=self._s(MIN_WINDOW_WIDTH), height=self._s(MIN_WINDOW_HEIGHT)
         )
@@ -1387,7 +1397,7 @@ class Dashboard:
             tab_id = self._notebook.select()
             tab_text = self._notebook.tab(tab_id, "text")
             stack = "".join(traceback.format_stack()[-5:-1]).strip()
-            logger.info("TAB_CHANGED to=%r (%s)\n%s", tab_text, tab_id, stack)
+            logger.debug("TAB_CHANGED to=%r (%s)\n%s", tab_text, tab_id, stack)
         if self._shaded:
             # User clicked a tab while shaded — unshade to that tab
             clicked_tab = self._notebook.select() if self._notebook else ""
