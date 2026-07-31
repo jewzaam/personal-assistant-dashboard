@@ -361,6 +361,10 @@ class Dashboard:
         self._info_tab_id = str(info_frame)
 
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        # Disable scroll-to-change-tab on notebook
+        self._notebook.bind("<Button-4>", lambda e: "break")
+        self._notebook.bind("<Button-5>", lambda e: "break")
+        self._notebook.bind("<MouseWheel>", lambda e: "break")
         # Middle-click on notebook tab strip to toggle shade
         self._notebook.bind("<Button-2>", self._on_shade_toggle)
 
