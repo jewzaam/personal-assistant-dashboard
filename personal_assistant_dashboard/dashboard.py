@@ -408,7 +408,7 @@ class Dashboard:
         )
         tk.Button(
             self._quick_chat_frame,
-            text="\U0001f3a4",
+            text="♪",
             command=self._on_mic_click,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
@@ -699,7 +699,7 @@ class Dashboard:
 
         tk.Button(
             nav,
-            text="\U0001f504",
+            text="↻",
             command=self._start_cal_refresh,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
