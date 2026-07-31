@@ -27,8 +27,8 @@ Coverage target: 80% on non-UI code. UI modules (`dashboard.py`, `*_tab.py`, `co
 - **`analyzers/actions_analyzer.py`** — detects all-attendees-declined alerts
 - **`state_repo.py`** — git-backed state store at `~/.local/share/claude-personal-assistant`
 - **`config_manager.py`** — manages `config/tracking.yaml` (Jira epics, GitHub repos, calendars)
-- **`models.py`** — TypedDicts (`CalendarEvent`, `Attendee`, etc.)
-- **`utils.py`** — `run_cmd()` subprocess wrapper, `atomic_write_json()`, `atomic_write_text()`
+- **`models.py`** — TypedDicts (`CalendarEvent`, `Attendee`, etc.). `Attendee` includes `display_name` field captured from Google Calendar API `displayName`
+- **`utils.py`** — `run_cmd()` subprocess wrapper, `atomic_write_json()`, `atomic_write_text()`, `get_gdoc_tab_url(doc_id, tab_name)` (resolves Google Docs tab name to direct URL via gws CLI with session-level caching), `resolve_display_name(email)` (resolves email to display name via People directory API with session-level caching)
 - **`checkpoint.py`** — git add/commit/push on background thread
 
 ### UI modules (not unit tested)
@@ -36,6 +36,7 @@ Coverage target: 80% on non-UI code. UI modules (`dashboard.py`, `*_tab.py`, `co
 - **`dashboard.py`** — main Tkinter window, tab management, window geometry
 - **`chat_tab.py`** — Chat tab with Claude Agent SDK streaming
 - **`chat_client.py`** — `ClaudeSDKClient` wrapper in background asyncio thread
+- **`prs_tab.py`** — PRs tab showing open PRs where review is requested and PRs authored by user. Data from GitHub Search API via `gh api`. Has dismiss/restore, sort toggle, draft filter, dismissed filter
 - **`settings_tab.py`** — settings editor with git checkpoint
 - **`config.py`** — constants (colors, fonts, timeouts)
 
@@ -53,9 +54,13 @@ Dashboard reads workspace path from `~/.claude/personal-assistant-config.json`:
 
 ```json
 {
-  "pa_workspace": "~/source/personal-assistant-work"
+  "pa_workspace": "~/source/personal-assistant-work",
+  "ONE_ON_ONE_DOC_ID": "doc-id-here"
 }
 ```
+
+- **`pa_workspace`** — dashboard working directory
+- **`ONE_ON_ONE_DOC_ID`** — Google Doc ID for 1:1 meeting notes. Used to link 1:1 meetings to Google Docs tabs. Loaded in `config.py`
 
 The dashboard runs from the `pa_workspace` directory, not from this repo. `PYTHONPATH` is set to this repo's root at launch (see `make/run.mk`).
 
@@ -83,6 +88,9 @@ The rename dropped meeting transcript pipeline dependencies and made the workspa
 - **Window decorations:** Motif hints via `xprop` remove decorations while keeping keyboard focus. Fallback: `overrideredirect(True)`. Neither `-type dock` (breaks focus) nor `-type splash` (breaks clipboard) is used.
 - **Click handling:** Single-click defers 200ms, double-click cancels it (Linux Tkinter fires `<ButtonRelease-1>` before `<Double-1>`).
 - **Canvas focus:** Calendar canvas uses `takefocus=True` with explicit click-to-focus binding.
+- **BMP-only Unicode for buttons:** Tkinter on Linux cannot render supplementary plane Unicode (U+10000+). All button/label text must use BMP characters (U+0000–U+FFFF). Examples: `↻` (U+21BB) not `🔄` (U+1F504), `♪` (U+266A) not `🎤` (U+1F3A4).
+- **Notebook scroll disabled:** `ttk.Notebook` has built-in scroll-to-change-tab behavior. Disabled via `bind("<Button-4/5/MouseWheel>", lambda e: "break")` on the notebook widget to prevent accidental tab switching.
+- **1:1 notes link:** Calendar detail panel shows a "Notes" section for 1:1 meetings with a link to the Google Docs tab for the other attendee. Uses People directory API to resolve attendee email to display name, then matches against doc tabs. Cache warmed during calendar refresh background thread.
 
 ## Keyboard shortcuts
 

@@ -1381,6 +1381,13 @@ class Dashboard:
 
     def _on_tab_changed(self, _event: Any) -> None:
         """Refresh tabs when they become visible."""
+        import traceback
+
+        if self._notebook:
+            tab_id = self._notebook.select()
+            tab_text = self._notebook.tab(tab_id, "text")
+            stack = "".join(traceback.format_stack()[-5:-1]).strip()
+            logger.info("TAB_CHANGED to=%r (%s)\n%s", tab_text, tab_id, stack)
         if self._shaded:
             # User clicked a tab while shaded — unshade to that tab
             clicked_tab = self._notebook.select() if self._notebook else ""
