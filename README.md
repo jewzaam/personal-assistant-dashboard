@@ -13,7 +13,8 @@ Personal Assistant provides a dashboard interface for managing context-aware tas
 - **Assistant** — Voice-driven task input and Claude-powered analysis
 - **Actions** — Prioritized task list with context from tracked work
 - **Chat** — Direct conversation with Claude
-- **Calendar** — Google Calendar integration with change tracking
+- **Calendar** — Google Calendar integration with change tracking and 1:1 meeting notes
+- **PRs** — GitHub pull requests requiring review or authored by user, with dismiss/restore and filtering
 - **Transcripts** — Historical voice transcription archive
 - **Console** — Execution log and debug output
 
@@ -62,6 +63,22 @@ View all available commands:
 ```bash
 pa --help
 ```
+
+## Features
+
+### Calendar
+
+- **Change tracking** — Automatically detects new, cancelled, moved events and attendee changes.
+- **Declined events toggle** — Show/hide declined meetings with distinct visual styling (dim background, red dashed border).
+- **1:1 notes** — For 1:1 meetings, the detail panel shows a "Notes" link that opens the user's private Google Docs tab for that person. Resolves attendee name via Google directory.
+- **Open Notes without prep** — "Open Notes" button creates the notes file on first click without requiring "Generate Prep" first.
+
+### Pull Requests
+
+- **GitHub PRs** — View open PRs where your review is requested and PRs you authored.
+- **Dismiss/restore** — Dismiss individual PRs to declutter the list; restore them later if needed.
+- **Sort and filter** — Sort by oldest/newest; filter out draft PRs.
+- **Reset dismissed** — Clear all dismissals to start fresh.
 
 ## Development
 
