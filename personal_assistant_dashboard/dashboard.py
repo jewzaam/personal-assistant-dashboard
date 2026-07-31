@@ -297,6 +297,19 @@ class Dashboard:
         self._notebook.add(cal_tab, text="Calendar")
         self._cal_tab_id = str(self._notebook.tabs()[-1])
 
+        # PRs tab
+        prs_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(prs_frame, text="PRs")
+
+        from personal_assistant_dashboard.prs_tab import PrsTab
+
+        self._prs_tab = PrsTab(
+            prs_frame,
+            self._root,
+            state_path=self._state_path,
+            schedule_fn=self._schedule,
+        )
+
         # Console tab — background activity log
         console_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(console_frame, text="Console")
