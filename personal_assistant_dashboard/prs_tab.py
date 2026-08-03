@@ -80,6 +80,44 @@ def _fetch_prs(query: str) -> list[dict[str, Any]]:
     return all_items
 
 
+def _fetch_review_counts(
+    prs: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Fetch count of current user's reviews for each PR."""
+    user_result = run_cmd(["gh", "api", "user"], timeout=30)
+    if user_result.returncode != 0:
+        return {}
+    try:
+        login = json.loads(user_result.stdout).get("login", "")
+    except json.JSONDecodeError:
+        return {}
+    if not login:
+        return {}
+
+    counts: dict[str, int] = {}
+    for pr in prs:
+        url = pr.get("html_url", "")
+        repo = _repo_from_url(pr.get("repository_url", ""))
+        number = pr.get("number", "")
+        if not repo or not number:
+            counts[url] = 0
+            continue
+        result = run_cmd(
+            ["gh", "api", f"/repos/{repo}/pulls/{number}/reviews"],
+            timeout=30,
+        )
+        if result.returncode != 0:
+            counts[url] = 0
+            continue
+        try:
+            reviews = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            counts[url] = 0
+            continue
+        counts[url] = sum(1 for r in reviews if r.get("user", {}).get("login") == login)
+    return counts
+
+
 class PrsTab:
     """PRs tab showing review-requested and authored PRs."""
 
@@ -99,6 +137,7 @@ class PrsTab:
         self._review_prs: list[dict[str, Any]] = []
         self._my_prs: list[dict[str, Any]] = []
         self._row_widgets: dict[str, tk.Button] = {}
+        self._review_counts: dict[str, int] = {}
         self._newest_first = False
         self._show_drafts_var = tk.BooleanVar(value=False)
         self._show_dismissed_var = tk.BooleanVar(value=False)
@@ -257,6 +296,8 @@ class PrsTab:
             spacing1=0,
             spacing3=0,
         )
+        self._text.tag_configure("review_count", foreground=FG_TEXT)
+        self._text.tag_configure("review_zero", foreground=FG_DIM)
 
     def refresh(self) -> None:
         self._status_var.set("Refreshing...")
@@ -268,15 +309,18 @@ class PrsTab:
             "is:pr+review-requested:@me+state:open+archived:false+sort:updated-desc"
         )
         my = _fetch_prs("is:pr+author:@me+state:open+archived:false+sort:updated-desc")
-        self._schedule(self._on_data_loaded, review, my)
+        counts = _fetch_review_counts(review)
+        self._schedule(self._on_data_loaded, review, my, counts)
 
     def _on_data_loaded(
         self,
         review_prs: list[dict[str, Any]],
         my_prs: list[dict[str, Any]],
+        review_counts: dict[str, int],
     ) -> None:
         self._review_prs = review_prs
         self._my_prs = my_prs
+        self._review_counts = review_counts
         self._render()
 
     def _render(self) -> None:
@@ -402,6 +446,11 @@ class PrsTab:
                 borderwidth=0,
             )
         self._text.window_create(tk.END, window=btn)
+
+        review_count = self._review_counts.get(url)
+        if review_count is not None:
+            tag = "review_count" if review_count > 0 else "review_zero"
+            self._text.insert(tk.END, f" ({review_count})", tag)
 
         pr_text = f" {repo}  #{number} {title}"
         if draft:
