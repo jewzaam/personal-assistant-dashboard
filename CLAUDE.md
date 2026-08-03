@@ -92,6 +92,10 @@ The rename dropped meeting transcript pipeline dependencies and made the workspa
 - **Notebook scroll disabled:** `ttk.Notebook` has built-in scroll-to-change-tab behavior. Disabled via `bind("<Button-4/5/MouseWheel>", lambda e: "break")` on the notebook widget to prevent accidental tab switching.
 - **1:1 notes link:** Calendar detail panel shows a "Notes" section for 1:1 meetings with a link to the Google Docs tab for the other attendee. Uses People directory API to resolve attendee email to display name, then matches against doc tabs. Cache warmed during calendar refresh background thread.
 
+## Tab toolbar standard
+
+Tabs with a refresh action follow a consistent layout: `↻` button is the **leftmost element** in the top toolbar frame, using `COLOR_BUTTON`/`FG_TEXT`, `relief=tk.FLAT`, `padx=4`, packed `side=tk.LEFT, padx=(PAD, 4)`. Tab-specific controls (nav, filters, toggles) follow to the right. Status labels pack to the right side.
+
 ## Keyboard shortcuts
 
 Two shortcut patterns:
