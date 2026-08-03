@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import tkinter as tk
+from tkinter import ttk
 
 from personal_assistant_dashboard.config import (
     BG_OUTPUT,
@@ -128,11 +129,13 @@ class PrsTab:
         *,
         state_path: Path,
         schedule_fn: ScheduleFn,
+        notebook: ttk.Notebook | None = None,
     ) -> None:
         self._parent = parent
         self._root = root
         self._state_path = state_path
         self._schedule = schedule_fn
+        self._notebook = notebook
         self._dismissed: set[str] = set()
         self._review_prs: list[dict[str, Any]] = []
         self._my_prs: list[dict[str, Any]] = []
@@ -346,6 +349,12 @@ class PrsTab:
             )
 
         review_visible = _visible(self._review_prs)
+        review_actionable = sum(
+            1
+            for p in self._review_prs
+            if p.get("html_url", "") not in self._dismissed
+            and not p.get("draft", False)
+        )
         my_visible = _visible(self._my_prs)
         total = review_visible + my_visible
         dismissed_count = len(self._dismissed)
@@ -353,6 +362,13 @@ class PrsTab:
         if dismissed_count:
             status += f" ({dismissed_count} dismissed)"
         self._status_var.set(status)
+
+        if self._notebook is not None:
+            tab_text = f"PR:{review_actionable}"
+            try:
+                self._notebook.tab(self._parent, text=tab_text)
+            except tk.TclError:
+                pass
 
     def _render_section(self, title: str, prs: list[dict[str, Any]]) -> None:
         show_drafts = self._show_drafts_var.get()
