@@ -642,9 +642,22 @@ class Dashboard:
     def _build_calendar_tab(self, cal_tab: tk.Frame) -> None:
         """Build the calendar tab with nav, changes, canvas, and bindings."""
         assert self._window is not None
-        # Top bar: nav + refresh
+        # Top bar: refresh + nav
         top_bar = tk.Frame(cal_tab, bg=BG_WINDOW)
         top_bar.pack(fill=tk.X, pady=(0, self._s(PAD)))
+
+        tk.Button(
+            top_bar,
+            text="↻",
+            command=self._start_cal_refresh,
+            bg=COLOR_BUTTON,
+            fg=FG_TEXT,
+            font=self._font_body,
+            relief=tk.FLAT,
+            activebackground=COLOR_BUTTON_ACTIVE,
+            cursor="hand2",
+            padx=4,
+        ).pack(side=tk.LEFT, padx=(self._s(PAD), 4))
 
         # Date navigation: < date >
         nav = tk.Frame(top_bar, bg=BG_WINDOW)
@@ -701,19 +714,6 @@ class Dashboard:
             padx=self._s(8),
             underline=0,
         ).pack(side=tk.LEFT, padx=(self._s(8), 0))
-
-        tk.Button(
-            nav,
-            text="↻",
-            command=self._start_cal_refresh,
-            bg=COLOR_BUTTON,
-            fg=FG_TEXT,
-            font=self._font_body,
-            relief=tk.FLAT,
-            activebackground=COLOR_BUTTON_ACTIVE,
-            cursor="hand2",
-            padx=4,
-        ).pack(side=tk.LEFT, padx=(4, 0))
 
         def _toggle_declined() -> None:
             on = self._show_declined_var.get()
