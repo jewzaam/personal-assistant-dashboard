@@ -131,6 +131,7 @@ class PrsTab:
         schedule_fn: ScheduleFn,
         notebook: ttk.Notebook | None = None,
         console_log: Callable[..., None] | None = None,
+        notify_tab: Callable[[str], None] | None = None,
     ) -> None:
         self._parent = parent
         self._root = root
@@ -138,6 +139,7 @@ class PrsTab:
         self._schedule = schedule_fn
         self._notebook = notebook
         self._console_log = console_log
+        self._notify_tab = notify_tab
         self._dismissed: set[str] = set()
         self._review_prs: list[dict[str, Any]] = []
         self._my_prs: list[dict[str, Any]] = []
@@ -352,9 +354,15 @@ class PrsTab:
                 self._log, "PRs tab: refresh failed, see logs for details", "error"
             )
 
-    def _log(self, message: str, tag: str = "info") -> None:
+    def _log(
+        self,
+        message: str,
+        tag: str = "info",
+        link: str = "",
+        link_label: str = "",
+    ) -> None:
         if self._console_log:
-            self._console_log(message, tag)
+            self._console_log(message, tag, link, link_label)
         else:
             logger.warning(message)
 
@@ -366,10 +374,28 @@ class PrsTab:
     ) -> None:
         self._refreshing = False
         self._skipped_refreshes = 0
+        old_urls = {p.get("html_url", "") for p in self._review_prs}
+        new_urls = {p.get("html_url", "") for p in review_prs}
+        new_review_requests = new_urls - old_urls
         self._review_prs = review_prs
         self._my_prs = my_prs
         self._review_counts = review_counts
         self._render()
+        if old_urls and new_review_requests:
+            if self._notify_tab:
+                self._notify_tab("PR")
+            new_prs = [
+                p for p in review_prs if p.get("html_url", "") in new_review_requests
+            ]
+            for p in new_prs:
+                url = p.get("html_url", "")
+                title = p.get("title", "")
+                repo = _repo_from_url(p.get("repository_url", ""))
+                self._log(
+                    f"[PRs] new review request:" f" {repo} — {title}",
+                    "warning",
+                    link=url,
+                )
 
     def _render(self) -> None:
         self._text.configure(state=tk.NORMAL)
