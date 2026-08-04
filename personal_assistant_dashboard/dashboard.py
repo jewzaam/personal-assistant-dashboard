@@ -310,6 +310,7 @@ class Dashboard:
             schedule_fn=self._schedule,
             notebook=self._notebook,
             console_log=self.log_console,
+            notify_tab=self._notify_tab,
         )
 
         # Console tab — background activity log
