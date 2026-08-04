@@ -309,6 +309,7 @@ class Dashboard:
             state_path=self._state_path,
             schedule_fn=self._schedule,
             notebook=self._notebook,
+            console_log=self.log_console,
         )
 
         # Console tab — background activity log

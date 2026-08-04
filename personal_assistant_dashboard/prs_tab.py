@@ -130,12 +130,14 @@ class PrsTab:
         state_path: Path,
         schedule_fn: ScheduleFn,
         notebook: ttk.Notebook | None = None,
+        console_log: Callable[..., None] | None = None,
     ) -> None:
         self._parent = parent
         self._root = root
         self._state_path = state_path
         self._schedule = schedule_fn
         self._notebook = notebook
+        self._console_log = console_log
         self._dismissed: set[str] = set()
         self._review_prs: list[dict[str, Any]] = []
         self._my_prs: list[dict[str, Any]] = []
@@ -146,9 +148,14 @@ class PrsTab:
         self._show_dismissed_var = tk.BooleanVar(value=False)
         self._font_body = "app_body"
         self._font_heading = "app_heading"
+        self._auto_refresh_ms = 5 * 60 * 1000
+        self._auto_refresh_id: str | None = None
+        self._refreshing = False
+        self._skipped_refreshes = 0
         self._load_dismissed()
         self._build()
         self.refresh()
+        self._schedule_auto_refresh()
 
     def _build(self) -> None:
         top = tk.Frame(self._parent, bg=BG_WINDOW)
@@ -302,18 +309,54 @@ class PrsTab:
         self._text.tag_configure("review_count", foreground=FG_TEXT)
         self._text.tag_configure("review_zero", foreground=FG_DIM)
 
-    def refresh(self) -> None:
-        self._status_var.set("Refreshing...")
+    def refresh(self, *, show_status: bool = True) -> None:
+        if self._refreshing:
+            self._skipped_refreshes += 1
+            tag = "error" if self._skipped_refreshes > 6 else "warning"
+            n = self._skipped_refreshes
+            self._log(
+                f"PRs tab: refresh skipped ({n}x)," " previous still running",
+                tag,
+            )
+            return
+        self._refreshing = True
+        if show_status:
+            self._status_var.set("Refreshing...")
         thread = threading.Thread(target=self._do_refresh, daemon=True)
         thread.start()
 
-    def _do_refresh(self) -> None:
-        review = _fetch_prs(
-            "is:pr+review-requested:@me+state:open+archived:false+sort:updated-desc"
+    def _schedule_auto_refresh(self) -> None:
+        def _tick() -> None:
+            self.refresh(show_status=False)
+            self._schedule_auto_refresh()
+
+        self._auto_refresh_id = self._root.after(
+            self._auto_refresh_ms,
+            _tick,
         )
-        my = _fetch_prs("is:pr+author:@me+state:open+archived:false+sort:updated-desc")
-        counts = _fetch_review_counts(review)
-        self._schedule(self._on_data_loaded, review, my, counts)
+
+    def _do_refresh(self) -> None:
+        try:
+            review = _fetch_prs(
+                "is:pr+review-requested:@me+state:open+archived:false+sort:updated-desc"
+            )
+            my = _fetch_prs(
+                "is:pr+author:@me+state:open+archived:false+sort:updated-desc"
+            )
+            counts = _fetch_review_counts(review)
+            self._schedule(self._on_data_loaded, review, my, counts)
+        except Exception:
+            logger.exception("PR refresh failed")
+            self._refreshing = False
+            self._schedule(
+                self._log, "PRs tab: refresh failed, see logs for details", "error"
+            )
+
+    def _log(self, message: str, tag: str = "info") -> None:
+        if self._console_log:
+            self._console_log(message, tag)
+        else:
+            logger.warning(message)
 
     def _on_data_loaded(
         self,
@@ -321,6 +364,8 @@ class PrsTab:
         my_prs: list[dict[str, Any]],
         review_counts: dict[str, int],
     ) -> None:
+        self._refreshing = False
+        self._skipped_refreshes = 0
         self._review_prs = review_prs
         self._my_prs = my_prs
         self._review_counts = review_counts
