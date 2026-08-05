@@ -21,6 +21,7 @@ from personal_assistant_dashboard.config import (
     COLOR_BUTTON_ACTIVE,
     COLOR_DECLINED,
     COLOR_LINK,
+    COLOR_PROGRESS,
     COLOR_SECTION_HEADER,
     FG_DIM,
     FG_TEXT,
@@ -163,7 +164,7 @@ class PrsTab:
         top = tk.Frame(self._parent, bg=BG_WINDOW)
         top.pack(fill=tk.X, pady=(0, PAD))
 
-        tk.Button(
+        self._refresh_btn = tk.Button(
             top,
             text="↻",
             command=self.refresh,
@@ -174,7 +175,8 @@ class PrsTab:
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=4,
-        ).pack(side=tk.LEFT, padx=(PAD, 4))
+        )
+        self._refresh_btn.pack(side=tk.LEFT, padx=(PAD, 4))
 
         self._sort_var = tk.StringVar(value="Oldest")
 
@@ -322,6 +324,7 @@ class PrsTab:
             )
             return
         self._refreshing = True
+        self._refresh_btn.configure(fg=COLOR_PROGRESS)
         if show_status:
             self._status_var.set("Refreshing...")
         thread = threading.Thread(target=self._do_refresh, daemon=True)
@@ -350,6 +353,7 @@ class PrsTab:
         except Exception:
             logger.exception("PR refresh failed")
             self._refreshing = False
+            self._schedule(self._refresh_btn.configure, {"fg": FG_TEXT})
             self._schedule(
                 self._log, "PRs tab: refresh failed, see logs for details", "error"
             )
@@ -373,6 +377,7 @@ class PrsTab:
         review_counts: dict[str, int],
     ) -> None:
         self._refreshing = False
+        self._refresh_btn.configure(fg=FG_TEXT)
         self._skipped_refreshes = 0
         old_urls = {p.get("html_url", "") for p in self._review_prs}
         new_urls = {p.get("html_url", "") for p in review_prs}
