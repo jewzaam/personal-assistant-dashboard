@@ -36,7 +36,7 @@ Coverage target: 80% on non-UI code. UI modules (`dashboard.py`, `*_tab.py`, `co
 - **`dashboard.py`** — main Tkinter window, tab management, window geometry
 - **`chat_tab.py`** — Chat tab with Claude Agent SDK streaming
 - **`chat_client.py`** — `ClaudeSDKClient` wrapper in background asyncio thread
-- **`prs_tab.py`** — PRs tab showing open PRs where review is requested and PRs authored by user. Data from GitHub Search API via `gh api`. Has dismiss/restore, sort toggle, draft filter, dismissed filter
+- **`prs_tab.py`** — PRs tab showing open PRs where review is requested and PRs authored by user. Data from GitHub Search API via `gh api`. Has dismiss/restore, sort toggle, draft filter, dismissed filter. Auto-refreshes every 5 min (silent — no "Refreshing..." text; manual ↻ click still shows it). Refresh guard (`_refreshing` flag) prevents overlapping threads; skip counter escalates from `warning` (1–6 skips) to `error` (7+) in Console. Detects new review requests via URL set diff between refreshes — triggers tab bell + per-PR `warning` in Console with clickable link. ↻ button turns `COLOR_PROGRESS` while refresh is in flight
 - **`settings_tab.py`** — settings editor with git checkpoint
 - **`config.py`** — constants (colors, fonts, timeouts)
 
@@ -90,7 +90,13 @@ The rename dropped meeting transcript pipeline dependencies and made the workspa
 - **Canvas focus:** Calendar canvas uses `takefocus=True` with explicit click-to-focus binding.
 - **BMP-only Unicode for buttons:** Tkinter on Linux cannot render supplementary plane Unicode (U+10000+). All button/label text must use BMP characters (U+0000–U+FFFF). Examples: `↻` (U+21BB) not `🔄` (U+1F504), `♪` (U+266A) not `🎤` (U+1F3A4).
 - **Notebook scroll disabled:** `ttk.Notebook` has built-in scroll-to-change-tab behavior. Disabled via `bind("<Button-4/5/MouseWheel>", lambda e: "break")` on the notebook widget to prevent accidental tab switching.
+- **Tab notification matching uses `startswith()`:** `_show_bell()`/`_hide_bell()` match tabs via `startswith()` on tab text. Pass the base name prefix to `_notify_tab()` (e.g., `"PR"` not `"PRs"`) because tab text is dynamic (`"PR:5"`). Wrong prefix = bell silently fails.
+- **Thread-safe tkinter from background threads:** Never call `widget.configure()` directly from a background thread. Use `self._schedule(widget.configure, {"fg": color})` — dict-arg form works with `_schedule` which calls `root.after(0, fn, *args)`.
 - **1:1 notes link:** Calendar detail panel shows a "Notes" section for 1:1 meetings with a link to the Google Docs tab for the other attendee. Uses People directory API to resolve attendee email to display name, then matches against doc tabs. Cache warmed during calendar refresh background thread.
+
+## Console log integration for tabs
+
+Tabs that need to write to the Console tab receive a `console_log` callback in their constructor (same signature as `Dashboard.log_console`: `message, tag, link, link_label`). Use a `_log()` helper method that routes to `console_log` if available, falls back to `logger.warning()`. The helper passes through `link`/`link_label` for clickable console links. Tags: `"info"`, `"warning"`, `"error"` (error triggers tab bell on Console), `"success"`, `"progress"`.
 
 ## Tab toolbar standard
 

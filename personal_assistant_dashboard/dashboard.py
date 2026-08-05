@@ -871,7 +871,7 @@ class Dashboard:
         self._init_notify()
         selected_id = self._notebook.select()
         selected_text = self._notebook.tab(selected_id, "text")
-        if selected_text == tab_name:
+        if selected_text.startswith(tab_name):
             return
         if tab_name in self._notified_tabs or tab_name in self._persistent_tabs:
             return
@@ -1411,8 +1411,13 @@ class Dashboard:
             return
         tab_id = self._notebook.select()
         tab_text = self._notebook.tab(tab_id, "text")
-        # Use base name for bell clearing (countdown may append to tab text)
-        bell_name = "Calendar" if str(tab_id) == self._cal_tab_id else tab_text
+        # Use base name for bell clearing (dynamic text like "PR:5", "Calendar ⏱2m")
+        if str(tab_id) == self._cal_tab_id:
+            bell_name = "Calendar"
+        elif tab_text.startswith("PR"):
+            bell_name = "PR"
+        else:
+            bell_name = tab_text
         self._clear_tab_bell(bell_name)
         if str(tab_id) == self._cal_tab_id:
             self._render_current_day()
