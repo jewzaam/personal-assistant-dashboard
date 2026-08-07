@@ -23,6 +23,7 @@ from personal_assistant_dashboard.config import (
     COLOR_LINK,
     COLOR_PROGRESS,
     COLOR_SECTION_HEADER,
+    COLOR_WARNING,
     FG_DIM,
     FG_TEXT,
     FONT_FAMILY_MONO,
@@ -120,6 +121,66 @@ def _fetch_review_counts(
     return counts
 
 
+def _fetch_queued_prs(
+    prs: list[dict[str, Any]],
+) -> set[str]:
+    """Return set of html_urls for PRs in a merge queue.
+
+    One GraphQL query per repo using aliases to batch PR lookups.
+    Avoids paginating all open PRs — queries only the PRs we have.
+    """
+    # Group by repo
+    by_repo: dict[str, list[dict[str, Any]]] = {}
+    for pr in prs:
+        repo = _repo_from_url(pr.get("repository_url", ""))
+        if repo:
+            by_repo.setdefault(repo, []).append(pr)
+
+    queued: set[str] = set()
+    for repo, repo_prs in by_repo.items():
+        parts = repo.split("/")
+        if len(parts) != 2:
+            continue
+        owner, name = parts
+        # Build aliased query for each PR in this repo
+        fragments = []
+        for i, pr in enumerate(repo_prs):
+            n = pr.get("number", 0)
+            if not n:
+                continue
+            fragments.append(
+                "pr%d: pullRequest(number: %d)"
+                " { number mergeQueueEntry"
+                " { position } }" % (i, n)
+            )
+        if not fragments:
+            continue
+        body = " ".join(fragments)
+        query = '{ repository(owner: "%s", name: "%s")' " { %s } }" % (
+            owner,
+            name,
+            body,
+        )
+        result = run_cmd(
+            ["gh", "api", "graphql", "-f", f"query={query}"],
+            timeout=30,
+        )
+        if result.returncode != 0:
+            continue
+        try:
+            data = json.loads(result.stdout)
+            repo_data = data.get("data", {}).get("repository", {})
+            for i, pr in enumerate(repo_prs):
+                node = repo_data.get(f"pr{i}")
+                if node and node.get("mergeQueueEntry"):
+                    url = pr.get("html_url", "")
+                    if url:
+                        queued.add(url)
+        except (json.JSONDecodeError, AttributeError):
+            continue
+    return queued
+
+
 class PrsTab:
     """PRs tab showing review-requested and authored PRs."""
 
@@ -146,8 +207,10 @@ class PrsTab:
         self._my_prs: list[dict[str, Any]] = []
         self._row_widgets: dict[str, tk.Button] = {}
         self._review_counts: dict[str, int] = {}
+        self._queued_urls: set[str] = set()
         self._newest_first = False
         self._show_drafts_var = tk.BooleanVar(value=False)
+        self._show_queued_var = tk.BooleanVar(value=False)
         self._show_dismissed_var = tk.BooleanVar(value=False)
         self._font_body = "app_body"
         self._font_heading = "app_heading"
@@ -198,51 +261,73 @@ class PrsTab:
             padx=6,
         ).pack(side=tk.LEFT)
 
-        def _toggle_drafts() -> None:
-            on = self._show_drafts_var.get()
-            self._drafts_btn.configure(fg=COLOR_LINK if on else FG_DIM)
-            self._render()
+        self._filter_buttons: dict[
+            str,
+            tuple[
+                tk.Checkbutton,
+                tk.BooleanVar,
+                str,
+                tk.StringVar,
+            ],
+        ] = {}
 
-        self._drafts_btn = tk.Checkbutton(
-            top,
-            text="Drafts",
-            variable=self._show_drafts_var,
-            command=_toggle_drafts,
-            bg=BG_WINDOW,
-            fg=FG_DIM,
-            selectcolor=BG_WINDOW,
-            activebackground=BG_WINDOW,
-            activeforeground=FG_TEXT,
-            font=self._font_body,
-            relief=tk.FLAT,
-            cursor="hand2",
-            indicatoron=False,
-            padx=6,
+        def _make_filter(
+            label: str,
+            var: tk.BooleanVar,
+            active_fg: str,
+        ) -> tk.Checkbutton:
+            text_var = tk.StringVar(value=f"{label}:0")
+
+            def _toggle() -> None:
+                on = var.get()
+                if on:
+                    for k, (btn, v, _, _tv) in self._filter_buttons.items():
+                        if k != label and v.get():
+                            v.set(False)
+                            btn.configure(fg=FG_DIM)
+                btn_w.configure(fg=active_fg if on else FG_DIM)
+                self._render()
+
+            btn_w = tk.Checkbutton(
+                top,
+                textvariable=text_var,
+                variable=var,
+                command=_toggle,
+                bg=BG_WINDOW,
+                fg=FG_DIM,
+                selectcolor=BG_WINDOW,
+                activebackground=BG_WINDOW,
+                activeforeground=FG_TEXT,
+                font=self._font_body,
+                relief=tk.FLAT,
+                cursor="hand2",
+                indicatoron=False,
+                padx=6,
+            )
+            btn_w.pack(side=tk.LEFT, padx=(PAD, 0))
+            self._filter_buttons[label] = (
+                btn_w,
+                var,
+                active_fg,
+                text_var,
+            )
+            return btn_w
+
+        self._drafts_btn = _make_filter(
+            "Drafts",
+            self._show_drafts_var,
+            COLOR_LINK,
         )
-        self._drafts_btn.pack(side=tk.LEFT, padx=(PAD, 0))
-
-        def _toggle_dismissed() -> None:
-            on = self._show_dismissed_var.get()
-            self._dismissed_btn.configure(fg=COLOR_DECLINED if on else FG_DIM)
-            self._render()
-
-        self._dismissed_btn = tk.Checkbutton(
-            top,
-            text="Dismissed",
-            variable=self._show_dismissed_var,
-            command=_toggle_dismissed,
-            bg=BG_WINDOW,
-            fg=FG_DIM,
-            selectcolor=BG_WINDOW,
-            activebackground=BG_WINDOW,
-            activeforeground=FG_TEXT,
-            font=self._font_body,
-            relief=tk.FLAT,
-            cursor="hand2",
-            indicatoron=False,
-            padx=6,
+        self._queued_btn = _make_filter(
+            "Queued",
+            self._show_queued_var,
+            COLOR_WARNING,
         )
-        self._dismissed_btn.pack(side=tk.LEFT, padx=(PAD, 0))
+        self._dismissed_btn = _make_filter(
+            "Dismissed",
+            self._show_dismissed_var,
+            COLOR_DECLINED,
+        )
 
         tk.Button(
             top,
@@ -349,7 +434,9 @@ class PrsTab:
                 "is:pr+author:@me+state:open+archived:false+sort:updated-desc"
             )
             counts = _fetch_review_counts(review)
-            self._schedule(self._on_data_loaded, review, my, counts)
+            all_prs = review + my
+            queued = _fetch_queued_prs(all_prs)
+            self._schedule(self._on_data_loaded, review, my, counts, queued)
         except Exception:
             logger.exception("PR refresh failed")
             self._refreshing = False
@@ -375,6 +462,7 @@ class PrsTab:
         review_prs: list[dict[str, Any]],
         my_prs: list[dict[str, Any]],
         review_counts: dict[str, int],
+        queued_urls: set[str] | None = None,
     ) -> None:
         self._refreshing = False
         self._refresh_btn.configure(fg=FG_TEXT)
@@ -385,6 +473,8 @@ class PrsTab:
         self._review_prs = review_prs
         self._my_prs = my_prs
         self._review_counts = review_counts
+        if queued_urls is not None:
+            self._queued_urls = queued_urls
         self._render()
         if old_urls and new_review_requests:
             if self._notify_tab:
@@ -414,30 +504,25 @@ class PrsTab:
         self._update_status()
 
     def _update_status(self) -> None:
-        show_drafts = self._show_drafts_var.get()
-
-        def _visible(prs: list[dict[str, Any]]) -> int:
-            return sum(
-                1
-                for p in prs
-                if p.get("html_url", "") not in self._dismissed
-                and (show_drafts or not p.get("draft", False))
-            )
-
-        review_visible = _visible(self._review_prs)
+        all_prs = self._review_prs + self._my_prs
+        draft_count = sum(1 for p in all_prs if p.get("draft", False))
+        queued_count = sum(
+            1 for p in all_prs if p.get("html_url", "") in self._queued_urls
+        )
+        dismissed_count = sum(
+            1 for p in all_prs if p.get("html_url", "") in self._dismissed
+        )
+        self._filter_buttons["Drafts"][3].set(f"Drafts:{draft_count}")
+        self._filter_buttons["Queued"][3].set(f"Queued:{queued_count}")
+        self._filter_buttons["Dismissed"][3].set(f"Dismissed:{dismissed_count}")
         review_actionable = sum(
             1
             for p in self._review_prs
             if p.get("html_url", "") not in self._dismissed
             and not p.get("draft", False)
+            and p.get("html_url", "") not in self._queued_urls
         )
-        my_visible = _visible(self._my_prs)
-        total = review_visible + my_visible
-        dismissed_count = len(self._dismissed)
-        status = f"{total} PRs"
-        if dismissed_count:
-            status += f" ({dismissed_count} dismissed)"
-        self._status_var.set(status)
+        self._status_var.set(f"{review_actionable} actionable")
 
         if self._notebook is not None:
             tab_text = f"PR:{review_actionable}"
@@ -448,16 +533,25 @@ class PrsTab:
 
     def _render_section(self, title: str, prs: list[dict[str, Any]]) -> None:
         show_drafts = self._show_drafts_var.get()
+        show_queued = self._show_queued_var.get()
         show_dismissed = self._show_dismissed_var.get()
+        # Mutually exclusive: if a filter is active, show ONLY that
+        exclusive = show_drafts or show_queued or show_dismissed
 
         def _include(p: dict[str, Any]) -> bool:
             url = p.get("html_url", "")
+            is_draft = bool(p.get("draft", False))
+            is_queued = url in self._queued_urls
             is_dismissed = url in self._dismissed
-            if is_dismissed and not show_dismissed:
-                return False
-            if not show_drafts and p.get("draft", False):
-                return False
-            return True
+            if exclusive:
+                if show_drafts:
+                    return is_draft
+                if show_queued:
+                    return is_queued
+                if show_dismissed:
+                    return is_dismissed
+            # Default: hide drafts, queued, dismissed
+            return not is_draft and not is_queued and not is_dismissed
 
         visible = [p for p in prs if _include(p)]
         active_count = sum(
@@ -495,6 +589,7 @@ class PrsTab:
         repo = _repo_from_url(pr.get("repository_url", ""))
         age = _age_str(pr.get("created_at", ""))
         draft = pr.get("draft", False)
+        is_queued = url in self._queued_urls
         is_dismissed = url in self._dismissed
 
         self._text.insert(tk.END, f"{age:>4} ", "age")
@@ -547,12 +642,14 @@ class PrsTab:
         pr_text = f" {repo}  #{number} {title}"
         if draft:
             pr_text = f" {repo}  [draft] #{number} {title}"
+        elif is_queued:
+            pr_text = f" {repo}  [queued] #{number} {title}"
         link_tag = f"link_{id(pr)}"
         self._text.insert(tk.END, pr_text, link_tag)
 
         if is_dismissed:
             fg = COLOR_DECLINED
-        elif draft:
+        elif draft or is_queued:
             fg = FG_DIM
         else:
             fg = COLOR_LINK
