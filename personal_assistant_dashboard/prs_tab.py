@@ -6,13 +6,12 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import tkinter as tk
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
-
-import tkinter as tk
 from tkinter import ttk
+from typing import Any, Callable
 
 from personal_assistant_dashboard.config import (
     BG_OUTPUT,
@@ -20,7 +19,9 @@ from personal_assistant_dashboard.config import (
     COLOR_BUTTON,
     COLOR_BUTTON_ACTIVE,
     COLOR_DECLINED,
+    COLOR_ERROR,
     COLOR_LINK,
+    COLOR_NOTIFICATION_BELL,
     COLOR_PROGRESS,
     COLOR_SECTION_HEADER,
     COLOR_WARNING,
@@ -83,21 +84,25 @@ def _fetch_prs(query: str) -> list[dict[str, Any]]:
     return all_items
 
 
+_DECISION_STATES = {"APPROVED", "CHANGES_REQUESTED"}
+
+
 def _fetch_review_counts(
     prs: list[dict[str, Any]],
-) -> dict[str, int]:
-    """Fetch count of current user's reviews for each PR."""
+) -> tuple[dict[str, int], set[str]]:
+    """Fetch count of current user's reviews and changes-requested URLs."""
     user_result = run_cmd(["gh", "api", "user"], timeout=30)
     if user_result.returncode != 0:
-        return {}
+        return {}, set()
     try:
         login = json.loads(user_result.stdout).get("login", "")
     except json.JSONDecodeError:
-        return {}
+        return {}, set()
     if not login:
-        return {}
+        return {}, set()
 
     counts: dict[str, int] = {}
+    changes_requested: set[str] = set()
     for pr in prs:
         url = pr.get("html_url", "")
         repo = _repo_from_url(pr.get("repository_url", ""))
@@ -117,8 +122,15 @@ def _fetch_review_counts(
         except json.JSONDecodeError:
             counts[url] = 0
             continue
-        counts[url] = sum(1 for r in reviews if r.get("user", {}).get("login") == login)
-    return counts
+        my_reviews = [r for r in reviews if r.get("user", {}).get("login") == login]
+        counts[url] = len(my_reviews)
+        # Latest decision review determines state
+        for r in reversed(my_reviews):
+            if r.get("state") in _DECISION_STATES:
+                if r["state"] == "CHANGES_REQUESTED":
+                    changes_requested.add(url)
+                break
+    return counts, changes_requested
 
 
 def _fetch_queued_prs(
@@ -203,15 +215,18 @@ class PrsTab:
         self._console_log = console_log
         self._notify_tab = notify_tab
         self._dismissed: set[str] = set()
+        self._priority: set[str] = set()
         self._review_prs: list[dict[str, Any]] = []
         self._my_prs: list[dict[str, Any]] = []
         self._row_widgets: dict[str, tk.Button] = {}
         self._review_counts: dict[str, int] = {}
         self._queued_urls: set[str] = set()
+        self._changes_requested_urls: set[str] = set()
         self._newest_first = False
         self._show_drafts_var = tk.BooleanVar(value=False)
         self._show_queued_var = tk.BooleanVar(value=False)
         self._show_dismissed_var = tk.BooleanVar(value=False)
+        self._show_changes_requested_var = tk.BooleanVar(value=False)
         self._font_body = "app_body"
         self._font_heading = "app_heading"
         self._auto_refresh_ms = 5 * 60 * 1000
@@ -219,6 +234,7 @@ class PrsTab:
         self._refreshing = False
         self._skipped_refreshes = 0
         self._load_dismissed()
+        self._load_priority()
         self._build()
         self.refresh()
         self._schedule_auto_refresh()
@@ -322,6 +338,11 @@ class PrsTab:
             "Queued",
             self._show_queued_var,
             COLOR_WARNING,
+        )
+        self._changes_requested_btn = _make_filter(
+            "Chg Req",
+            self._show_changes_requested_var,
+            COLOR_ERROR,
         )
         self._dismissed_btn = _make_filter(
             "Dismissed",
@@ -433,10 +454,12 @@ class PrsTab:
             my = _fetch_prs(
                 "is:pr+author:@me+state:open+archived:false+sort:updated-desc"
             )
-            counts = _fetch_review_counts(review)
+            counts, changes_req = _fetch_review_counts(review)
             all_prs = review + my
             queued = _fetch_queued_prs(all_prs)
-            self._schedule(self._on_data_loaded, review, my, counts, queued)
+            self._schedule(
+                self._on_data_loaded, review, my, counts, queued, changes_req
+            )
         except Exception:
             logger.exception("PR refresh failed")
             self._refreshing = False
@@ -463,6 +486,7 @@ class PrsTab:
         my_prs: list[dict[str, Any]],
         review_counts: dict[str, int],
         queued_urls: set[str] | None = None,
+        changes_requested_urls: set[str] | None = None,
     ) -> None:
         self._refreshing = False
         self._refresh_btn.configure(fg=FG_TEXT)
@@ -475,6 +499,8 @@ class PrsTab:
         self._review_counts = review_counts
         if queued_urls is not None:
             self._queued_urls = queued_urls
+        if changes_requested_urls is not None:
+            self._changes_requested_urls = changes_requested_urls
         self._render()
         if old_urls and new_review_requests:
             if self._notify_tab:
@@ -512,8 +538,12 @@ class PrsTab:
         dismissed_count = sum(
             1 for p in all_prs if p.get("html_url", "") in self._dismissed
         )
+        cr_count = sum(
+            1 for p in all_prs if p.get("html_url", "") in self._changes_requested_urls
+        )
         self._filter_buttons["Drafts"][3].set(f"Drafts:{draft_count}")
         self._filter_buttons["Queued"][3].set(f"Queued:{queued_count}")
+        self._filter_buttons["Chg Req"][3].set(f"CR:{cr_count}")
         self._filter_buttons["Dismissed"][3].set(f"Dismissed:{dismissed_count}")
         review_actionable = sum(
             1
@@ -535,19 +565,23 @@ class PrsTab:
         show_drafts = self._show_drafts_var.get()
         show_queued = self._show_queued_var.get()
         show_dismissed = self._show_dismissed_var.get()
+        show_cr = self._show_changes_requested_var.get()
         # Mutually exclusive: if a filter is active, show ONLY that
-        exclusive = show_drafts or show_queued or show_dismissed
+        exclusive = show_drafts or show_queued or show_dismissed or show_cr
 
         def _include(p: dict[str, Any]) -> bool:
             url = p.get("html_url", "")
             is_draft = bool(p.get("draft", False))
             is_queued = url in self._queued_urls
             is_dismissed = url in self._dismissed
+            is_cr = url in self._changes_requested_urls
             if exclusive:
                 if show_drafts:
                     return is_draft
                 if show_queued:
                     return is_queued
+                if show_cr:
+                    return is_cr
                 if show_dismissed:
                     return is_dismissed
             # Default: hide drafts, queued, dismissed
@@ -569,6 +603,10 @@ class PrsTab:
             reverse=self._newest_first,
         )
         visible.sort(key=lambda p: _repo_from_url(p.get("repository_url", "")))
+        # Priority PRs float to top
+        visible.sort(
+            key=lambda p: p.get("html_url", "") not in self._priority,
+        )
         last_repo = ""
         for pr in visible:
             repo = _repo_from_url(pr.get("repository_url", ""))
@@ -591,8 +629,29 @@ class PrsTab:
         draft = pr.get("draft", False)
         is_queued = url in self._queued_urls
         is_dismissed = url in self._dismissed
+        is_priority = url in self._priority
 
         self._text.insert(tk.END, f"{age:>4} ", "age")
+
+        # Priority star toggle
+        def _make_toggle_priority(u: str = url) -> None:
+            self._toggle_priority(u)
+
+        star_btn = tk.Button(
+            self._text,
+            text="★" if is_priority else "☆",
+            command=_make_toggle_priority,
+            bg=BG_OUTPUT,
+            fg=COLOR_NOTIFICATION_BELL if is_priority else FG_DIM,
+            font=self._font_body,
+            relief=tk.FLAT,
+            activebackground=COLOR_BUTTON_ACTIVE,
+            cursor="hand2",
+            padx=1,
+            pady=0,
+            borderwidth=0,
+        )
+        self._text.window_create(tk.END, window=star_btn)
 
         if is_dismissed:
 
@@ -702,5 +761,30 @@ class PrsTab:
         path = self._state_path / "dismissed_prs.json"
         try:
             atomic_write_json(path, sorted(self._dismissed))
+        except OSError:
+            pass
+
+    def _toggle_priority(self, url: str) -> None:
+        if url in self._priority:
+            self._priority.discard(url)
+        else:
+            self._priority.add(url)
+        self._save_priority()
+        self._render()
+
+    def _load_priority(self) -> None:
+        path = self._state_path / "priority_prs.json"
+        if not path.exists():
+            return
+        try:
+            with open(path) as f:
+                self._priority = set(json.load(f))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    def _save_priority(self) -> None:
+        path = self._state_path / "priority_prs.json"
+        try:
+            atomic_write_json(path, sorted(self._priority))
         except OSError:
             pass
