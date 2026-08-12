@@ -133,6 +133,39 @@ def _fetch_review_counts(
     return counts, changes_requested
 
 
+def _fetch_incoming_change_requests(
+    prs: list[dict[str, Any]],
+) -> dict[str, int]:
+    """For authored PRs, count reviewers whose latest decision is CHANGES_REQUESTED."""
+    counts: dict[str, int] = {}
+    for pr in prs:
+        url = pr.get("html_url", "")
+        repo = _repo_from_url(pr.get("repository_url", ""))
+        number = pr.get("number", "")
+        if not repo or not number:
+            continue
+        result = run_cmd(
+            ["gh", "api", f"/repos/{repo}/pulls/{number}/reviews"],
+            timeout=30,
+        )
+        if result.returncode != 0:
+            continue
+        try:
+            reviews = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            continue
+        # Group by reviewer, find latest decision per reviewer
+        by_reviewer: dict[str, str] = {}
+        for r in reviews:
+            login = r.get("user", {}).get("login", "")
+            state = r.get("state", "")
+            if login and state in _DECISION_STATES:
+                by_reviewer[login] = state
+        cr_count = sum(1 for s in by_reviewer.values() if s == "CHANGES_REQUESTED")
+        counts[url] = cr_count
+    return counts
+
+
 def _fetch_queued_prs(
     prs: list[dict[str, Any]],
 ) -> set[str]:
@@ -220,6 +253,7 @@ class PrsTab:
         self._my_prs: list[dict[str, Any]] = []
         self._row_widgets: dict[str, tk.Button] = {}
         self._review_counts: dict[str, int] = {}
+        self._incoming_cr_counts: dict[str, int] = {}
         self._queued_urls: set[str] = set()
         self._changes_requested_urls: set[str] = set()
         self._newest_first = False
@@ -455,10 +489,17 @@ class PrsTab:
                 "is:pr+author:@me+state:open+archived:false+sort:updated-desc"
             )
             counts, changes_req = _fetch_review_counts(review)
+            incoming_cr = _fetch_incoming_change_requests(my)
             all_prs = review + my
             queued = _fetch_queued_prs(all_prs)
             self._schedule(
-                self._on_data_loaded, review, my, counts, queued, changes_req
+                self._on_data_loaded,
+                review,
+                my,
+                counts,
+                queued,
+                changes_req,
+                incoming_cr,
             )
         except Exception:
             logger.exception("PR refresh failed")
@@ -487,6 +528,7 @@ class PrsTab:
         review_counts: dict[str, int],
         queued_urls: set[str] | None = None,
         changes_requested_urls: set[str] | None = None,
+        incoming_cr_counts: dict[str, int] | None = None,
     ) -> None:
         self._refreshing = False
         self._refresh_btn.configure(fg=FG_TEXT)
@@ -501,6 +543,8 @@ class PrsTab:
             self._queued_urls = queued_urls
         if changes_requested_urls is not None:
             self._changes_requested_urls = changes_requested_urls
+        if incoming_cr_counts is not None:
+            self._incoming_cr_counts = incoming_cr_counts
         self._render()
         if old_urls and new_review_requests:
             if self._notify_tab:
@@ -697,6 +741,11 @@ class PrsTab:
         if review_count is not None:
             tag = "review_count" if review_count > 0 else "review_zero"
             self._text.insert(tk.END, f" ({review_count})", tag)
+
+        incoming_cr = self._incoming_cr_counts.get(url)
+        if incoming_cr is not None:
+            tag = "review_count" if incoming_cr > 0 else "review_zero"
+            self._text.insert(tk.END, f" ({incoming_cr})", tag)
 
         pr_text = f" {repo}  #{number} {title}"
         if draft:
