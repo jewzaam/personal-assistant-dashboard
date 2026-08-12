@@ -4146,18 +4146,19 @@ def _day_time_range(
 
 
 def _event_column_priority(event: CalendarEvent, dismissed: set[str]) -> int:
-    """Lower number = further left in overlapping clusters."""
-    is_solo = _is_solo_event(event)
+    """Lower = further left. needsAction→accepted→tentative→solo; dismissed +50."""
     is_dismissed = event.get("id", "") in dismissed
+    dismissed_offset = 50 if is_dismissed else 0
+    if _is_solo_event(event):
+        return 40 + dismissed_offset
     response = _user_response_status(event)
-    if is_solo:
-        return 50 + (1 if is_dismissed else 0)
+    if response == "needsAction":
+        return 10 + dismissed_offset
     if response == "accepted":
-        return 10 + (1 if is_dismissed else 0)
+        return 20 + dismissed_offset
     if response == "tentative":
-        return 20 + (1 if is_dismissed else 0)
-    # needsAction or other
-    return 30 + (1 if is_dismissed else 0)
+        return 30 + dismissed_offset
+    return 35 + dismissed_offset
 
 
 def _layout_events(
@@ -4199,20 +4200,50 @@ def _layout_events(
 
     positioned: list[dict[str, Any]] = []
     for cluster in clusters:
-        # Sort by priority within cluster: accepted → tentative → solo/GSD
-        cluster.sort(key=lambda e: _event_column_priority(e, dismissed))
-        num_cols = len(cluster)
-        for col, event in enumerate(cluster):
-            start_h = _parse_hour(event["start"])
-            end_h = _parse_hour(event["end"])
-            y = (start_h - earliest_hour) * HOUR_HEIGHT
-            y2 = (end_h - earliest_hour) * HOUR_HEIGHT
+        intervals = [(_parse_hour(e["start"]), _parse_hour(e["end"])) for e in cluster]
+        # Pass 1: optimal column count via start-time greedy
+        sorted_ends: list[float] = []
+        for s, _e in sorted(intervals):
+            placed = False
+            for ci, ce in enumerate(sorted_ends):
+                if s >= ce:
+                    sorted_ends[ci] = _e
+                    placed = True
+                    break
+            if not placed:
+                sorted_ends.append(_e)
+        num_cols = len(sorted_ends)
+
+        # Pass 2: assign columns by priority, start time as tiebreaker
+        order = sorted(
+            range(len(cluster)),
+            key=lambda i: (
+                _event_column_priority(cluster[i], dismissed),
+                intervals[i][0],
+            ),
+        )
+
+        # ponytail: per-column interval list, fine for <50 events/day
+        col_intervals: list[list[tuple[float, float]]] = [[] for _ in range(num_cols)]
+        assignments: dict[int, int] = {}
+        for i in order:
+            s, e = intervals[i]
+            for ci, col_ivs in enumerate(col_intervals):
+                if not any(s < ce and e > cs for cs, ce in col_ivs):
+                    col_ivs.append((s, e))
+                    assignments[i] = ci
+                    break
+
+        for i, event in enumerate(cluster):
+            s, e = intervals[i]
+            y = (s - earliest_hour) * HOUR_HEIGHT
+            y2 = (e - earliest_hour) * HOUR_HEIGHT
             positioned.append(
                 {
                     "event": event,
                     "y": y,
                     "y2": y2,
-                    "col": col,
+                    "col": assignments[i],
                     "num_cols": num_cols,
                 }
             )
