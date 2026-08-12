@@ -2975,12 +2975,12 @@ class Dashboard:
             text.insert(tk.END, "Notes\n", "section")
             link_tag = f"link_1on1_{id(cal_event)}"
             if tab_url:
-                insert_link(f"1:1 — {other_name}", tab_url, link_tag)
+                insert_link(f"[PRIVATE] 1:1 — {other_name}", tab_url, link_tag)
             else:
                 doc_url = (
                     f"https://docs.google.com/document/d/" f"{ONE_ON_ONE_DOC_ID}/edit"
                 )
-                insert_link(f"1:1 — {other_name}", doc_url, link_tag)
+                insert_link(f"[PRIVATE] 1:1 — {other_name}", doc_url, link_tag)
                 text.insert(
                     tk.END,
                     f'  (no tab "{other_name}")',
