@@ -747,6 +747,10 @@ class PrsTab:
             tag = "review_count" if incoming_cr > 0 else "review_zero"
             self._text.insert(tk.END, f" ({incoming_cr})", tag)
 
+        comment_count = pr.get("comments", 0)
+        comment_tag = "review_count" if comment_count > 0 else "review_zero"
+        self._text.insert(tk.END, f" [{comment_count}]", comment_tag)
+
         pr_text = f" {repo}  #{number} {title}"
         if draft:
             pr_text = f" {repo}  [draft] #{number} {title}"
