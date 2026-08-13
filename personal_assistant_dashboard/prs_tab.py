@@ -261,6 +261,7 @@ class PrsTab:
         self._show_queued_var = tk.BooleanVar(value=False)
         self._show_dismissed_var = tk.BooleanVar(value=False)
         self._show_changes_requested_var = tk.BooleanVar(value=False)
+        self._label_filter_var = tk.StringVar(value="All")
         self._font_body = "app_body"
         self._font_heading = "app_heading"
         self._auto_refresh_ms = 5 * 60 * 1000
@@ -383,6 +384,20 @@ class PrsTab:
             self._show_dismissed_var,
             COLOR_DECLINED,
         )
+
+        tk.Label(
+            top, text="Label:", bg=BG_WINDOW, fg=FG_DIM, font=self._font_body
+        ).pack(side=tk.LEFT, padx=(PAD, 0))
+        self._label_combo = ttk.Combobox(
+            top,
+            textvariable=self._label_filter_var,
+            values=["All"],
+            state="readonly",
+            width=20,
+            font=self._font_body,
+        )
+        self._label_combo.pack(side=tk.LEFT, padx=(2, 0))
+        self._label_combo.bind("<<ComboboxSelected>>", lambda _: self._render())
 
         tk.Button(
             top,
@@ -545,6 +560,7 @@ class PrsTab:
             self._changes_requested_urls = changes_requested_urls
         if incoming_cr_counts is not None:
             self._incoming_cr_counts = incoming_cr_counts
+        self._update_label_list()
         self._render()
         if old_urls and new_review_requests:
             if self._notify_tab:
@@ -572,6 +588,21 @@ class PrsTab:
 
         self._text.configure(state=tk.DISABLED)
         self._update_status()
+
+    def _update_label_list(self) -> None:
+        all_prs = self._review_prs + self._my_prs
+        labels = sorted(
+            {
+                lbl.get("name", "")
+                for p in all_prs
+                for lbl in p.get("labels", [])
+                if lbl.get("name")
+            }
+        )
+        current = self._label_filter_var.get()
+        self._label_combo["values"] = ["All"] + labels
+        if current != "All" and current not in labels:
+            self._label_filter_var.set("All")
 
     def _update_status(self) -> None:
         all_prs = self._review_prs + self._my_prs
@@ -632,6 +663,13 @@ class PrsTab:
             return not is_draft and not is_queued and not is_dismissed
 
         visible = [p for p in prs if _include(p)]
+        label_filter = self._label_filter_var.get()
+        if label_filter != "All":
+            visible = [
+                p
+                for p in visible
+                if any(lbl.get("name") == label_filter for lbl in p.get("labels", []))
+            ]
         active_count = sum(
             1 for p in visible if p.get("html_url", "") not in self._dismissed
         )
