@@ -87,50 +87,63 @@ def _fetch_prs(query: str) -> list[dict[str, Any]]:
 _DECISION_STATES = {"APPROVED", "CHANGES_REQUESTED"}
 
 
-def _fetch_review_counts(
+def _fetch_review_meta(
     prs: list[dict[str, Any]],
-) -> tuple[dict[str, int], set[str]]:
-    """Fetch count of current user's reviews and changes-requested URLs."""
+) -> dict[str, tuple[int, bool]]:
+    """Per-PR review metadata for current user.
+
+    Returns {url: (cr_count, active_cr)} where cr_count is how many times
+    the user submitted CHANGES_REQUESTED, and active_cr is whether the
+    user's latest decision is CHANGES_REQUESTED.
+    """
     user_result = run_cmd(["gh", "api", "user"], timeout=30)
     if user_result.returncode != 0:
-        return {}, set()
+        return {}
     try:
         login = json.loads(user_result.stdout).get("login", "")
     except json.JSONDecodeError:
-        return {}, set()
+        return {}
     if not login:
-        return {}, set()
+        return {}
 
-    counts: dict[str, int] = {}
-    changes_requested: set[str] = set()
+    meta: dict[str, tuple[int, bool]] = {}
     for pr in prs:
         url = pr.get("html_url", "")
         repo = _repo_from_url(pr.get("repository_url", ""))
         number = pr.get("number", "")
         if not repo or not number:
-            counts[url] = 0
+            meta[url] = (0, False)
             continue
         result = run_cmd(
-            ["gh", "api", f"/repos/{repo}/pulls/{number}/reviews"],
+            ["gh", "api", "--paginate", f"/repos/{repo}/pulls/{number}/reviews"],
             timeout=30,
         )
         if result.returncode != 0:
-            counts[url] = 0
+            meta[url] = (0, False)
             continue
         try:
             reviews = json.loads(result.stdout)
         except json.JSONDecodeError:
-            counts[url] = 0
-            continue
+            # --paginate may concatenate JSON arrays
+            reviews = []
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        chunk = json.loads(line)
+                        if isinstance(chunk, list):
+                            reviews.extend(chunk)
+                    except json.JSONDecodeError:
+                        continue
         my_reviews = [r for r in reviews if r.get("user", {}).get("login") == login]
-        counts[url] = len(my_reviews)
-        # Latest decision review determines state
+        cr_count = sum(1 for r in my_reviews if r.get("state") == "CHANGES_REQUESTED")
+        active_cr = False
         for r in reversed(my_reviews):
             if r.get("state") in _DECISION_STATES:
-                if r["state"] == "CHANGES_REQUESTED":
-                    changes_requested.add(url)
+                active_cr = r["state"] == "CHANGES_REQUESTED"
                 break
-    return counts, changes_requested
+        meta[url] = (cr_count, active_cr)
+    return meta
 
 
 def _fetch_incoming_change_requests(
@@ -145,7 +158,7 @@ def _fetch_incoming_change_requests(
         if not repo or not number:
             continue
         result = run_cmd(
-            ["gh", "api", f"/repos/{repo}/pulls/{number}/reviews"],
+            ["gh", "api", "--paginate", f"/repos/{repo}/pulls/{number}/reviews"],
             timeout=30,
         )
         if result.returncode != 0:
@@ -153,7 +166,16 @@ def _fetch_incoming_change_requests(
         try:
             reviews = json.loads(result.stdout)
         except json.JSONDecodeError:
-            continue
+            reviews = []
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        chunk = json.loads(line)
+                        if isinstance(chunk, list):
+                            reviews.extend(chunk)
+                    except json.JSONDecodeError:
+                        continue
         # Group by reviewer, find latest decision per reviewer
         by_reviewer: dict[str, str] = {}
         for r in reviews:
@@ -252,10 +274,10 @@ class PrsTab:
         self._review_prs: list[dict[str, Any]] = []
         self._my_prs: list[dict[str, Any]] = []
         self._row_widgets: dict[str, tk.Button] = {}
-        self._review_counts: dict[str, int] = {}
+        self._review_meta: dict[str, tuple[int, bool]] = {}
         self._incoming_cr_counts: dict[str, int] = {}
+        self._requested_urls: set[str] = set()
         self._queued_urls: set[str] = set()
-        self._changes_requested_urls: set[str] = set()
         self._newest_first = False
         self._show_drafts_var = tk.BooleanVar(value=False)
         self._show_queued_var = tk.BooleanVar(value=False)
@@ -497,13 +519,27 @@ class PrsTab:
 
     def _do_refresh(self) -> None:
         try:
-            review = _fetch_prs(
-                "is:pr+review-requested:@me+state:open+archived:false+sort:updated-desc"
+            # review-requested:@me misses PRs after submitting a review
+            # (GitHub removes user from requested reviewers). Query both
+            # and merge to get the full reviewer universe.
+            requested = _fetch_prs(
+                "is:pr+review-requested:@me+state:open+archived:false"
             )
+            requested_urls = {p.get("html_url", "") for p in requested}
+            reviewed = _fetch_prs(
+                "is:pr+reviewed-by:@me+state:open+archived:false+-author:@me"
+            )
+            seen = set(requested_urls)
+            for p in reviewed:
+                url = p.get("html_url", "")
+                if url not in seen:
+                    requested.append(p)
+                    seen.add(url)
+            review = requested
             my = _fetch_prs(
                 "is:pr+author:@me+state:open+archived:false+sort:updated-desc"
             )
-            counts, changes_req = _fetch_review_counts(review)
+            review_meta = _fetch_review_meta(review)
             incoming_cr = _fetch_incoming_change_requests(my)
             all_prs = review + my
             queued = _fetch_queued_prs(all_prs)
@@ -511,10 +547,10 @@ class PrsTab:
                 self._on_data_loaded,
                 review,
                 my,
-                counts,
+                review_meta,
                 queued,
-                changes_req,
                 incoming_cr,
+                requested_urls,
             )
         except Exception:
             logger.exception("PR refresh failed")
@@ -540,26 +576,22 @@ class PrsTab:
         self,
         review_prs: list[dict[str, Any]],
         my_prs: list[dict[str, Any]],
-        review_counts: dict[str, int],
-        queued_urls: set[str] | None = None,
-        changes_requested_urls: set[str] | None = None,
-        incoming_cr_counts: dict[str, int] | None = None,
+        review_meta: dict[str, tuple[int, bool]],
+        queued_urls: set[str],
+        incoming_cr_counts: dict[str, int],
+        requested_urls: set[str],
     ) -> None:
         self._refreshing = False
         self._refresh_btn.configure(fg=FG_TEXT)
         self._skipped_refreshes = 0
-        old_urls = {p.get("html_url", "") for p in self._review_prs}
-        new_urls = {p.get("html_url", "") for p in review_prs}
-        new_review_requests = new_urls - old_urls
+        old_urls = self._requested_urls
+        new_review_requests = requested_urls - old_urls
         self._review_prs = review_prs
         self._my_prs = my_prs
-        self._review_counts = review_counts
-        if queued_urls is not None:
-            self._queued_urls = queued_urls
-        if changes_requested_urls is not None:
-            self._changes_requested_urls = changes_requested_urls
-        if incoming_cr_counts is not None:
-            self._incoming_cr_counts = incoming_cr_counts
+        self._review_meta = review_meta
+        self._queued_urls = queued_urls
+        self._incoming_cr_counts = incoming_cr_counts
+        self._requested_urls = requested_urls
         self._update_label_list()
         self._render()
         if old_urls and new_review_requests:
@@ -583,7 +615,7 @@ class PrsTab:
         self._text.delete("1.0", tk.END)
         self._row_widgets.clear()
 
-        self._render_section("Review Requested", self._review_prs)
+        self._render_section("Review Requested", self._review_prs, is_review=True)
         self._render_section("My PRs", self._my_prs)
 
         self._text.configure(state=tk.DISABLED)
@@ -604,6 +636,10 @@ class PrsTab:
         if current != "All" and current not in labels:
             self._label_filter_var.set("All")
 
+    def _is_active_cr(self, url: str) -> bool:
+        meta = self._review_meta.get(url)
+        return meta[1] if meta else False
+
     def _update_status(self) -> None:
         all_prs = self._review_prs + self._my_prs
         draft_count = sum(1 for p in all_prs if p.get("draft", False))
@@ -613,17 +649,16 @@ class PrsTab:
         dismissed_count = sum(
             1 for p in all_prs if p.get("html_url", "") in self._dismissed
         )
-        cr_count = sum(
-            1 for p in all_prs if p.get("html_url", "") in self._changes_requested_urls
-        )
+        cr_count = sum(1 for p in all_prs if self._is_active_cr(p.get("html_url", "")))
         self._filter_buttons["Drafts"][3].set(f"Drafts:{draft_count}")
         self._filter_buttons["Queued"][3].set(f"Queued:{queued_count}")
-        self._filter_buttons["Chg Req"][3].set(f"CR:{cr_count}")
+        self._filter_buttons["Chg Req"][3].set(f"Chg Req:{cr_count}")
         self._filter_buttons["Dismissed"][3].set(f"Dismissed:{dismissed_count}")
         review_actionable = sum(
             1
             for p in self._review_prs
-            if p.get("html_url", "") not in self._dismissed
+            if p.get("html_url", "") in self._requested_urls
+            and p.get("html_url", "") not in self._dismissed
             and not p.get("draft", False)
             and p.get("html_url", "") not in self._queued_urls
         )
@@ -636,7 +671,13 @@ class PrsTab:
             except tk.TclError:
                 pass
 
-    def _render_section(self, title: str, prs: list[dict[str, Any]]) -> None:
+    def _render_section(
+        self,
+        title: str,
+        prs: list[dict[str, Any]],
+        *,
+        is_review: bool = False,
+    ) -> None:
         show_drafts = self._show_drafts_var.get()
         show_queued = self._show_queued_var.get()
         show_dismissed = self._show_dismissed_var.get()
@@ -649,7 +690,7 @@ class PrsTab:
             is_draft = bool(p.get("draft", False))
             is_queued = url in self._queued_urls
             is_dismissed = url in self._dismissed
-            is_cr = url in self._changes_requested_urls
+            is_cr = self._is_active_cr(url)
             if exclusive:
                 if show_drafts:
                     return is_draft
@@ -659,7 +700,14 @@ class PrsTab:
                     return is_cr
                 if show_dismissed:
                     return is_dismissed
-            # Default: hide drafts, queued, dismissed
+            if is_review:
+                return (
+                    url in self._requested_urls
+                    and not is_draft
+                    and not is_queued
+                    and not is_dismissed
+                )
+            # My PRs: hide drafts, queued, dismissed
             return not is_draft and not is_queued and not is_dismissed
 
         visible = [p for p in prs if _include(p)]
@@ -775,10 +823,11 @@ class PrsTab:
             )
         self._text.window_create(tk.END, window=btn)
 
-        review_count = self._review_counts.get(url)
-        if review_count is not None:
-            tag = "review_count" if review_count > 0 else "review_zero"
-            self._text.insert(tk.END, f" ({review_count})", tag)
+        meta = self._review_meta.get(url)
+        if meta is not None:
+            cr_count = meta[0]
+            tag = "review_count" if cr_count > 0 else "review_zero"
+            self._text.insert(tk.END, f" ({cr_count})", tag)
 
         incoming_cr = self._incoming_cr_counts.get(url)
         if incoming_cr is not None:
