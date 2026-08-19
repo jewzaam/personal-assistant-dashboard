@@ -92,6 +92,7 @@ from personal_assistant_dashboard.meeting_notes import (
     open_notes_file,
 )
 from personal_assistant_dashboard.state_repo import DEFAULT_STATE_PATH
+from personal_assistant_dashboard.tasks import is_task_event
 from personal_assistant_dashboard.utils import (
     atomic_write_json,
     format_event_time,
@@ -1891,10 +1892,12 @@ class Dashboard:
         from personal_assistant_dashboard.gws_auth import check_scopes
 
         status = check_scopes()
-        if status.all_required_met:
-            color = COLOR_SUCCESS  # green
+        if not status.all_required_met:
+            color = COLOR_ALERT  # red — calendar read or RSVP is broken
+        elif status.missing_optional:
+            color = COLOR_CONFLICT  # amber — degraded, nothing is broken
         else:
-            color = COLOR_CONFLICT  # red
+            color = COLOR_SUCCESS  # green
 
         self._scope_status = status
         self._schedule(self._scope_indicator.configure, {"fg": color})
@@ -1926,6 +1929,14 @@ class Dashboard:
             lines.append("Missing required scopes:")
             for scope, label in status.missing_required.items():
                 lines.append(f"  \u2717 {label}: {scope}")
+
+        if status.missing_optional:
+            lines.append("")
+            lines.append("Missing optional scopes (degraded, not broken):")
+            for scope, label in status.missing_optional.items():
+                lines.append(f"  - {label}: {scope}")
+
+        if status.missing_required or status.missing_optional:
             lines.append("")
             lines.append("To fix, logout first then re-login:")
             lines.append("  gws auth logout")
@@ -1934,12 +1945,6 @@ class Dashboard:
             lines.append(
                 "Logout clears the cached token so the new scopes take effect."
             )
-
-        if status.missing_optional:
-            lines.append("")
-            lines.append("Missing optional scopes:")
-            for scope, label in status.missing_optional.items():
-                lines.append(f"  - {label}: {scope}")
 
         # Simple toplevel popup
         popup = tk.Toplevel(self._root)
@@ -4289,11 +4294,18 @@ def _filter_events_for_date(
     *,
     show_declined: bool = False,
 ) -> list[CalendarEvent]:
-    """Filter events for a specific date, excluding declined and work location."""
+    """Filter events for a date, excluding declined, tasks, and work location.
+
+    Task-backed events are always dropped — they are Google Tasks that Google
+    renders as calendar events, never meetings, and there is no way to act on
+    them from here.
+    """
     day_events = []
     for event in all_events:
         start = event.get("start", "")
         if date_str not in start:
+            continue
+        if is_task_event(event):
             continue
         if not show_declined:
             user_att = next(

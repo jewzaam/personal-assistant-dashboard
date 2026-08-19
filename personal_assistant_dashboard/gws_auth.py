@@ -48,17 +48,22 @@ class ScopeStatus:
                 f" — run:\n  gws auth logout\n"
                 f"  {self.reauth_command}"
             )
-        if not self.missing_required:
-            return "All required scopes granted"
-        missing = ", ".join(self.missing_required.values())
-        return f"Missing scopes: {missing}"
+        if self.missing_required:
+            missing = ", ".join(self.missing_required.values())
+            return f"Missing scopes: {missing}"
+        if self.missing_optional:
+            degraded = ", ".join(self.missing_optional.values())
+            return f"Degraded — missing optional scopes: {degraded}"
+        return "All required scopes granted"
 
     @property
     def reauth_command(self) -> str:
         """Command that merges existing scopes with needed ones."""
-        # Combine what's already granted with what's missing
+        # Combine what's already granted with everything the app can use —
+        # optional scopes included, or a degraded state has no way to be fixed.
         all_scopes = set(self.granted_scopes)
         all_scopes.update(REQUIRED_SCOPES.keys())
+        all_scopes.update(OPTIONAL_SCOPES.keys())
         # Filter to real OAuth scopes (skip 'email', 'profile', 'openid')
         oauth_scopes = sorted(s for s in all_scopes if s.startswith("https://"))
         return f"gws auth login --scopes {','.join(oauth_scopes)}"
