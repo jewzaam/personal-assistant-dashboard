@@ -70,6 +70,7 @@ pa --help
 
 - **Change tracking** — Automatically detects new, cancelled, moved events and attendee changes.
 - **Declined events toggle** — Show/hide declined meetings with distinct visual styling (dim background, red dashed border).
+- **Google Tasks hidden** — Tasks that carry a due date and a time are returned by Google Calendar as ordinary events; they are dropped from the grid. Tasks with a date but no time never reach the calendar.
 - **1:1 notes** — For 1:1 meetings, the detail panel shows a "Notes" link that opens the user's private Google Docs tab for that person. Resolves attendee name via Google directory.
 - **Open Notes without prep** — "Open Notes" button creates the notes file on first click without requiring "Generate Prep" first.
 

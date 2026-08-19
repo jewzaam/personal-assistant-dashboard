@@ -6,6 +6,7 @@ import subprocess
 from unittest.mock import MagicMock, patch
 
 from personal_assistant_dashboard.gws_auth import (
+    OPTIONAL_SCOPES,
     REQUIRED_SCOPES,
     ScopeStatus,
     check_scopes,
@@ -29,9 +30,7 @@ def _mock_auth_status(
 
 
 def test_check_scopes_all_granted() -> None:
-    all_scopes = list(REQUIRED_SCOPES.keys()) + [
-        "https://www.googleapis.com/auth/drive.readonly",
-    ]
+    all_scopes = list(REQUIRED_SCOPES.keys()) + list(OPTIONAL_SCOPES.keys())
     with patch("personal_assistant_dashboard.gws_auth.subprocess.run") as mock_run:
         mock_run.return_value = _mock_auth_status(all_scopes)
         status = check_scopes()
@@ -39,6 +38,7 @@ def test_check_scopes_all_granted() -> None:
     assert status.available
     assert status.all_required_met
     assert not status.missing_required
+    assert not status.missing_optional
     assert "All required" in status.summary
 
 
@@ -136,6 +136,25 @@ def test_optional_scopes_tracked() -> None:
     assert status.all_required_met
     # Drive and docs are optional, should be in missing_optional
     assert len(status.missing_optional) > 0
+
+
+def test_missing_optional_reads_as_degraded() -> None:
+    """Optional scopes missing is degraded, not failed — required are all met."""
+    with patch("personal_assistant_dashboard.gws_auth.subprocess.run") as mock_run:
+        mock_run.return_value = _mock_auth_status(list(REQUIRED_SCOPES.keys()))
+        status = check_scopes()
+
+    assert status.all_required_met
+    assert status.missing_optional
+    assert "Degraded" in status.summary
+
+
+def test_reauth_command_includes_optional_scopes() -> None:
+    """A degraded state has to be fixable — the command must grant optionals."""
+    status = ScopeStatus(available=True, granted_scopes=list(REQUIRED_SCOPES.keys()))
+    cmd = status.reauth_command
+    for scope in OPTIONAL_SCOPES:
+        assert scope in cmd
 
 
 def test_check_scopes_timeout() -> None:
