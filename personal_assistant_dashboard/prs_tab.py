@@ -248,6 +248,21 @@ def _fetch_queued_prs(
     return queued
 
 
+def _label_starred_urls(
+    prs: list[dict[str, Any]],
+    starred_labels: set[str],
+) -> set[str]:
+    """URLs of PRs carrying at least one starred label."""
+    if not starred_labels:
+        return set()
+    return {
+        p["html_url"]
+        for p in prs
+        if p.get("html_url")
+        and starred_labels & {lbl.get("name", "") for lbl in p.get("labels", [])}
+    }
+
+
 class PrsTab:
     """PRs tab showing review-requested and authored PRs."""
 
@@ -271,6 +286,7 @@ class PrsTab:
         self._notify_tab = notify_tab
         self._dismissed: set[str] = set()
         self._priority: set[str] = set()
+        self._starred_labels: set[str] = set()
         self._review_prs: list[dict[str, Any]] = []
         self._my_prs: list[dict[str, Any]] = []
         self._row_widgets: dict[str, tk.Button] = {}
@@ -292,6 +308,7 @@ class PrsTab:
         self._skipped_refreshes = 0
         self._load_dismissed()
         self._load_priority()
+        self._load_starred_labels()
         self._build()
         self.refresh()
         self._schedule_auto_refresh()
@@ -410,6 +427,22 @@ class PrsTab:
         tk.Label(
             top, text="Label:", bg=BG_WINDOW, fg=FG_DIM, font=self._font_body
         ).pack(side=tk.LEFT, padx=(PAD, 0))
+        self._label_star_btn = tk.Button(
+            top,
+            text="\u2606",
+            command=self._toggle_label_star,
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            disabledforeground=FG_DIM,
+            font=self._font_body,
+            relief=tk.FLAT,
+            activebackground=BG_WINDOW,
+            cursor="hand2",
+            padx=1,
+            borderwidth=0,
+            state=tk.DISABLED,
+        )
+        self._label_star_btn.pack(side=tk.LEFT, padx=(2, 0))
         self._label_combo = ttk.Combobox(
             top,
             textvariable=self._label_filter_var,
@@ -419,7 +452,12 @@ class PrsTab:
             font=self._font_body,
         )
         self._label_combo.pack(side=tk.LEFT, padx=(2, 0))
-        self._label_combo.bind("<<ComboboxSelected>>", lambda _: self._render())
+
+        def _on_label_selected(_: Any) -> None:
+            self._update_label_star_btn()
+            self._render()
+
+        self._label_combo.bind("<<ComboboxSelected>>", _on_label_selected)
 
         tk.Button(
             top,
@@ -593,6 +631,7 @@ class PrsTab:
         self._incoming_cr_counts = incoming_cr_counts
         self._requested_urls = requested_urls
         self._update_label_list()
+        self._apply_label_stars()
         self._render()
         if old_urls and new_review_requests:
             if self._notify_tab:
@@ -635,6 +674,7 @@ class PrsTab:
         self._label_combo["values"] = ["All"] + labels
         if current != "All" and current not in labels:
             self._label_filter_var.set("All")
+        self._update_label_star_btn()
 
     def _is_active_cr(self, url: str) -> bool:
         meta = self._review_meta.get(url)
@@ -926,5 +966,57 @@ class PrsTab:
         path = self._state_path / "priority_prs.json"
         try:
             atomic_write_json(path, sorted(self._priority))
+        except OSError:
+            pass
+
+    def _update_label_star_btn(self) -> None:
+        label = self._label_filter_var.get()
+        if label == "All":
+            self._label_star_btn.configure(text="\u2606", state=tk.DISABLED)
+            return
+        on = label in self._starred_labels
+        self._label_star_btn.configure(
+            text="\u2605" if on else "\u2606",
+            fg=COLOR_NOTIFICATION_BELL if on else FG_DIM,
+            state=tk.NORMAL,
+        )
+
+    def _toggle_label_star(self) -> None:
+        label = self._label_filter_var.get()
+        if label == "All":
+            return
+        if label in self._starred_labels:
+            self._starred_labels.discard(label)
+        else:
+            self._starred_labels.add(label)
+        self._save_starred_labels()
+        self._update_label_star_btn()
+        self._apply_label_stars()
+        self._render()
+
+    def _apply_label_stars(self) -> None:
+        # ponytail: additive only. Un-starring a label leaves PR stars alone,
+        # and a manually un-starred PR gets re-starred on the next refresh.
+        urls = _label_starred_urls(
+            self._review_prs + self._my_prs, self._starred_labels
+        )
+        if urls - self._priority:
+            self._priority |= urls
+            self._save_priority()
+
+    def _load_starred_labels(self) -> None:
+        path = self._state_path / "starred_labels.json"
+        if not path.exists():
+            return
+        try:
+            with open(path) as f:
+                self._starred_labels = set(json.load(f))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    def _save_starred_labels(self) -> None:
+        path = self._state_path / "starred_labels.json"
+        try:
+            atomic_write_json(path, sorted(self._starred_labels))
         except OSError:
             pass
