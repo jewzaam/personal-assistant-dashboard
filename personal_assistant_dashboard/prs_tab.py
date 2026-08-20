@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from datetime import datetime, timezone
@@ -24,6 +25,7 @@ from personal_assistant_dashboard.config import (
     COLOR_NOTIFICATION_BELL,
     COLOR_PROGRESS,
     COLOR_SECTION_HEADER,
+    COLOR_SUCCESS,
     COLOR_WARNING,
     FG_DIM,
     FG_TEXT,
@@ -188,10 +190,12 @@ def _fetch_incoming_change_requests(
     return counts
 
 
-def _fetch_queued_prs(
+def _fetch_pr_details(
     prs: list[dict[str, Any]],
-) -> set[str]:
-    """Return set of html_urls for PRs in a merge queue.
+) -> tuple[set[str], dict[str, tuple[int, int]]]:
+    """Merge-queue membership and diff size per PR.
+
+    Returns (queued_urls, {url: (additions, deletions)}).
 
     One GraphQL query per repo using aliases to batch PR lookups.
     Avoids paginating all open PRs — queries only the PRs we have.
@@ -204,6 +208,7 @@ def _fetch_queued_prs(
             by_repo.setdefault(repo, []).append(pr)
 
     queued: set[str] = set()
+    diffstat: dict[str, tuple[int, int]] = {}
     for repo, repo_prs in by_repo.items():
         parts = repo.split("/")
         if len(parts) != 2:
@@ -217,7 +222,7 @@ def _fetch_queued_prs(
                 continue
             fragments.append(
                 "pr%d: pullRequest(number: %d)"
-                " { number mergeQueueEntry"
+                " { number additions deletions mergeQueueEntry"
                 " { position } }" % (i, n)
             )
         if not fragments:
@@ -239,13 +244,19 @@ def _fetch_queued_prs(
             repo_data = data.get("data", {}).get("repository", {})
             for i, pr in enumerate(repo_prs):
                 node = repo_data.get(f"pr{i}")
-                if node and node.get("mergeQueueEntry"):
-                    url = pr.get("html_url", "")
-                    if url:
-                        queued.add(url)
+                url = pr.get("html_url", "")
+                if not node or not url:
+                    continue
+                if node.get("mergeQueueEntry"):
+                    queued.add(url)
+                if node.get("additions") is not None:
+                    diffstat[url] = (
+                        node.get("additions", 0),
+                        node.get("deletions", 0),
+                    )
         except (json.JSONDecodeError, AttributeError):
             continue
-    return queued
+    return queued, diffstat
 
 
 def _label_starred_urls(
@@ -294,6 +305,11 @@ class PrsTab:
         self._incoming_cr_counts: dict[str, int] = {}
         self._requested_urls: set[str] = set()
         self._queued_urls: set[str] = set()
+        self._diffstat: dict[str, tuple[int, int]] = {}
+        self._col_count = 0
+        self._col_comments = 0
+        self._col_add = 0
+        self._col_del = 0
         self._newest_first = False
         self._show_drafts_var = tk.BooleanVar(value=False)
         self._show_queued_var = tk.BooleanVar(value=False)
@@ -310,8 +326,12 @@ class PrsTab:
         self._load_priority()
         self._load_starred_labels()
         self._build()
-        self.refresh()
-        self._schedule_auto_refresh()
+        age_ms = self._load_cache()
+        if age_ms is not None and age_ms < self._auto_refresh_ms:
+            self._schedule_auto_refresh(self._auto_refresh_ms - age_ms)
+        else:
+            self.refresh()
+            self._schedule_auto_refresh()
 
     def _build(self) -> None:
         top = tk.Frame(self._parent, bg=BG_WINDOW)
@@ -525,8 +545,12 @@ class PrsTab:
             spacing1=0,
             spacing3=0,
         )
-        self._text.tag_configure("review_count", foreground=FG_TEXT)
-        self._text.tag_configure("review_zero", foreground=FG_DIM)
+        mono = (FONT_FAMILY_MONO, FONT_SIZE_BODY)
+        self._text.tag_configure("diff_add", foreground=COLOR_SUCCESS, font=mono)
+        self._text.tag_configure("diff_del", foreground=COLOR_ERROR, font=mono)
+        self._text.tag_configure("dim_mono", foreground=FG_DIM, font=mono)
+        self._text.tag_configure("review_count", foreground=FG_TEXT, font=mono)
+        self._text.tag_configure("review_zero", foreground=FG_DIM, font=mono)
 
     def refresh(self, *, show_status: bool = True) -> None:
         if self._refreshing:
@@ -545,13 +569,13 @@ class PrsTab:
         thread = threading.Thread(target=self._do_refresh, daemon=True)
         thread.start()
 
-    def _schedule_auto_refresh(self) -> None:
+    def _schedule_auto_refresh(self, delay_ms: int | None = None) -> None:
         def _tick() -> None:
             self.refresh(show_status=False)
             self._schedule_auto_refresh()
 
         self._auto_refresh_id = self._root.after(
-            self._auto_refresh_ms,
+            self._auto_refresh_ms if delay_ms is None else delay_ms,
             _tick,
         )
 
@@ -580,7 +604,16 @@ class PrsTab:
             review_meta = _fetch_review_meta(review)
             incoming_cr = _fetch_incoming_change_requests(my)
             all_prs = review + my
-            queued = _fetch_queued_prs(all_prs)
+            queued, diffstat = _fetch_pr_details(all_prs)
+            self._save_cache(
+                review,
+                my,
+                review_meta,
+                queued,
+                incoming_cr,
+                requested_urls,
+                diffstat,
+            )
             self._schedule(
                 self._on_data_loaded,
                 review,
@@ -589,6 +622,7 @@ class PrsTab:
                 queued,
                 incoming_cr,
                 requested_urls,
+                diffstat,
             )
         except Exception:
             logger.exception("PR refresh failed")
@@ -618,6 +652,7 @@ class PrsTab:
         queued_urls: set[str],
         incoming_cr_counts: dict[str, int],
         requested_urls: set[str],
+        diffstat: dict[str, tuple[int, int]],
     ) -> None:
         self._refreshing = False
         self._refresh_btn.configure(fg=FG_TEXT)
@@ -630,6 +665,7 @@ class PrsTab:
         self._queued_urls = queued_urls
         self._incoming_cr_counts = incoming_cr_counts
         self._requested_urls = requested_urls
+        self._diffstat = diffstat
         self._update_label_list()
         self._apply_label_stars()
         self._render()
@@ -653,12 +689,29 @@ class PrsTab:
         self._text.configure(state=tk.NORMAL)
         self._text.delete("1.0", tk.END)
         self._row_widgets.clear()
+        self._compute_columns()
 
         self._render_section("Review Requested", self._review_prs, is_review=True)
         self._render_section("My PRs", self._my_prs)
 
         self._text.configure(state=tk.DISABLED)
         self._update_status()
+
+    def _compute_columns(self) -> None:
+        """Widest value per numeric column, so rows line up."""
+        all_prs = self._review_prs + self._my_prs
+        counts = [len(f"({m[0]})") for m in self._review_meta.values()]
+        counts += [len(f"({n})") for n in self._incoming_cr_counts.values()]
+        self._col_count = max(counts, default=0)
+        self._col_comments = max(
+            (len(f"[{p.get('comments', 0)}]") for p in all_prs), default=0
+        )
+        self._col_add = max(
+            (len(f"+{a}") for a, _ in self._diffstat.values()), default=0
+        )
+        self._col_del = max(
+            (len(f"-{d}") for _, d in self._diffstat.values()), default=0
+        )
 
     def _update_label_list(self) -> None:
         all_prs = self._review_prs + self._my_prs
@@ -811,6 +864,7 @@ class PrsTab:
             self._text,
             text="★" if is_priority else "☆",
             command=_make_toggle_priority,
+            width=2,
             bg=BG_OUTPUT,
             fg=COLOR_NOTIFICATION_BELL if is_priority else FG_DIM,
             font=self._font_body,
@@ -832,6 +886,7 @@ class PrsTab:
                 self._text,
                 text="+",
                 command=_make_restore,
+                width=2,
                 bg=BG_OUTPUT,
                 fg=COLOR_DECLINED,
                 font=self._font_body,
@@ -851,6 +906,7 @@ class PrsTab:
                 self._text,
                 text="×",
                 command=_make_dismiss,
+                width=2,
                 bg=BG_OUTPUT,
                 fg=FG_DIM,
                 font=self._font_body,
@@ -863,20 +919,32 @@ class PrsTab:
             )
         self._text.window_create(tk.END, window=btn)
 
+        # Review PRs carry my change-request count, my PRs carry the
+        # incoming one — never both, so they share a column.
         meta = self._review_meta.get(url)
-        if meta is not None:
-            cr_count = meta[0]
-            tag = "review_count" if cr_count > 0 else "review_zero"
-            self._text.insert(tk.END, f" ({cr_count})", tag)
-
-        incoming_cr = self._incoming_cr_counts.get(url)
-        if incoming_cr is not None:
-            tag = "review_count" if incoming_cr > 0 else "review_zero"
-            self._text.insert(tk.END, f" ({incoming_cr})", tag)
+        cr_count = meta[0] if meta is not None else self._incoming_cr_counts.get(url)
+        cr_text = "" if cr_count is None else f"({cr_count})"
+        cr_tag = "review_count" if cr_count else "review_zero"
+        self._text.insert(tk.END, " " + cr_text.ljust(self._col_count), cr_tag)
 
         comment_count = pr.get("comments", 0)
         comment_tag = "review_count" if comment_count > 0 else "review_zero"
-        self._text.insert(tk.END, f" [{comment_count}]", comment_tag)
+        self._text.insert(
+            tk.END,
+            " " + f"[{comment_count}]".ljust(self._col_comments),
+            comment_tag,
+        )
+
+        stat = self._diffstat.get(url)
+        if stat is not None:
+            self._text.insert(tk.END, " (", "dim_mono")
+            self._text.insert(tk.END, f"+{stat[0]}".rjust(self._col_add), "diff_add")
+            self._text.insert(tk.END, "/", "dim_mono")
+            self._text.insert(tk.END, f"-{stat[1]}".ljust(self._col_del), "diff_del")
+            self._text.insert(tk.END, ")", "dim_mono")
+        else:
+            pad = self._col_add + self._col_del + 4
+            self._text.insert(tk.END, " " * pad, "dim_mono")
 
         pr_text = f" {repo}  #{number} {title}"
         if draft:
@@ -943,6 +1011,55 @@ class PrsTab:
             atomic_write_json(path, sorted(self._dismissed))
         except OSError:
             pass
+
+    def _save_cache(
+        self,
+        review_prs: list[dict[str, Any]],
+        my_prs: list[dict[str, Any]],
+        review_meta: dict[str, tuple[int, bool]],
+        queued_urls: set[str],
+        incoming_cr_counts: dict[str, int],
+        requested_urls: set[str],
+        diffstat: dict[str, tuple[int, int]],
+    ) -> None:
+        """Cache the last good fetch so a restart has something to show."""
+        try:
+            atomic_write_json(
+                self._state_path / "prs_cache.json",
+                {
+                    "review_prs": review_prs,
+                    "my_prs": my_prs,
+                    "review_meta": {k: list(v) for k, v in review_meta.items()},
+                    "queued_urls": sorted(queued_urls),
+                    "incoming_cr_counts": incoming_cr_counts,
+                    "requested_urls": sorted(requested_urls),
+                    "diffstat": {k: list(v) for k, v in diffstat.items()},
+                },
+            )
+        except (OSError, TypeError, ValueError):
+            logger.warning("PR cache write failed", exc_info=True)
+
+    def _load_cache(self) -> int | None:
+        """Render the cached fetch. Returns its age in ms, None if unusable."""
+        path = self._state_path / "prs_cache.json"
+        try:
+            age_s = time.time() - path.stat().st_mtime
+            with open(path) as f:
+                data = json.load(f)
+            self._on_data_loaded(
+                data["review_prs"],
+                data["my_prs"],
+                {k: (v[0], bool(v[1])) for k, v in data["review_meta"].items()},
+                set(data["queued_urls"]),
+                data["incoming_cr_counts"],
+                set(data["requested_urls"]),
+                {k: (v[0], v[1]) for k, v in data["diffstat"].items()},
+            )
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, IndexError):
+            return None
+        # ponytail: clock skew or a future mtime reads as stale, which just
+        # means a refresh now.
+        return max(0, int(age_s * 1000))
 
     def _toggle_priority(self, url: str) -> None:
         if url in self._priority:
