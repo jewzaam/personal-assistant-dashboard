@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 import threading
 import time
 import tkinter as tk
@@ -38,6 +39,16 @@ from personal_assistant_dashboard.utils import atomic_write_json, run_cmd
 logger = logging.getLogger(__name__)
 
 ScheduleFn = Callable[..., None]
+
+# Opens the PR in an editor. Its own wrapper, resolved from PATH.
+SCODE_BINARY = "scode"
+SCODE_LABEL = "[scode]"
+# --profile is required when scode would create a new sandbox. Public repos
+# get the personal profile, private repos the work one. When visibility is
+# unknown we pick work: putting private code in a personal-profile sandbox
+# is the failure that matters, an unnecessary work profile is not.
+SCODE_PROFILE_PUBLIC = "personal"
+SCODE_PROFILE_PRIVATE = "work"
 
 
 def _age_str(iso_date: str) -> str:
@@ -192,13 +203,17 @@ def _fetch_incoming_change_requests(
 
 def _fetch_pr_details(
     prs: list[dict[str, Any]],
-) -> tuple[set[str], dict[str, tuple[int, int]]]:
-    """Merge-queue membership and diff size per PR.
+) -> tuple[set[str], dict[str, tuple[int, int]], dict[str, bool]]:
+    """Merge-queue membership, diff size per PR, and repo visibility.
 
-    Returns (queued_urls, {url: (additions, deletions)}).
+    Returns (queued_urls, {url: (additions, deletions)}, {repo: is_private}).
 
     One GraphQL query per repo using aliases to batch PR lookups.
     Avoids paginating all open PRs — queries only the PRs we have.
+
+    Visibility rides along on this query rather than costing its own call:
+    [scode] needs it to pick a sandbox profile, and doing it here keeps the
+    click instant and working from cache.
     """
     # Group by repo
     by_repo: dict[str, list[dict[str, Any]]] = {}
@@ -209,6 +224,7 @@ def _fetch_pr_details(
 
     queued: set[str] = set()
     diffstat: dict[str, tuple[int, int]] = {}
+    repo_private: dict[str, bool] = {}
     for repo, repo_prs in by_repo.items():
         parts = repo.split("/")
         if len(parts) != 2:
@@ -227,7 +243,7 @@ def _fetch_pr_details(
             )
         if not fragments:
             continue
-        body = " ".join(fragments)
+        body = "isPrivate " + " ".join(fragments)
         query = '{ repository(owner: "%s", name: "%s")' " { %s } }" % (
             owner,
             name,
@@ -242,6 +258,8 @@ def _fetch_pr_details(
         try:
             data = json.loads(result.stdout)
             repo_data = data.get("data", {}).get("repository", {})
+            if isinstance(repo_data.get("isPrivate"), bool):
+                repo_private[repo] = repo_data["isPrivate"]
             for i, pr in enumerate(repo_prs):
                 node = repo_data.get(f"pr{i}")
                 url = pr.get("html_url", "")
@@ -256,7 +274,7 @@ def _fetch_pr_details(
                     )
         except (json.JSONDecodeError, AttributeError):
             continue
-    return queued, diffstat
+    return queued, diffstat, repo_private
 
 
 def _label_starred_urls(
@@ -306,6 +324,7 @@ class PrsTab:
         self._requested_urls: set[str] = set()
         self._queued_urls: set[str] = set()
         self._diffstat: dict[str, tuple[int, int]] = {}
+        self._repo_private: dict[str, bool] = {}
         self._col_count = 0
         self._col_comments = 0
         self._col_add = 0
@@ -604,7 +623,7 @@ class PrsTab:
             review_meta = _fetch_review_meta(review)
             incoming_cr = _fetch_incoming_change_requests(my)
             all_prs = review + my
-            queued, diffstat = _fetch_pr_details(all_prs)
+            queued, diffstat, repo_private = _fetch_pr_details(all_prs)
             self._save_cache(
                 review,
                 my,
@@ -613,6 +632,7 @@ class PrsTab:
                 incoming_cr,
                 requested_urls,
                 diffstat,
+                repo_private,
             )
             self._schedule(
                 self._on_data_loaded,
@@ -623,6 +643,7 @@ class PrsTab:
                 incoming_cr,
                 requested_urls,
                 diffstat,
+                repo_private,
             )
         except Exception:
             logger.exception("PR refresh failed")
@@ -653,6 +674,7 @@ class PrsTab:
         incoming_cr_counts: dict[str, int],
         requested_urls: set[str],
         diffstat: dict[str, tuple[int, int]],
+        repo_private: dict[str, bool],
     ) -> None:
         self._refreshing = False
         self._refresh_btn.configure(fg=FG_TEXT)
@@ -666,6 +688,7 @@ class PrsTab:
         self._incoming_cr_counts = incoming_cr_counts
         self._requested_urls = requested_urls
         self._diffstat = diffstat
+        self._repo_private = repo_private
         self._update_label_list()
         self._apply_label_stars()
         self._render()
@@ -946,6 +969,15 @@ class PrsTab:
             pad = self._col_add + self._col_del + 4
             self._text.insert(tk.END, " " * pad, "dim_mono")
 
+        if is_dismissed:
+            fg = COLOR_DECLINED
+        elif draft or is_queued:
+            fg = FG_DIM
+        else:
+            fg = COLOR_LINK
+
+        self._insert_scode(pr, url, repo, fg)
+
         pr_text = f" {repo}  #{number} {title}"
         if draft:
             pr_text = f" {repo}  [draft] #{number} {title}"
@@ -953,13 +985,6 @@ class PrsTab:
             pr_text = f" {repo}  [queued] #{number} {title}"
         link_tag = f"link_{id(pr)}"
         self._text.insert(tk.END, pr_text, link_tag)
-
-        if is_dismissed:
-            fg = COLOR_DECLINED
-        elif draft or is_queued:
-            fg = FG_DIM
-        else:
-            fg = COLOR_LINK
         self._text.tag_configure(link_tag, foreground=fg)
 
         def _open_pr(e: Any, u: str = url) -> None:
@@ -979,6 +1004,62 @@ class PrsTab:
 
         self._text.insert(tk.END, "\n")
         self._row_widgets[url] = btn
+
+    def _insert_scode(self, pr: dict[str, Any], url: str, repo: str, fg: str) -> None:
+        """Insert the clickable [scode] action, left of the PR link.
+
+        Carries the row's link color: dim would read as inert, and this is
+        as clickable as the link beside it.
+        """
+        tag = f"scode_{id(pr)}"
+        self._text.insert(tk.END, f" {SCODE_LABEL}", tag)
+        self._text.tag_configure(tag, foreground=fg)
+
+        def _run(_event: Any, u: str = url, r: str = repo) -> None:
+            self._run_scode(u, r)
+
+        self._text.tag_bind(tag, "<Button-1>", _run)
+        self._text.tag_bind(
+            tag,
+            "<Enter>",
+            lambda e: self._text.configure(cursor="hand2"),
+        )
+        self._text.tag_bind(
+            tag,
+            "<Leave>",
+            lambda e: self._text.configure(cursor="arrow"),
+        )
+
+    def _scode_profile(self, repo: str) -> str:
+        """Sandbox profile for a repo: personal when public, work when not."""
+        private = self._repo_private.get(repo)
+        if private is None:
+            self._log(
+                f"[PRs] {repo} visibility unknown,"
+                f" using --profile {SCODE_PROFILE_PRIVATE}",
+                "warning",
+            )
+            return SCODE_PROFILE_PRIVATE
+        return SCODE_PROFILE_PRIVATE if private else SCODE_PROFILE_PUBLIC
+
+    def _run_scode(self, url: str, repo: str) -> None:
+        """Launch `scode --profile <p> <pr url>` and return — it opens an
+        editor, so this never waits on it the way run_cmd() would."""
+        profile = self._scode_profile(repo)
+        argv = [SCODE_BINARY, "--profile", profile, url]
+        try:
+            subprocess.Popen(
+                argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            # Most likely PATH: the dashboard starts from an XDG autostart
+            # .desktop, which does not get a login shell's PATH.
+            logger.exception("scode launch failed")
+            self._log(f"[PRs] {SCODE_BINARY} failed to launch: {exc}", "error")
+            return
+        self._log(f"[PRs] {' '.join(argv)}", "info")
 
     def _dismiss_pr(self, url: str) -> None:
         self._dismissed.add(url)
@@ -1021,6 +1102,7 @@ class PrsTab:
         incoming_cr_counts: dict[str, int],
         requested_urls: set[str],
         diffstat: dict[str, tuple[int, int]],
+        repo_private: dict[str, bool],
     ) -> None:
         """Cache the last good fetch so a restart has something to show."""
         try:
@@ -1034,6 +1116,7 @@ class PrsTab:
                     "incoming_cr_counts": incoming_cr_counts,
                     "requested_urls": sorted(requested_urls),
                     "diffstat": {k: list(v) for k, v in diffstat.items()},
+                    "repo_private": repo_private,
                 },
             )
         except (OSError, TypeError, ValueError):
@@ -1054,6 +1137,7 @@ class PrsTab:
                 data["incoming_cr_counts"],
                 set(data["requested_urls"]),
                 {k: (v[0], v[1]) for k, v in data["diffstat"].items()},
+                data["repo_private"],
             )
         except (OSError, json.JSONDecodeError, KeyError, TypeError, IndexError):
             return None
