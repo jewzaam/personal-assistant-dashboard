@@ -32,6 +32,7 @@ def test_parses_diffstat_and_queue():
     payload = {
         "data": {
             "repository": {
+                "isPrivate": True,
                 "pr0": {
                     "number": 1,
                     "additions": 12,
@@ -51,23 +52,25 @@ def test_parses_diffstat_and_queue():
         "personal_assistant_dashboard.prs_tab.run_cmd",
         return_value=_result(payload),
     ):
-        queued, diffstat = _fetch_pr_details(PRS)
+        queued, diffstat, private = _fetch_pr_details(PRS)
     assert queued == {"https://github.com/org/repo/pull/1"}
     assert diffstat == {
         "https://github.com/org/repo/pull/1": (12, 3),
         "https://github.com/org/repo/pull/2": (0, 40),
     }
+    assert private == {"org/repo": True}
 
 
 def test_missing_node_yields_no_entry():
-    payload = {"data": {"repository": {"pr0": None, "pr1": None}}}
+    payload = {"data": {"repository": {"isPrivate": False, "pr0": None, "pr1": None}}}
     with patch(
         "personal_assistant_dashboard.prs_tab.run_cmd",
         return_value=_result(payload),
     ):
-        queued, diffstat = _fetch_pr_details(PRS)
+        queued, diffstat, private = _fetch_pr_details(PRS)
     assert queued == set()
     assert diffstat == {}
+    assert private == {"org/repo": False}
 
 
 def test_query_failure_yields_empty():
@@ -75,6 +78,31 @@ def test_query_failure_yields_empty():
         "personal_assistant_dashboard.prs_tab.run_cmd",
         return_value=_result({}, returncode=1),
     ):
-        queued, diffstat = _fetch_pr_details(PRS)
+        queued, diffstat, private = _fetch_pr_details(PRS)
     assert queued == set()
     assert diffstat == {}
+    assert private == {}
+
+
+def test_visibility_absent_when_graphql_omits_it():
+    """An unknown repo must stay unknown, not default to public."""
+    payload = {"data": {"repository": {"pr0": None, "pr1": None}}}
+    with patch(
+        "personal_assistant_dashboard.prs_tab.run_cmd",
+        return_value=_result(payload),
+    ):
+        _queued, _diffstat, private = _fetch_pr_details(PRS)
+    assert private == {}
+
+
+def test_query_asks_for_visibility():
+    """isPrivate has to actually be in the query, or it is never returned."""
+    seen = {}
+
+    def _capture(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return _result({"data": {"repository": {}}})
+
+    with patch("personal_assistant_dashboard.prs_tab.run_cmd", _capture):
+        _fetch_pr_details(PRS)
+    assert "isPrivate" in " ".join(seen["cmd"])

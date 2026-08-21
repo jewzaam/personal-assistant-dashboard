@@ -34,6 +34,7 @@ def _save(tab: PrsTab) -> None:
         {"u2": 1},
         {"u1"},
         {"u1": (10, 4), "u2": (0, 7)},
+        {"org/pub": False, "org/priv": True},
     )
 
 
@@ -42,7 +43,16 @@ def test_roundtrip(tmp_path: Path):
     _save(tab)
     age_ms = tab._load_cache()
     assert age_ms is not None and age_ms >= 0
-    review, my, meta, queued, incoming, requested, diffstat = tab._loaded[0]
+    (
+        review,
+        my,
+        meta,
+        queued,
+        incoming,
+        requested,
+        diffstat,
+        repo_private,
+    ) = tab._loaded[0]
     assert review == REVIEW_PRS
     assert my == MY_PRS
     assert meta == {"u1": (2, True)}
@@ -50,6 +60,7 @@ def test_roundtrip(tmp_path: Path):
     assert incoming == {"u2": 1}
     assert requested == {"u1"}
     assert diffstat == {"u1": (10, 4), "u2": (0, 7)}
+    assert repo_private == {"org/pub": False, "org/priv": True}
 
 
 def test_age_reflects_mtime(tmp_path: Path):
