@@ -42,7 +42,12 @@ ScheduleFn = Callable[..., None]
 
 # Opens the PR in an editor. Its own wrapper, resolved from PATH.
 SCODE_BINARY = "scode"
-SCODE_LABEL = "[scode]"
+SCODE_LABEL = "scode"
+# Only the word is clickable; the brackets are dim punctuation. The word's
+# color says which profile a click would use, matching the shell prompt:
+# PS1 BROWN (0;33) for work/private, LIGHT_PURPLE (1;35) for personal/public.
+SCODE_FG_PRIVATE = COLOR_WARNING
+SCODE_FG_PUBLIC = COLOR_SECTION_HEADER
 # --profile is required when scode would create a new sandbox. Public repos
 # get the personal profile, private repos the work one. When visibility is
 # unknown we pick work: putting private code in a personal-profile sandbox
@@ -570,6 +575,7 @@ class PrsTab:
         self._text.tag_configure("dim_mono", foreground=FG_DIM, font=mono)
         self._text.tag_configure("review_count", foreground=FG_TEXT, font=mono)
         self._text.tag_configure("review_zero", foreground=FG_DIM, font=mono)
+        self._text.tag_configure("scode_bracket", foreground=FG_DIM)
 
     def refresh(self, *, show_status: bool = True) -> None:
         if self._refreshing:
@@ -976,7 +982,7 @@ class PrsTab:
         else:
             fg = COLOR_LINK
 
-        self._insert_scode(pr, url, repo, fg)
+        self._insert_scode(pr, url, repo)
 
         pr_text = f" {repo}  #{number} {title}"
         if draft:
@@ -1005,15 +1011,18 @@ class PrsTab:
         self._text.insert(tk.END, "\n")
         self._row_widgets[url] = btn
 
-    def _insert_scode(self, pr: dict[str, Any], url: str, repo: str, fg: str) -> None:
-        """Insert the clickable [scode] action, left of the PR link.
+    def _insert_scode(self, pr: dict[str, Any], url: str, repo: str) -> None:
+        """Insert the [scode] action, left of the PR link.
 
-        Carries the row's link color: dim would read as inert, and this is
-        as clickable as the link beside it.
+        The brackets are dim and inert; only the word is a hit target. Its
+        color tracks repo visibility rather than the row's link color, so it
+        shows which profile a click would use.
         """
         tag = f"scode_{id(pr)}"
-        self._text.insert(tk.END, f" {SCODE_LABEL}", tag)
-        self._text.tag_configure(tag, foreground=fg)
+        self._text.insert(tk.END, " [", "scode_bracket")
+        self._text.insert(tk.END, SCODE_LABEL, tag)
+        self._text.insert(tk.END, "]", "scode_bracket")
+        self._text.tag_configure(tag, foreground=self._scode_fg(repo))
 
         def _run(_event: Any, u: str = url, r: str = repo) -> None:
             self._run_scode(u, r)
@@ -1029,6 +1038,13 @@ class PrsTab:
             "<Leave>",
             lambda e: self._text.configure(cursor="arrow"),
         )
+
+    def _scode_fg(self, repo: str) -> str:
+        """Color for the scode word. Unknown reads as private, matching the
+        profile a click would actually pick."""
+        if self._repo_private.get(repo) is False:
+            return SCODE_FG_PUBLIC
+        return SCODE_FG_PRIVATE
 
     def _scode_profile(self, repo: str) -> str:
         """Sandbox profile for a repo: personal when public, work when not."""
