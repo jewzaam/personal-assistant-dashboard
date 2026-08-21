@@ -314,6 +314,22 @@ class Dashboard:
             notify_tab=self._notify_tab,
         )
 
+        # Tasks tab — actions.md from the PA workspace
+        tasks_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
+        self._notebook.add(tasks_frame, text="Tasks")
+
+        from personal_assistant_dashboard.tasks_tab import TasksTab
+
+        self._tasks_tab = TasksTab(
+            tasks_frame,
+            self._root,
+            tasks_path=WORK_DIR / "actions.md",
+            state_path=self._state_path,
+            notebook=self._notebook,
+            console_log=self.log_console,
+            notify_tab=self._notify_tab,
+        )
+
         # Console tab — background activity log
         console_frame = tk.Frame(self._notebook, bg=BG_WINDOW)
         self._notebook.add(console_frame, text="Console")
@@ -1275,6 +1291,11 @@ class Dashboard:
                     logger.info("Quick-captured to %s: %s", filename, item)
                     if hasattr(self, "_chat_tab"):
                         self._chat_tab._append_system(f"Captured to {filename}")
+                    # The Tasks poll is slow; a task the user just typed
+                    # should land now. alert=False — belling them for their
+                    # own capture is noise.
+                    if filename == "actions.md" and hasattr(self, "_tasks_tab"):
+                        self._tasks_tab.refresh(alert=False)
                 except OSError:
                     logger.exception("Failed to write quick capture to %s", target)
                     if hasattr(self, "_chat_tab"):
@@ -1412,13 +1433,12 @@ class Dashboard:
             return
         tab_id = self._notebook.select()
         tab_text = self._notebook.tab(tab_id, "text")
-        # Use base name for bell clearing (dynamic text like "PR:5", "Calendar ⏱2m")
+        # Use base name for bell clearing (dynamic text like "PR:5", "Calendar ⏱2m").
+        # Count-suffixed tabs ("PR:5", "Tasks:3") belled under the part before ":".
         if str(tab_id) == self._cal_tab_id:
             bell_name = "Calendar"
-        elif tab_text.startswith("PR"):
-            bell_name = "PR"
         else:
-            bell_name = tab_text
+            bell_name = tab_text.split(":", 1)[0]
         self._clear_tab_bell(bell_name)
         if str(tab_id) == self._cal_tab_id:
             self._render_current_day()

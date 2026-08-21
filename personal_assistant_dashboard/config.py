@@ -114,7 +114,7 @@ PAD = 8
 # Timing intervals (milliseconds)
 TOOLTIP_DELAY_MS = 800
 REFRESH_INTERVAL_MS = 60_000  # calendar auto-refresh
-FILE_WATCH_INTERVAL_MS = 10_000  # HTML file polling
+TASKS_POLL_INTERVAL_MS = 5 * 60 * 1000  # actions.md mtime polling
 MENU_TIMEOUT_MS = 5000  # context menu auto-dismiss
 POLL_INTERVAL_MS = 200  # event queue polling
 AUTO_SHADE_POLL_MS = 2000  # auto-shade pointer check

@@ -66,6 +66,7 @@ omit = [
     "personal_assistant_dashboard/prs_tab.py",
     "personal_assistant_dashboard/settings_tab.py",
     "personal_assistant_dashboard/startup.py",
+    "personal_assistant_dashboard/tasks_tab.py",
 ]
 
 [tool.coverage.report]
