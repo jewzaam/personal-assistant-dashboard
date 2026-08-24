@@ -13,10 +13,12 @@ from personal_assistant_dashboard.tasks_md import (
     move_task,
     parse_section_date,
     parse_tasks,
+    section_label,
     section_title,
     set_done,
     shift_business_day,
     split_links,
+    TODAY_MARKER,
 )
 
 SAMPLE = (
@@ -291,3 +293,78 @@ def test_move_keeps_the_file_reparseable(tmp_path: Path) -> None:
         "Ship the thing",
     ], texts
     assert "\n\n\n" not in path.read_text(encoding="utf-8")
+
+
+# --- stale (TODAY) markers ----------------------------------------------
+
+MONDAY = date(2026, 8, 24)
+STALE = (
+    "## Overdue\n"
+    "\n"
+    "- [ ] Chase invoice\n"
+    "\n"
+    "## 2026-08-21 (TODAY)\n"
+    "\n"
+    "- [ ] Prep the sync\n"
+)
+
+
+def test_section_label_recomputes_the_marker_from_the_date() -> None:
+    # File says Friday is TODAY; it is Monday.
+    assert section_label("2026-08-21 (TODAY)", MONDAY) == "2026-08-21 (OVERDUE)"
+    assert section_label("2026-08-24", MONDAY) == "2026-08-24 (TODAY)"
+    assert section_label("2026-08-26", MONDAY) == "2026-08-26"
+    assert section_label("2026-08-21", MONDAY) == "2026-08-21 (OVERDUE)"
+
+
+def test_section_label_leaves_named_buckets_alone() -> None:
+    assert section_label("Overdue", MONDAY) == "Overdue"
+    assert section_label("Demos to watch", MONDAY) == "Demos to watch"
+    assert section_label("Unscheduled", MONDAY) == "Unscheduled"
+
+
+def test_section_label_keeps_extra_heading_words() -> None:
+    """Only the marker is recomputed; anything else the PA wrote survives."""
+    assert section_label("2026-08-26 sprint end", MONDAY) == "2026-08-26 sprint end"
+    assert (
+        section_label("2026-08-24 (TODAY) sprint end", MONDAY)
+        == "2026-08-24 sprint end (TODAY)"
+    )
+
+
+def test_bump_from_a_stale_today_section_behaves_as_overdue() -> None:
+    """A stale (TODAY) must not make its tasks look current."""
+    assert bump_target("2026-08-21 (TODAY)", -1, MONDAY) is None
+    assert bump_target("2026-08-21 (TODAY)", 1, MONDAY) == MONDAY
+
+
+def test_move_leaves_exactly_one_today_marker(tmp_path: Path) -> None:
+    """Regression: bumping to today beside a stale marker gave two (TODAY)s."""
+    path = _write(tmp_path, STALE)
+    task = parse_tasks(STALE)[0]  # Chase invoice, in Overdue
+    assert move_task(path, task, MONDAY, today=MONDAY)
+    after = path.read_text(encoding="utf-8")
+    assert after.count(TODAY_MARKER) == 1, after
+    assert "## 2026-08-21\n" in after, after
+    assert "## 2026-08-24 (TODAY)" in after, after
+
+
+def test_normalize_adds_the_marker_to_an_unmarked_today(tmp_path: Path) -> None:
+    content = "## 2026-08-21 (TODAY)\n\n- [ ] a\n\n## 2026-08-24\n\n- [ ] b\n"
+    path = _write(tmp_path, content)
+    task = parse_tasks(content)[0]
+    assert move_task(path, task, date(2026, 8, 26), today=MONDAY)
+    after = path.read_text(encoding="utf-8")
+    assert "## 2026-08-24 (TODAY)" in after, after
+    assert after.count(TODAY_MARKER) == 1, after
+
+
+def test_normalize_never_invents_a_today_section(tmp_path: Path) -> None:
+    """No section for today means nothing to mark — not a new empty heading."""
+    content = "## 2026-08-21 (TODAY)\n\n- [ ] a\n- [ ] b\n"
+    path = _write(tmp_path, content)
+    task = parse_tasks(content)[0]
+    assert move_task(path, task, date(2026, 8, 26), today=MONDAY)
+    after = path.read_text(encoding="utf-8")
+    assert TODAY_MARKER not in after, after
+    assert MONDAY.isoformat() not in after, after

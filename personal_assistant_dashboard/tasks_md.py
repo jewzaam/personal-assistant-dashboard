@@ -27,6 +27,7 @@ _BARE_URL = re.compile(r"https?://[^\s<>)\]]+")
 # dashboard runs past midnight, so every decision reads the date instead.
 _SECTION_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})\b")
 TODAY_MARKER = "(TODAY)"
+OVERDUE_MARKER = "(OVERDUE)"
 
 
 @dataclass
@@ -182,6 +183,47 @@ def bump_target(section: str, direction: int, today: date) -> date | None:
     return max(shift_business_day(current, -1), today)
 
 
+def _strip_today(title: str) -> str:
+    """Heading text without the (TODAY) marker, other words preserved."""
+    return " ".join(word for word in title.split() if word != TODAY_MARKER)
+
+
+def section_label(title: str, today: date) -> str:
+    """Display text for a heading, with the date's real status.
+
+    The PA's marker goes stale the moment actions.md outlives the day it was
+    written, so it is recomputed here rather than trusted. A named bucket
+    passes through untouched.
+    """
+    day = parse_section_date(title)
+    if day is None:
+        return title
+    base = _strip_today(title)
+    if day == today:
+        return f"{base} {TODAY_MARKER}"
+    if day < today:
+        return f"{base} {OVERDUE_MARKER}"
+    return base
+
+
+def normalize_today_markers(lines: list[str], today: date) -> None:
+    """Move the (TODAY) marker onto the section that is actually today.
+
+    Without this, bumping a task to today while a stale marker sits on an
+    older date leaves the file with two (TODAY) headings. Never creates a
+    section: an empty one for today would be clutter, and move_task already
+    writes it when a task actually lands there.
+    """
+    for index, level, title in _headings(lines):
+        day = parse_section_date(title)
+        if day is None:
+            continue
+        base = _strip_today(title)
+        want = f"{base} {TODAY_MARKER}" if day == today else base
+        if want != title:
+            lines[index] = f"{'#' * level} {want}"
+
+
 def section_title(day: date, today: date) -> str:
     """Heading text for a date section, marking today's the way the PA does."""
     stamp = day.isoformat()
@@ -209,6 +251,7 @@ def move_task(path: Path, task: Task, target: date, *, today: date) -> bool:
     _collapse_blanks_at(lines, task.line)
     _drop_empty_date_section(lines, task.section)
     _insert_block(lines, block, target, today)
+    normalize_today_markers(lines, today)
 
     out = "\n".join(lines)
     if raw.endswith("\n"):
