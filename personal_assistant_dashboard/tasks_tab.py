@@ -33,6 +33,7 @@ from personal_assistant_dashboard.tasks_md import (
     first_url,
     move_task,
     parse_tasks,
+    section_label,
     set_done,
     split_links,
 )
@@ -258,8 +259,9 @@ class TasksTab:
                 "section",
                 COLOR_SECTION_HEADER,
             )
+            label = section_label(name, today)
             self._insert_hit(
-                f" {name} ({len(tasks)})", toggle, "section", COLOR_SECTION_HEADER
+                f" {label} ({len(tasks)})", toggle, "section", COLOR_SECTION_HEADER
             )
             self._text.insert(tk.END, "\n")
             if not collapsed:
