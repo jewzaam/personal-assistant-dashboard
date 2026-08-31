@@ -3060,6 +3060,10 @@ class Dashboard:
                     text.insert(tk.END, email)
                     if a.get("self"):
                         text.insert(tk.END, " (you)", "you_marker")
+                    if organizer and email == organizer:
+                        text.insert(tk.END, " (owner)", "you_marker")
+                    if a.get("optional"):
+                        text.insert(tk.END, " (optional)", "dim")
                     text.insert(tk.END, "\n")
 
         text.configure(state=tk.DISABLED)
