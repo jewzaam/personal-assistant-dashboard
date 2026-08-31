@@ -2111,12 +2111,22 @@ class Dashboard:
             self._root.after_cancel(self._menu_timer)
             self._menu_timer = None
         if self._context_menu:
+            # Only claim focus back if the menu still holds it. The 5s timer can
+            # fire long after the user moved to another tab or the chat box.
+            menu_had_focus = (
+                self._window is not None
+                and self._window.focus_get() is self._context_menu
+            )
             try:
                 self._context_menu.unpost()
                 self._context_menu.destroy()
             except tk.TclError:
                 pass
             self._context_menu = None
+            # Destroying the menu ourselves skips Tk's unpost, which is what
+            # normally hands focus back.
+            if menu_had_focus and self._canvas:
+                self._canvas.focus_set()
 
     def _bind_menu_key(self, key: str, command: Any) -> None:
         """Bind a keyboard shortcut active only while the context menu is shown."""
@@ -2240,6 +2250,11 @@ class Dashboard:
             else:
                 menu.add_command(label=dismiss_label, command=_toggle_dismiss)
 
+        # tk_popup hands keyboard focus to the menu and restores it on unpost to
+        # whatever holds focus now. If that is nothing, focus stays on the menu
+        # window, and once the menu is gone every key binding is dead until the
+        # user clicks the window again.
+        self._canvas.focus_set()
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -3940,7 +3955,8 @@ class Dashboard:
             start_t = format_event_time(event["start"])
             attendee_info = _attendee_count(event)
 
-            label = f"{start_t} {summary}"
+            opt = "[opt] " if _user_is_optional(event) else ""
+            label = f"{start_t} {opt}{summary}"
             if attendee_info:
                 label += f" {attendee_info}"
 
@@ -4135,6 +4151,15 @@ def _user_response_status(event: CalendarEvent) -> str:
         status: str = user_att.get("response_status", "needsAction")
         return status
     return "accepted"  # No attendees = likely user's own event
+
+
+def _user_is_optional(event: CalendarEvent) -> bool:
+    """Return True if the user is an optional attendee."""
+    user_att = next(
+        (a for a in event.get("attendees", []) if a.get("self")),
+        None,
+    )
+    return bool(user_att and user_att.get("optional"))
 
 
 def _is_solo_event(event: CalendarEvent) -> bool:
