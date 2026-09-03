@@ -10,6 +10,7 @@ import re
 import subprocess
 import tempfile
 from datetime import datetime
+from html import unescape
 from pathlib import Path
 from typing import IO, Any, Callable
 
@@ -111,6 +112,64 @@ def get_meeting_url(event: CalendarEvent) -> str | None:
             if match:
                 return match.group(0)
     return None
+
+
+# Workspace hangs its own artifacts off the invite alongside the agenda, and
+# people rarely clean up recurring events, so stale ones accumulate. Matching
+# is on the title only -- attachments carry nothing else. Recordings need no
+# marker: they are Drive files, not Docs, so the URL check already drops them.
+# Transcripts need none either -- Gemini writes the transcript and the notes
+# into one document, so "notes by gemini" is the whole exclusion list.
+# Markers are only ever tested against titles that already say "notes", which
+# is why "chat" and a bare "gemini" are deliberately absent -- both would cost
+# a real agenda ("Chat notes", a doc named for a Gemini project) to catch an
+# artifact that an extra browser tab would have made obvious anyway.
+# ponytail: best effort, add a marker here when a new artifact shows up.
+_NOT_AGENDA_MARKERS = ("notes by gemini",)
+
+_GDOC_URL_PATTERN = re.compile(r"https://docs\.google\.com/document/[^\s\"'<>]+")
+
+_ANCHOR_PATTERN = re.compile(
+    r'<a\s+[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _link_text(html: str) -> str:
+    """Strip tags and unescape entities from an anchor's inner HTML."""
+    return unescape(re.sub(r"<[^>]+>", "", html)).strip()
+
+
+def get_notes_doc_urls(event: CalendarEvent) -> list[str]:
+    """Return Google Docs URLs for agenda/notes docs linked from an invite.
+
+    Looks at attachments and at links in the description, keeps Google Docs
+    whose title says "notes", and drops the Gemini notes, transcripts and
+    recordings that ride along on the same event. Order is preserved and
+    duplicates removed.
+    """
+    candidates: list[tuple[str, str]] = [
+        (att.get("title", ""), att.get("url", ""))
+        for att in event.get("attachments", [])
+    ]
+    description = event.get("description", "") or ""
+    candidates += [
+        (_link_text(label), unescape(url))
+        for url, label in _ANCHOR_PATTERN.findall(description)
+    ]
+
+    urls: list[str] = []
+    for title, url in candidates:
+        if not _GDOC_URL_PATTERN.match(url):
+            continue
+        name = title.lower()
+        if "notes" not in name:
+            continue
+        if any(marker in name for marker in _NOT_AGENDA_MARKERS):
+            continue
+        if url not in urls:
+            urls.append(url)
+    return urls
 
 
 # ponytail: session-level cache, refreshed on app restart
