@@ -97,6 +97,8 @@ from personal_assistant_dashboard.utils import (
     atomic_write_json,
     format_event_time,
     get_gdoc_tab_url,
+    get_meeting_url,
+    get_notes_doc_urls,
     resolve_display_name,
     run_cmd,
 )
@@ -2358,8 +2360,29 @@ class Dashboard:
         self._selected_event_tag = evt_tag
         self._show_event_details(cal_event)
 
+    def _open_event_links(self, cal_event: CalendarEvent) -> None:
+        """Open the event's notes docs and join its video conference."""
+        import webbrowser
+
+        urls: list[str] = []
+        one_on_one = _one_on_one_doc(cal_event)
+        if one_on_one:
+            urls.append(one_on_one[1])
+        urls += [u for u in get_notes_doc_urls(cal_event) if u not in urls]
+        meeting_url = get_meeting_url(cal_event)
+        if meeting_url and meeting_url not in urls:
+            urls.append(meeting_url)
+
+        summary = cal_event.get("summary", "(no title)")
+        if not urls:
+            self.log_console(f"No links to open for {summary}", "warning")
+            return
+        for url in urls:
+            webbrowser.open(url)
+        self.log_console(f"Opened {len(urls)} link(s) for {summary}", "info")
+
     def _on_double_click(self, event: Any) -> None:
-        """Quick-add event on double-click in blank area, or edit a solo event."""
+        """Open an event's links, edit a solo event, or quick-add in blank area."""
         if self._pending_click_timer:
             self._root.after_cancel(self._pending_click_timer)
             self._pending_click_timer = None
@@ -2381,6 +2404,7 @@ class Dashboard:
 
         if hit_event:
             if not _is_solo_event(hit_event):
+                self._open_event_links(hit_event)
                 return
             evt_start = _parse_hour(hit_event["start"])
             evt_end = _parse_hour(hit_event["end"])
@@ -3002,25 +3026,13 @@ class Dashboard:
             text.insert(tk.END, "\n\n")
 
         # 1:1 notes link
-        non_self = [a for a in attendees if not a.get("self")]
-        if len(non_self) == 1:
-            other = non_self[0]
-            other_email = other.get("email", "")
-            other_name = (
-                other.get("display_name", "")
-                or resolve_display_name(other_email)
-                or other_email
-            )
-            tab_url = get_gdoc_tab_url(ONE_ON_ONE_DOC_ID, other_name)
+        one_on_one = _one_on_one_doc(cal_event)
+        if one_on_one:
+            other_name, one_on_one_url, has_tab = one_on_one
             text.insert(tk.END, "Notes\n", "section")
             link_tag = f"link_1on1_{id(cal_event)}"
-            if tab_url:
-                insert_link(f"[PRIVATE] 1:1 — {other_name}", tab_url, link_tag)
-            else:
-                doc_url = (
-                    f"https://docs.google.com/document/d/" f"{ONE_ON_ONE_DOC_ID}/edit"
-                )
-                insert_link(f"[PRIVATE] 1:1 — {other_name}", doc_url, link_tag)
+            insert_link(f"[PRIVATE] 1:1 — {other_name}", one_on_one_url, link_tag)
+            if not has_tab:
                 text.insert(
                     tk.END,
                     f'  (no tab "{other_name}")',
@@ -4160,6 +4172,22 @@ def _user_is_optional(event: CalendarEvent) -> bool:
         None,
     )
     return bool(user_att and user_att.get("optional"))
+
+
+def _one_on_one_doc(event: CalendarEvent) -> tuple[str, str, bool] | None:
+    """Return (other attendee's name, notes doc URL, tab found) for a 1:1.
+
+    Returns None when the event is not a 1:1. When the shared doc has no tab
+    for that person the URL falls back to the doc itself.
+    """
+    non_self = [a for a in event.get("attendees", []) if not a.get("self")]
+    if len(non_self) != 1:
+        return None
+    email = non_self[0].get("email", "")
+    name = non_self[0].get("display_name", "") or resolve_display_name(email) or email
+    tab_url = get_gdoc_tab_url(ONE_ON_ONE_DOC_ID, name)
+    doc_url = f"https://docs.google.com/document/d/{ONE_ON_ONE_DOC_ID}/edit"
+    return name, tab_url or doc_url, bool(tab_url)
 
 
 def _is_solo_event(event: CalendarEvent) -> bool:

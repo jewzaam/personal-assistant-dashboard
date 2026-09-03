@@ -13,6 +13,7 @@ from personal_assistant_dashboard.utils import (
     filter_dismissed_missed_meetings,
     format_event_time,
     get_meeting_url,
+    get_notes_doc_urls,
     list_local_skills,
 )
 
@@ -94,6 +95,9 @@ def test_atomic_write_text_overwrites_existing(tmp_path):
     assert path.read_text() == "new"
 
 
+DOC = "https://docs.google.com/document/d/agenda123/edit"
+
+
 # -- get_meeting_url ----------------------------------------------------------
 
 
@@ -138,6 +142,82 @@ def test_get_meeting_url_location_checked_before_description():
 def test_get_meeting_url_no_link():
     event = {"summary": "Team standup", "location": "Room 42"}
     assert get_meeting_url(event) is None
+
+
+# -- get_notes_doc_urls -------------------------------------------------------
+
+
+def test_get_notes_doc_urls_attachment():
+    event = {
+        "attachments": [
+            {"title": "Weekly sync - Notes", "url": DOC},
+        ]
+    }
+    assert get_notes_doc_urls(event) == [DOC]
+
+
+def test_get_notes_doc_urls_skips_attachment_without_notes_in_title():
+    event = {"attachments": [{"title": "Q3 roadmap", "url": DOC}]}
+    assert get_notes_doc_urls(event) == []
+
+
+def test_get_notes_doc_urls_skips_gemini_notes():
+    event = {
+        "attachments": [
+            {"title": "Weekly sync - Notes", "url": DOC},
+            {
+                "title": "Weekly sync - 2026-09-01 - Notes by Gemini",
+                "url": "https://docs.google.com/document/d/gemini999/edit",
+            },
+        ]
+    }
+    assert get_notes_doc_urls(event) == [DOC]
+
+
+def test_get_notes_doc_urls_skips_recording_because_it_is_not_a_doc():
+    event = {
+        "attachments": [
+            {
+                "title": "Weekly sync Notes (2026-09-01) Recording",
+                "url": "https://drive.google.com/file/d/vid/view",
+            }
+        ]
+    }
+    assert get_notes_doc_urls(event) == []
+
+
+def test_get_notes_doc_urls_keeps_agenda_naming_chat_or_gemini():
+    chat = "https://docs.google.com/document/d/chat1/edit"
+    project = "https://docs.google.com/document/d/proj1/edit"
+    event = {
+        "attachments": [
+            {"title": "Chat notes", "url": chat},
+            {"title": "Gemini rollout - Notes", "url": project},
+        ]
+    }
+    assert get_notes_doc_urls(event) == [chat, project]
+
+
+def test_get_notes_doc_urls_from_description_anchor():
+    event = {
+        "description": (
+            '<a href="' + DOC + '">Agenda &amp; <b>Notes</b></a>'
+            '<a href="https://example.com/x">Notes elsewhere</a>'
+        )
+    }
+    assert get_notes_doc_urls(event) == [DOC]
+
+
+def test_get_notes_doc_urls_dedupes_attachment_and_description():
+    event = {
+        "attachments": [{"title": "Notes", "url": DOC}],
+        "description": '<a href="' + DOC + '">Notes</a>',
+    }
+    assert get_notes_doc_urls(event) == [DOC]
+
+
+def test_get_notes_doc_urls_empty_event():
+    assert get_notes_doc_urls({"summary": "Standup"}) == []
 
 
 def test_get_meeting_url_empty_event():
