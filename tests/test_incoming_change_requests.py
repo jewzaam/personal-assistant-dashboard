@@ -35,6 +35,7 @@ def _mock_reviews(*review_states: list[tuple[str, str]]):
                 {
                     "returncode": 0,
                     "stdout": json.dumps(reviews),
+                    "stderr": "",
                 },
             )()
         return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
