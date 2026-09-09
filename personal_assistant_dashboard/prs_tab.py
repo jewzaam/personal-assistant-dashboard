@@ -75,8 +75,40 @@ def _repo_from_url(repository_url: str) -> str:
     return repository_url
 
 
-def _fetch_prs(query: str) -> list[dict[str, Any]]:
+class _Tally:
+    """Outcome of every gh call in one refresh — drives the tab's status dot.
+
+    A rate-limited gh call returns nothing, so PRs silently vanish from the
+    list. Counting outcomes is the only way to tell "nothing to show" apart
+    from "the fetch broke".
+    """
+
+    def __init__(self) -> None:
+        self.ok = 0
+        self.fail = 0
+        self.crashed = False
+        self.errors: list[str] = []
+
+    def record(self, label: str, returncode: int, stderr: str) -> bool:
+        if returncode == 0:
+            self.ok += 1
+            return True
+        self.fail += 1
+        self.errors.append(f"{label}: {stderr.strip()[:200]}")
+        logger.warning("gh api failed: %s: %s", label, stderr.strip()[:200])
+        return False
+
+    @property
+    def status(self) -> str:
+        """Green when clean, yellow when partial, red when nothing came back."""
+        if self.crashed or (self.fail and not self.ok):
+            return "error"
+        return "warning" if self.fail else "ok"
+
+
+def _fetch_prs(query: str, tally: _Tally | None = None) -> list[dict[str, Any]]:
     """Run gh api search and return items list."""
+    tally = tally or _Tally()
     result = run_cmd(
         [
             "gh",
@@ -86,8 +118,7 @@ def _fetch_prs(query: str) -> list[dict[str, Any]]:
         ],
         timeout=120,
     )
-    if result.returncode != 0:
-        logger.warning("gh api failed: %s", result.stderr[:200])
+    if not tally.record(f"search {query}", result.returncode, result.stderr):
         return []
     # --paginate concatenates JSON objects; parse each one
     all_items: list[dict[str, Any]] = []
@@ -107,6 +138,7 @@ _DECISION_STATES = {"APPROVED", "CHANGES_REQUESTED"}
 
 def _fetch_review_meta(
     prs: list[dict[str, Any]],
+    tally: _Tally | None = None,
 ) -> dict[str, tuple[int, bool]]:
     """Per-PR review metadata for current user.
 
@@ -114,8 +146,9 @@ def _fetch_review_meta(
     the user submitted CHANGES_REQUESTED, and active_cr is whether the
     user's latest decision is CHANGES_REQUESTED.
     """
+    tally = tally or _Tally()
     user_result = run_cmd(["gh", "api", "user"], timeout=30)
-    if user_result.returncode != 0:
+    if not tally.record("user", user_result.returncode, user_result.stderr):
         return {}
     try:
         login = json.loads(user_result.stdout).get("login", "")
@@ -136,7 +169,9 @@ def _fetch_review_meta(
             ["gh", "api", "--paginate", f"/repos/{repo}/pulls/{number}/reviews"],
             timeout=30,
         )
-        if result.returncode != 0:
+        if not tally.record(
+            f"reviews {repo}#{number}", result.returncode, result.stderr
+        ):
             meta[url] = (0, False)
             continue
         try:
@@ -166,8 +201,10 @@ def _fetch_review_meta(
 
 def _fetch_incoming_change_requests(
     prs: list[dict[str, Any]],
+    tally: _Tally | None = None,
 ) -> dict[str, int]:
     """For authored PRs, count reviewers whose latest decision is CHANGES_REQUESTED."""
+    tally = tally or _Tally()
     counts: dict[str, int] = {}
     for pr in prs:
         url = pr.get("html_url", "")
@@ -179,7 +216,9 @@ def _fetch_incoming_change_requests(
             ["gh", "api", "--paginate", f"/repos/{repo}/pulls/{number}/reviews"],
             timeout=30,
         )
-        if result.returncode != 0:
+        if not tally.record(
+            f"reviews {repo}#{number}", result.returncode, result.stderr
+        ):
             continue
         try:
             reviews = json.loads(result.stdout)
@@ -208,6 +247,7 @@ def _fetch_incoming_change_requests(
 
 def _fetch_pr_details(
     prs: list[dict[str, Any]],
+    tally: _Tally | None = None,
 ) -> tuple[set[str], dict[str, tuple[int, int]], dict[str, bool]]:
     """Merge-queue membership, diff size per PR, and repo visibility.
 
@@ -220,6 +260,7 @@ def _fetch_pr_details(
     [scode] needs it to pick a sandbox profile, and doing it here keeps the
     click instant and working from cache.
     """
+    tally = tally or _Tally()
     # Group by repo
     by_repo: dict[str, list[dict[str, Any]]] = {}
     for pr in prs:
@@ -258,7 +299,7 @@ def _fetch_pr_details(
             ["gh", "api", "graphql", "-f", f"query={query}"],
             timeout=30,
         )
-        if result.returncode != 0:
+        if not tally.record(f"graphql {repo}", result.returncode, result.stderr):
             continue
         try:
             data = json.loads(result.stdout)
@@ -503,6 +544,17 @@ class PrsTab:
 
         self._label_combo.bind("<<ComboboxSelected>>", _on_label_selected)
 
+        # Refresh health, same green/yellow/red dot as the calendar tab's scope
+        # indicator. Dim until the first refresh reports.
+        self._health_dot = tk.Label(
+            top,
+            text="\u25cf",
+            bg=BG_WINDOW,
+            fg=FG_DIM,
+            font=self._font_body,
+        )
+        self._health_dot.pack(side=tk.RIGHT, padx=(0, PAD))
+
         tk.Button(
             top,
             text="Reset Dismissed",
@@ -605,16 +657,17 @@ class PrsTab:
         )
 
     def _do_refresh(self) -> None:
+        tally = _Tally()
         try:
             # review-requested:@me misses PRs after submitting a review
             # (GitHub removes user from requested reviewers). Query both
             # and merge to get the full reviewer universe.
             requested = _fetch_prs(
-                "is:pr+review-requested:@me+state:open+archived:false"
+                "is:pr+review-requested:@me+state:open+archived:false", tally
             )
             requested_urls = {p.get("html_url", "") for p in requested}
             reviewed = _fetch_prs(
-                "is:pr+reviewed-by:@me+state:open+archived:false+-author:@me"
+                "is:pr+reviewed-by:@me+state:open+archived:false+-author:@me", tally
             )
             seen = set(requested_urls)
             for p in reviewed:
@@ -624,12 +677,12 @@ class PrsTab:
                     seen.add(url)
             review = requested
             my = _fetch_prs(
-                "is:pr+author:@me+state:open+archived:false+sort:updated-desc"
+                "is:pr+author:@me+state:open+archived:false+sort:updated-desc", tally
             )
-            review_meta = _fetch_review_meta(review)
-            incoming_cr = _fetch_incoming_change_requests(my)
+            review_meta = _fetch_review_meta(review, tally)
+            incoming_cr = _fetch_incoming_change_requests(my, tally)
             all_prs = review + my
-            queued, diffstat, repo_private = _fetch_pr_details(all_prs)
+            queued, diffstat, repo_private = _fetch_pr_details(all_prs, tally)
             self._save_cache(
                 review,
                 my,
@@ -651,13 +704,41 @@ class PrsTab:
                 diffstat,
                 repo_private,
             )
+            self._schedule(self._apply_health, tally)
         except Exception:
             logger.exception("PR refresh failed")
             self._refreshing = False
             self._schedule(self._refresh_btn.configure, {"fg": FG_TEXT})
+            tally.crashed = True
+            self._schedule(self._apply_health, tally)
             self._schedule(
                 self._log, "PRs tab: refresh failed, see logs for details", "error"
             )
+
+    def _apply_health(self, tally: _Tally) -> None:
+        """Colour the status dot from the refresh's gh call outcomes.
+
+        Partial failure is the case worth showing: a rate-limited call returns
+        an empty result, so the list quietly loses PRs with nothing else to
+        say so.
+        """
+        status = tally.status
+        self._health_dot.configure(
+            fg={
+                "ok": COLOR_SUCCESS,
+                "warning": COLOR_WARNING,
+                "error": COLOR_ERROR,
+            }[status]
+        )
+        if status == "ok" or tally.crashed:
+            return
+        detail = tally.errors[0] if tally.errors else "no detail"
+        total = tally.ok + tally.fail
+        self._log(
+            f"[PRs] {tally.fail}/{total} gh calls failed,"
+            f" list may be incomplete — {detail}",
+            "error" if status == "error" else "warning",
+        )
 
     def _log(
         self,

@@ -140,6 +140,7 @@ class Dashboard:
         self._on_quit_cb = on_quit or root.quit
         self._window: tk.Toplevel | None = None
         self._canvas: tk.Canvas | None = None
+        self._render_sig: tuple[Any, ...] | None = None
         self._canvas_container: tk.Frame | None = None
         self._scrollbar: tk.Scrollbar | None = None
         self._calendar_frame: tk.Frame | None = None
@@ -3844,9 +3845,6 @@ class Dashboard:
         if not self._canvas or not self._canvas.winfo_exists():
             return
 
-        saved_yview = self._canvas.yview()[0] if preserve_scroll else None
-        self._canvas.delete("all")
-
         date_str = self._current_date.strftime("%Y-%m-%d")
         show_declined = self._show_declined_var.get()
         day_events = _filter_events_for_date(
@@ -3867,8 +3865,40 @@ class Dashboard:
             self._s(CANVAS_MIN_HEIGHT),
         )
 
+        # Before the delete, not after: update_idletasks() flushes Tk's pending
+        # canvas repaint, so running it on an emptied canvas paints a blank
+        # frame — that is the 60-second flicker.
         self._canvas.update_idletasks()
         canvas_width = max(self._canvas.winfo_width(), self._s(CANVAS_MIN_WIDTH))
+
+        # The auto-refresh fires every minute whether or not anything moved.
+        # Same inputs draw the same picture, so leave the canvas alone.
+        # canvas_height carries earliest/latest and the DPI scale; now_key is
+        # empty off-today, which is what lets a past or future day sit still.
+        # Gated on preserve_scroll because that flag marks the background
+        # refresh — its one caller. Every other call is a user action that
+        # wants the redraw: _go_today re-centres on now, a font-scale change
+        # moves nothing this signature can see.
+        now_key = ""
+        if is_today and earliest <= now.hour + now.minute / 60 <= latest:
+            now_key = now.strftime("%H:%M")
+        signature = (
+            date_str,
+            show_declined,
+            canvas_width,
+            canvas_height,
+            day_events,
+            sorted(conflict_ids),
+            sorted(missed_ids),
+            sorted(self._dismissed_conflicts),
+            now_key,
+        )
+        if preserve_scroll and signature == self._render_sig:
+            return
+        self._render_sig = signature
+
+        saved_yview = self._canvas.yview()[0] if preserve_scroll else None
+        self._canvas.delete("all")
 
         self._canvas.configure(scrollregion=(0, 0, canvas_width, canvas_height))
 
