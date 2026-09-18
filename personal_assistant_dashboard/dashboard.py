@@ -1483,6 +1483,8 @@ class Dashboard:
         for event in self._all_events:
             if event.get("all_day"):
                 continue
+            if is_task_event(event):
+                continue
             if event.get("event_type") in ("workingLocation", "outOfOffice"):
                 continue
             if _user_response_status(event) == "declined":
