@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import yaml
 
@@ -14,7 +14,6 @@ from personal_assistant_dashboard.meeting_notes import (
     _slugify,
     create_notes_file,
     find_notes_file,
-    invoke_prep_skill,
     notes_dir,
     open_notes_file,
 )
@@ -179,21 +178,3 @@ class TestOpenNotesFile:
         ) as mock_popen:
             open_notes_file(filepath)
             mock_popen.assert_called_once_with(["xdg-open", str(filepath)])
-
-
-class TestInvokePrepSkill:
-    def test_sends_skill_command_with_relative_path(self, tmp_path: Path) -> None:
-        filepath = tmp_path / "notes" / "2026-04-23-1400-infra-sync.md"
-        mock_send = MagicMock()
-        invoke_prep_skill(filepath, mock_send, workspace=tmp_path)
-        mock_send.assert_called_once_with(
-            "/meeting-prep notes/2026-04-23-1400-infra-sync.md"
-        )
-
-    def test_uses_full_path_when_not_relative(self, tmp_path: Path) -> None:
-        filepath = Path("/some/other/path/notes.md")
-        mock_send = MagicMock()
-        invoke_prep_skill(filepath, mock_send, workspace=tmp_path)
-        mock_send.assert_called_once()
-        msg = mock_send.call_args[0][0]
-        assert "/meeting-prep /some/other/path/notes.md" == msg

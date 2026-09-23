@@ -4,15 +4,15 @@
 
 [![Test](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/test.yml/badge.svg)](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/test.yml) [![Coverage](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/coverage.yml/badge.svg)](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/coverage.yml) [![Lint](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/lint.yml/badge.svg)](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/lint.yml) [![Type Check](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/typecheck.yml/badge.svg)](https://github.com/jewzaam/claude-personal-assistant/actions/workflows/typecheck.yml)
 
-CLI-first personal task management with voice input, powered by Claude.
+CLI-first personal task management with voice input.
 
 ## Overview
 
 Personal Assistant provides a dashboard interface for managing context-aware tasks and monitoring:
 
-- **Assistant** — Voice-driven task input and Claude-powered analysis
+- **Assistant** — Voice-driven task input
 - **Actions** — Prioritized task list with context from tracked work
-- **Chat** — Direct conversation with Claude
+- **Chat** — Local commands only (`help`, `plan:`, `action:`, `!<cmd>`); Claude chat removed
 - **Calendar** — Google Calendar integration with change tracking and 1:1 meeting notes
 - **PRs** — GitHub pull requests requiring review or authored by user, with dismiss/restore and filtering
 - **Transcripts** — Historical voice transcription archive
