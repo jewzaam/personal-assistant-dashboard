@@ -41,8 +41,6 @@ BORDER_COLOR = "#3c3c3c"
 # Colors — buttons
 COLOR_BUTTON = "#4e4e4e"
 COLOR_BUTTON_ACTIVE = "#5e5e5e"
-COLOR_STOP_BUTTON = "#6b3a3a"
-COLOR_STOP_BUTTON_ACTIVE = "#7a4444"
 
 # Colors — semantic (calendar, meetings, events)
 COLOR_CONFLICT = "#E5A035"  # orange — conflict indicator
@@ -78,7 +76,6 @@ COLOR_SUCCESS = "#98c379"
 COLOR_PENDING = "#e5c07b"
 COLOR_FAILED = "#B85450"
 COLOR_ACTIVE = "#61afef"
-COLOR_ASSISTANT = "#98c379"
 COLOR_ERROR = "#e06c75"
 COLOR_WARNING = "#e5c07b"
 COLOR_PROGRESS = "#61afef"
@@ -123,14 +120,7 @@ DEBOUNCE_RESIZE_MS = 150  # canvas resize debounce
 GEOMETRY_CAPTURE_DELAY_MS = 500  # delay before capturing initial window geometry
 COUNTDOWN_HORIZON_H = 8  # show countdown if next meeting within this many hours
 
-# Chat model — default, overridable via config.json "chat_model" key
-_DEFAULT_CHAT_MODEL = "claude-opus-4-7[1m]"
-
 # Subprocess/connection timeouts (seconds)
-TIMEOUT_SDK_CONNECT_S = 30  # SDK client initial connection
-TIMEOUT_SDK_DISCONNECT_S = 5  # SDK client disconnect grace period
-TIMEOUT_THREAD_JOIN_S = 10  # background thread join
-TIMEOUT_SUBPROCESS_S = 300  # claude -p (large context, slow)
 TIMEOUT_GWS_S = 30  # GWS calendar list (paged API)
 TIMEOUT_GWS_SHORT_S = 15  # GWS single API calls
 TIMEOUT_GIT_S = 10  # local git operations
@@ -169,13 +159,7 @@ def _resolve_work_dir() -> Path:
     return Path.cwd()
 
 
-def _resolve_chat_model() -> str:
-    """Read chat_model from the config file, falling back to default."""
-    return str(_load_pa_config().get("chat_model") or _DEFAULT_CHAT_MODEL)
-
-
 WORK_DIR = _resolve_work_dir()
-CHAT_MODEL = _resolve_chat_model()
 ONE_ON_ONE_DOC_ID: str = str(
     _load_pa_config().get(
         "one_on_one_doc_id", "1L1urJl7-2WffrwtSLPKOIsC5PPiarK9OcoJRg6NiQiE"

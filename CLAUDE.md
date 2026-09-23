@@ -1,6 +1,6 @@
 # personal-assistant-dashboard
 
-Tkinter GUI dashboard for personal task management and situational awareness. Integrates Google Calendar, Claude (Agent SDK + CLI), voice transcription, and a git-backed state store.
+Tkinter GUI dashboard for personal task management and situational awareness. Integrates Google Calendar, voice transcription, and a git-backed state store. No Claude integration — the Chat tab runs local commands only.
 
 **Package:** `personal_assistant_dashboard`
 **CLI entry point:** `pa` (e.g., `pa gui`, `pa collect calendar`, `pa analyze calendar`)
@@ -36,8 +36,7 @@ Coverage target: 80% on non-UI code. UI modules (`dashboard.py`, `*_tab.py`, `co
 ### UI modules (not unit tested)
 
 - **`dashboard.py`** — main Tkinter window, tab management, window geometry
-- **`chat_tab.py`** — Chat tab with Claude Agent SDK streaming
-- **`chat_client.py`** — `ClaudeSDKClient` wrapper in background asyncio thread
+- **`chat_tab.py`** — Chat tab. Built-in commands (`help`, `plan:`, `action:`, `!<cmd>`) are handled in `dashboard.py`; anything else gets a "no longer supported" notice
 - **`prs_tab.py`** — PRs tab showing open PRs where review is requested and PRs authored by user. Data from GitHub Search API via `gh api`. Has dismiss/restore, sort toggle, draft filter, dismissed filter. Auto-refreshes every 5 min (silent — no "Refreshing..." text; manual ↻ click still shows it). Refresh guard (`_refreshing` flag) prevents overlapping threads; skip counter escalates from `warning` (1–6 skips) to `error` (7+) in Console. Detects new review requests via URL set diff between refreshes — triggers tab bell + per-PR `warning` in Console with clickable link. ↻ button turns `COLOR_PROGRESS` while refresh is in flight. A status dot at the right end of the toolbar reports the refresh itself, mirroring the calendar tab's scope indicator: green when every `gh` call returned, yellow when some failed, red when none did or the refresh raised. `_Tally` counts the outcomes — a rate-limited `gh` call returns an empty result, so PRs drop out of the list with nothing else to say so, and the count is what separates "nothing to show" from "the fetch broke". Non-green also writes one summary line to Console with the first error; per-call detail goes to the log. Row order is age, star, dismiss, change-request count, comments, diffstat, `[scode]`, then the PR link. `[scode]` launches `scode --profile <personal|work> <pr url>` via `subprocess.Popen` — fire-and-forget, because it opens an editor and `run_cmd()` would block the UI thread waiting on it. Only the word is a hit target — the surrounding brackets are `FG_DIM` and carry no binding. The word's color encodes visibility rather than row state, so it shows the profile a click would use: `COLOR_SECTION_HEADER` purple for public, `COLOR_WARNING` yellow for private, approximating the user's PS1 `LIGHT_PURPLE` (1;35) and `BROWN` (0;33). **`--profile` is required when scode would create a new sandbox**: public repos get `personal`, private get `work`. Visibility comes from `isPrivate` on the repo node of the GraphQL query `_fetch_pr_details()` already issues, so it costs no extra call and the click needs no network. A repo missing from `repo_private` is treated as private — putting private code in a personal-profile sandbox is the failure that matters, an unnecessary `work` profile is not — and the fallback warns in Console. A missing `scode` reports to Console: the dashboard starts from an XDG autostart `.desktop`, which does not inherit a login shell's PATH, so a binary that works in a terminal can still be absent here
 - **`tasks_tab.py`** — Tasks tab rendering `actions.md`. Row controls are `× ▲ ▼`: mark done, bump one business day earlier, bump one later. `Done:N` filter shows completed tasks, `+` restores. Headings collapse on click, remembered in `collapsed_sections.json`. Markdown links and bare URLs render clickable. **Row controls are tagged text, not embedded `tk.Button`s** — a button is 24px tall on a 20px line, so a row of them dwarfs the task text, and a long actions.md would carry one widget per control. Polls the file's mtime every `TASKS_POLL_INTERVAL_MS` (5 min) — no thread, the read is local and small; also re-renders when the date rolls over, because arrow targets are computed at render and this dashboard runs overnight. `action:` quick-capture calls `refresh(alert=False)` directly so a task typed into the dashboard does not wait out the poll. New open tasks trigger tab bell + per-task `warning` in Console, matching the PRs tab; the seen-key set persists to `seen_tasks.json` so a restart doesn't re-alert
 - **`settings_tab.py`** — settings editor with git checkpoint
@@ -45,9 +44,7 @@ Coverage target: 80% on non-UI code. UI modules (`dashboard.py`, `*_tab.py`, `co
 
 ### Other modules
 
-- **`claude_client.py`** — wraps `claude -p` subprocess for one-shot prompts
 - **`voice_input.py`** — mic recording via `local-transcribe`
-- **`usage_poller.py`** — Anthropic 5-hour quota polling with caching/backoff
 - **`gws_auth.py`** — GWS CLI OAuth scope checking
 - **`startup.py`** — XDG autostart `.desktop` file management
 
@@ -72,10 +69,7 @@ Tracking config lives in the state repo: `<state_repo>/config/tracking.yaml`.
 ## Integrations
 
 - **Google Calendar** — via GWS CLI binary (`gws`). Auth: `~/.claude/.credentials.json`
-- **Claude Agent SDK** — `claude-agent-sdk>=0.1.50` for Chat tab
-- **Claude CLI** — `claude -p` subprocess for one-shot prompts
 - **Voice** — `local-transcribe` library (faster-whisper, CUDA optional via `[cuda]` extras)
-- **Anthropic usage API** — OAuth token from `~/.claude/.credentials.json`
 
 ## Project history
 

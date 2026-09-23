@@ -11,7 +11,6 @@ import logging
 import re
 import subprocess
 import unicodedata
-from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -133,22 +132,3 @@ def create_notes_file(
 def open_notes_file(filepath: Path) -> None:
     """Open a notes file in the system default editor via xdg-open."""
     subprocess.Popen(["xdg-open", str(filepath)])
-
-
-def invoke_prep_skill(
-    filepath: Path,
-    send_message: Callable[[str], None],
-    workspace: Path = WORK_DIR,
-) -> None:
-    """Invoke the meeting-prep skill via the Chat tab's SDK agent.
-
-    Sends ``/meeting-prep <relative-path>`` through the provided
-    send_message callback (typically ChatTab.send_message).
-    """
-    try:
-        rel_path = filepath.relative_to(workspace)
-    except ValueError:
-        rel_path = filepath
-
-    logger.info("Invoking meeting-prep skill: %s", rel_path)
-    send_message(f"/meeting-prep {rel_path.as_posix()}")
