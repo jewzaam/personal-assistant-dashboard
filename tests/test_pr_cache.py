@@ -32,6 +32,7 @@ def _save(tab: PrsTab) -> None:
         {"u1": (2, True)},
         {"u2"},
         {"u2": 1},
+        {"u1", "u3"},
         {"u1"},
         {"u1": (10, 4), "u2": (0, 7)},
         {"org/pub": False, "org/priv": True},
@@ -50,6 +51,7 @@ def test_roundtrip(tmp_path: Path):
         queued,
         incoming,
         requested,
+        direct,
         diffstat,
         repo_private,
     ) = tab._loaded[0]
@@ -58,9 +60,22 @@ def test_roundtrip(tmp_path: Path):
     assert meta == {"u1": (2, True)}
     assert queued == {"u2"}
     assert incoming == {"u2": 1}
-    assert requested == {"u1"}
+    assert requested == {"u1", "u3"}
+    assert direct == {"u1"}
     assert diffstat == {"u1": (10, 4), "u2": (0, 7)}
     assert repo_private == {"org/pub": False, "org/priv": True}
+
+
+def test_cache_without_direct_urls_treats_all_as_direct(tmp_path: Path):
+    tab = _tab(tmp_path)
+    _save(tab)
+    path = tmp_path / "prs_cache.json"
+    data = json.loads(path.read_text())
+    del data["direct_urls"]
+    path.write_text(json.dumps(data))
+    assert tab._load_cache() is not None
+    requested, direct = tab._loaded[0][5:7]
+    assert direct == requested == {"u1", "u3"}
 
 
 def test_age_reflects_mtime(tmp_path: Path):

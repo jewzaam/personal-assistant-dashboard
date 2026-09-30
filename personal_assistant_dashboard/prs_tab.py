@@ -368,6 +368,7 @@ class PrsTab:
         self._review_meta: dict[str, tuple[int, bool]] = {}
         self._incoming_cr_counts: dict[str, int] = {}
         self._requested_urls: set[str] = set()
+        self._direct_urls: set[str] = set()
         self._queued_urls: set[str] = set()
         self._diffstat: dict[str, tuple[int, int]] = {}
         self._repo_private: dict[str, bool] = {}
@@ -555,19 +556,6 @@ class PrsTab:
         )
         self._health_dot.pack(side=tk.RIGHT, padx=(0, PAD))
 
-        tk.Button(
-            top,
-            text="Reset Dismissed",
-            command=self._reset_dismissed,
-            bg=COLOR_BUTTON,
-            fg=FG_TEXT,
-            font=self._font_body,
-            relief=tk.FLAT,
-            activebackground=COLOR_BUTTON_ACTIVE,
-            cursor="hand2",
-            padx=6,
-        ).pack(side=tk.RIGHT, padx=(0, PAD))
-
         self._status_var = tk.StringVar(value="Loading...")
         tk.Label(
             top,
@@ -666,6 +654,15 @@ class PrsTab:
                 "is:pr+review-requested:@me+state:open+archived:false", tally
             )
             requested_urls = {p.get("html_url", "") for p in requested}
+            # review-requested also matches team requests; this one is
+            # direct-only, so the difference is the team-only set.
+            direct_urls = {
+                p.get("html_url", "")
+                for p in _fetch_prs(
+                    "is:pr+user-review-requested:@me+state:open+archived:false",
+                    tally,
+                )
+            }
             reviewed = _fetch_prs(
                 "is:pr+reviewed-by:@me+state:open+archived:false+-author:@me", tally
             )
@@ -690,6 +687,7 @@ class PrsTab:
                 queued,
                 incoming_cr,
                 requested_urls,
+                direct_urls,
                 diffstat,
                 repo_private,
             )
@@ -701,6 +699,7 @@ class PrsTab:
                 queued,
                 incoming_cr,
                 requested_urls,
+                direct_urls,
                 diffstat,
                 repo_private,
             )
@@ -760,20 +759,23 @@ class PrsTab:
         queued_urls: set[str],
         incoming_cr_counts: dict[str, int],
         requested_urls: set[str],
+        direct_urls: set[str],
         diffstat: dict[str, tuple[int, int]],
         repo_private: dict[str, bool],
     ) -> None:
         self._refreshing = False
         self._refresh_btn.configure(fg=FG_TEXT)
         self._skipped_refreshes = 0
-        old_urls = self._requested_urls
-        new_review_requests = requested_urls - old_urls
+        # Only direct requests alert; team requests show but stay quiet.
+        old_urls = self._direct_urls
+        new_review_requests = direct_urls - old_urls
         self._review_prs = review_prs
         self._my_prs = my_prs
         self._review_meta = review_meta
         self._queued_urls = queued_urls
         self._incoming_cr_counts = incoming_cr_counts
         self._requested_urls = requested_urls
+        self._direct_urls = direct_urls
         self._diffstat = diffstat
         self._repo_private = repo_private
         self._update_label_list()
@@ -801,7 +803,17 @@ class PrsTab:
         self._row_widgets.clear()
         self._compute_columns()
 
-        self._render_section("Review Requested", self._review_prs, is_review=True)
+        team_urls = self._requested_urls - self._direct_urls
+        self._render_section(
+            "Review Requested: Me",
+            [p for p in self._review_prs if p.get("html_url", "") not in team_urls],
+            is_review=True,
+        )
+        self._render_section(
+            "Review Requested: Team",
+            [p for p in self._review_prs if p.get("html_url", "") in team_urls],
+            is_review=True,
+        )
         self._render_section("My PRs", self._my_prs)
 
         self._text.configure(state=tk.DISABLED)
@@ -860,7 +872,7 @@ class PrsTab:
         review_actionable = sum(
             1
             for p in self._review_prs
-            if p.get("html_url", "") in self._requested_urls
+            if p.get("html_url", "") in self._direct_urls
             and p.get("html_url", "") not in self._dismissed
             and not p.get("draft", False)
             and p.get("html_url", "") not in self._queued_urls
@@ -1168,11 +1180,6 @@ class PrsTab:
         self._save_dismissed()
         self._render()
 
-    def _reset_dismissed(self) -> None:
-        self._dismissed.clear()
-        self._save_dismissed()
-        self._render()
-
     def _load_dismissed(self) -> None:
         path = self._state_path / "dismissed_prs.json"
         if not path.exists():
@@ -1198,6 +1205,7 @@ class PrsTab:
         queued_urls: set[str],
         incoming_cr_counts: dict[str, int],
         requested_urls: set[str],
+        direct_urls: set[str],
         diffstat: dict[str, tuple[int, int]],
         repo_private: dict[str, bool],
     ) -> None:
@@ -1212,6 +1220,7 @@ class PrsTab:
                     "queued_urls": sorted(queued_urls),
                     "incoming_cr_counts": incoming_cr_counts,
                     "requested_urls": sorted(requested_urls),
+                    "direct_urls": sorted(direct_urls),
                     "diffstat": {k: list(v) for k, v in diffstat.items()},
                     "repo_private": repo_private,
                 },
@@ -1233,6 +1242,9 @@ class PrsTab:
                 set(data["queued_urls"]),
                 data["incoming_cr_counts"],
                 set(data["requested_urls"]),
+                # Caches from before the split lack it; treating every
+                # request as direct renders as before until the next refresh.
+                set(data.get("direct_urls", data["requested_urls"])),
                 {k: (v[0], v[1]) for k, v in data["diffstat"].items()},
                 data["repo_private"],
             )
