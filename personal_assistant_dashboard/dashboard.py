@@ -1979,7 +1979,7 @@ class Dashboard:
         cy = self._canvas.canvasy(event.y)
         hit = self._canvas.find_overlapping(cx - 1, cy - 1, cx + 1, cy + 1)
         evt_tag = None
-        for item_id in hit:
+        for item_id in reversed(hit):  # topmost (visible) item wins
             tags = self._canvas.gettags(item_id)
             evt_tag = next(
                 (
@@ -2113,7 +2113,7 @@ class Dashboard:
         cy = self._canvas.canvasy(event.y)
         hit = self._canvas.find_overlapping(cx - 1, cy - 1, cx + 1, cy + 1)
         evt_tag = None
-        for item_id in hit:
+        for item_id in reversed(hit):  # topmost (visible) item wins
             tags = self._canvas.gettags(item_id)
             evt_tag = next(
                 (
@@ -2299,7 +2299,7 @@ class Dashboard:
         cy = self._canvas.canvasy(event.y)
         hit = self._canvas.find_overlapping(cx - 1, cy - 1, cx + 1, cy + 1)
         evt_tag = None
-        for item_id in hit:
+        for item_id in reversed(hit):  # topmost (visible) item wins
             tags = self._canvas.gettags(item_id)
             evt_tag = next(
                 (
@@ -2391,7 +2391,7 @@ class Dashboard:
         cy = self._canvas.canvasy(event.y)
         hit = self._canvas.find_overlapping(cx - 1, cy - 1, cx + 1, cy + 1)
         hit_event: CalendarEvent | None = None
-        for item_id in hit:
+        for item_id in reversed(hit):  # topmost (visible) item wins
             tags = self._canvas.gettags(item_id)
             for t in tags:
                 if t.startswith("evt_") and t in self._canvas_event_map:
@@ -4274,6 +4274,18 @@ def _event_column_priority(event: CalendarEvent, dismissed: set[str]) -> int:
     return 35 + dismissed_offset
 
 
+def _layout_interval(event: CalendarEvent) -> tuple[float, float]:
+    """Start/end hours, with zero-length events stretched to one minute.
+
+    A zero-length interval never overlaps anything, so it would share a
+    column with an event at the same start and be drawn under it.
+    """
+    start_h = _parse_hour(event["start"])
+    # ponytail: 1 min, not the drawn MIN_BLOCK_HEIGHT; that would split
+    # back-to-back 15-min meetings into columns
+    return start_h, max(_parse_hour(event["end"]), start_h + 1 / 60)
+
+
 def _layout_events(
     events: list[CalendarEvent],
     earliest_hour: int,
@@ -4296,8 +4308,7 @@ def _layout_events(
     cluster_end = 0.0
 
     for event in timed:
-        start_h = _parse_hour(event["start"])
-        end_h = _parse_hour(event["end"])
+        start_h, end_h = _layout_interval(event)
 
         if current_cluster and start_h < cluster_end:
             current_cluster.append(event)
@@ -4313,7 +4324,7 @@ def _layout_events(
 
     positioned: list[dict[str, Any]] = []
     for cluster in clusters:
-        intervals = [(_parse_hour(e["start"]), _parse_hour(e["end"])) for e in cluster]
+        intervals = [_layout_interval(e) for e in cluster]
         # Pass 1: optimal column count via start-time greedy
         sorted_ends: list[float] = []
         for s, _e in sorted(intervals):
