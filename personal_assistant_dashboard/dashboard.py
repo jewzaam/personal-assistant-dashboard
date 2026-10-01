@@ -27,6 +27,8 @@ from personal_assistant_dashboard.config import (
     CANVAS_EXTRA_HEIGHT,
     CANVAS_MIN_HEIGHT,
     CANVAS_MIN_WIDTH,
+    CHROME_BINARY,
+    CHROME_PROFILE,
     COLOR_ACCEPTED,
     COLOR_ALERT,
     COLOR_BORDER_TENTATIVE,
@@ -2326,20 +2328,55 @@ class Dashboard:
         import webbrowser
 
         urls: list[str] = []
+        meeting_url = get_meeting_url(cal_event)
+        if meeting_url:
+            urls.append(meeting_url)
         one_on_one = _one_on_one_doc(cal_event)
-        if one_on_one:
+        if one_on_one and one_on_one[1] not in urls:
             urls.append(one_on_one[1])
         urls += [u for u in get_notes_doc_urls(cal_event) if u not in urls]
-        meeting_url = get_meeting_url(cal_event)
-        if meeting_url and meeting_url not in urls:
-            urls.append(meeting_url)
 
         summary = cal_event.get("summary", "(no title)")
+        logger.info(
+            "OPEN_EVENT_LINKS: %r urls=%s chrome_profile=%r",
+            summary,
+            urls,
+            CHROME_PROFILE,
+        )
         if not urls:
             self.log_console(f"No links to open for {summary}", "warning")
             return
-        for url in urls:
-            webbrowser.open(url)
+        # One new window, every link a tab in it. webbrowser.open sends each
+        # URL to whichever Chrome window was last focused, any profile,
+        # possibly on another workspace. Without --profile-directory Chrome
+        # uses its last-used profile.
+        argv = [CHROME_BINARY, "--new-window", *urls]
+        if CHROME_PROFILE:
+            argv.insert(1, f"--profile-directory={CHROME_PROFILE}")
+        logger.info("OPEN_EVENT_LINKS: launching %s", argv)
+        try:
+            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.log_console(f"[Calendar] {' '.join(argv)}", "info")
+        except OSError as exc:
+            # Most likely PATH: XDG autostart does not get a login shell's.
+            logger.exception("OPEN_EVENT_LINKS: chrome launch failed")
+            self.log_console(
+                f"[Calendar] {CHROME_BINARY} failed to launch: {exc},"
+                " falling back to webbrowser.open",
+                "error",
+            )
+            try:
+                browser_name = webbrowser.get().name
+            except webbrowser.Error:
+                browser_name = "<none found>"
+            for url in urls:
+                opened = webbrowser.open(url)
+                logger.info(
+                    "OPEN_EVENT_LINKS: webbrowser.open(%r) via %r -> %s",
+                    url,
+                    browser_name,
+                    opened,
+                )
         self.log_console(f"Opened {len(urls)} link(s) for {summary}", "info")
 
     def _on_double_click(self, event: Any) -> None:
@@ -2363,6 +2400,11 @@ class Dashboard:
             if hit_event:
                 break
 
+        logger.info(
+            "DOUBLE_CLICK: event=%r solo=%s",
+            hit_event.get("summary") if hit_event else None,
+            _is_solo_event(hit_event) if hit_event else None,
+        )
         if hit_event:
             if not _is_solo_event(hit_event):
                 self._open_event_links(hit_event)
