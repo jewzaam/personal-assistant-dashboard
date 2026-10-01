@@ -181,6 +181,7 @@ class Dashboard:
         self._detail_panel_width: int = DETAIL_PANEL_WIDTH
         self._notebook: ttk.Notebook | None = None
         self._cal_refresh_timer: str | None = None
+        self._cal_refreshing = False
         self._shaded = False
         self._voice_input: Any = None
         self._unshaded_geometry: str = ""
@@ -671,10 +672,10 @@ class Dashboard:
         top_bar = tk.Frame(cal_tab, bg=BG_WINDOW)
         top_bar.pack(fill=tk.X, pady=(0, self._s(PAD)))
 
-        tk.Button(
+        self._cal_refresh_btn = tk.Button(
             top_bar,
             text="↻",
-            command=self._start_cal_refresh,
+            command=self.refresh,
             bg=COLOR_BUTTON,
             fg=FG_TEXT,
             font=self._font_body,
@@ -682,7 +683,8 @@ class Dashboard:
             activebackground=COLOR_BUTTON_ACTIVE,
             cursor="hand2",
             padx=4,
-        ).pack(side=tk.LEFT, padx=(self._s(PAD), 4))
+        )
+        self._cal_refresh_btn.pack(side=tk.LEFT, padx=(self._s(PAD), 4))
 
         # Date navigation: < date >
         nav = tk.Frame(top_bar, bg=BG_WINDOW)
@@ -3515,14 +3517,31 @@ class Dashboard:
         self._date_var.set(f"{prefix}{self._current_date.strftime('%A, %B %d')}")
 
     def refresh(self) -> None:
+        if self._cal_refreshing:
+            return  # previous collection still running
+        self._cal_refreshing = True
+        self._cal_refresh_btn.configure(fg=COLOR_PROGRESS)
         self._dismiss_context_menu()
         self._status_var.set("Collecting...")
         thread = threading.Thread(
-            target=self._do_refresh,
+            target=self._do_guarded_refresh,
             daemon=True,
             name="dashboard-refresh",
         )
         thread.start()
+
+    def _do_guarded_refresh(self) -> None:
+        # ponytail: post-edit refreshes call _do_refresh directly and bypass
+        # this guard, as before — they already run on their own thread. Route
+        # them through refresh() if the blue indicator matters there.
+        try:
+            self._do_refresh()
+        finally:
+            self._schedule(self._end_cal_refresh)
+
+    def _end_cal_refresh(self) -> None:
+        self._cal_refreshing = False
+        self._cal_refresh_btn.configure(fg=FG_TEXT)
 
     def _do_refresh(self) -> None:
         try:
