@@ -133,3 +133,14 @@ def test_realistic_day():
 
 def test_empty_events():
     assert _layout_events([], 8) == []
+
+
+def test_zero_duration_event_gets_own_column():
+    """0-min event at same start as another must not be hidden under it."""
+    for events in (
+        [_ev(9, 10, eid="a"), _ev(9, 9, eid="b")],
+        [_ev(9, 9, eid="b"), _ev(9, 10, eid="a")],
+    ):
+        result = _layout_events(events, 8)
+        assert {p["col"] for p in result} == {0, 1}
+        assert all(p["num_cols"] == 2 for p in result)
