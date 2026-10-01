@@ -61,6 +61,7 @@ Dashboard reads workspace path from `~/.claude/personal-assistant-config.json`:
 
 - **`pa_workspace`** — dashboard working directory
 - **`ONE_ON_ONE_DOC_ID`** — Google Doc ID for 1:1 meeting notes. Used to link 1:1 meetings to Google Docs tabs. Loaded in `config.py`
+- **`chrome_profile`** — optional Chrome profile directory name (`"Profile 1"`, from `chrome://version`). Double-clicking a meeting always opens all its links as tabs in one new `google-chrome --new-window`; this key pins the profile, unset uses Chrome's last-used profile. `webbrowser.open` only if `google-chrome` fails to launch
 
 The dashboard runs from the `pa_workspace` directory, not from this repo. `PYTHONPATH` is set to this repo's root at launch (see `make/run.mk`).
 

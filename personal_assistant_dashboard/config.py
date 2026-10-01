@@ -165,6 +165,11 @@ ONE_ON_ONE_DOC_ID: str = str(
         "one_on_one_doc_id", "1L1urJl7-2WffrwtSLPKOIsC5PPiarK9OcoJRg6NiQiE"
     )
 )
+# Chrome profile *directory* name ("Default", "Profile 1"), not the display
+# name — see chrome://version "Profile Path". Empty means Chrome's last-used
+# profile.
+CHROME_PROFILE: str = str(_load_pa_config().get("chrome_profile", ""))
 
 # Commands
 GWS_BINARY = "gws"
+CHROME_BINARY = "google-chrome"
