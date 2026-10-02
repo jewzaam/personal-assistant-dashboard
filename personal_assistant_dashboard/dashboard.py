@@ -2165,17 +2165,18 @@ class Dashboard:
 
         for label, status_val, shortcut in [
             ("Accept", "accepted", "a"),
-            ("Maybe", "tentative", "m"),
+            ("Maybe (S)", "tentative", "s"),
             ("Decline", "declined", "d"),
         ]:
+            underline = label.lower().index(shortcut)
             if response == status_val:
-                menu.add_command(label=label, state=tk.DISABLED, underline=0)
+                menu.add_command(label=label, state=tk.DISABLED, underline=underline)
             else:
 
                 def _make_cmd(s: str = status_val) -> None:
                     menu_action(s)
 
-                menu.add_command(label=label, command=_make_cmd, underline=0)
+                menu.add_command(label=label, command=_make_cmd, underline=underline)
                 shortcuts.append((shortcut, _make_cmd))
 
         if is_organizer:
@@ -2184,7 +2185,13 @@ class Dashboard:
                 self._dismiss_context_menu()
                 self._delete_event(cal_event)
 
-            menu.add_command(label="DELETE \U0001f4a5", command=_delete_cmd)
+            delete_label = "DELETE (X)"
+            menu.add_command(
+                label=delete_label,
+                command=_delete_cmd,
+                underline=delete_label.index("X"),
+            )
+            shortcuts.append(("x", _delete_cmd))
 
         # Dismiss — for conflicts or active (missed) meetings
         event_id = cal_event.get("id", "")
