@@ -211,6 +211,42 @@ class Dashboard:
             return
         self._build()
 
+    def show_tab(self, index: int | None) -> None:
+        """Raise the window and select tab *index* (0-based). Used by `pa show`."""
+        if not self._window or not self._window.winfo_exists():
+            return
+        # deiconify only: lift() here is what Mutter turns into an "is ready"
+        # notification. window-calls raises it; lift is the fallback.
+        self._window.deiconify()
+        title = self._window.title()
+        threading.Thread(
+            target=self._activate_or_lift, args=(title,), daemon=True, name="activate"
+        ).start()
+        if index is None or not self._notebook:
+            return
+        tabs = self._notebook.tabs()
+        if not 0 <= index < len(tabs):
+            self.log_console(
+                f"pa show: no tab {index} (valid: 0-{len(tabs) - 1})", "warning"
+            )
+            return
+        # While shaded, _on_tab_changed unshades to the newly selected tab.
+        self._notebook.select(index)
+
+    def _activate_or_lift(self, title: str) -> None:
+        """Background thread: window-calls Activate, else lift on the Tk thread."""
+        from personal_assistant_dashboard.ipc import activate_window
+
+        if activate_window(title):
+            return
+        logger.info("pa show: window-calls unavailable, falling back to lift()")
+        self._schedule(self._lift_and_focus)
+
+    def _lift_and_focus(self) -> None:
+        if self._window and self._window.winfo_exists():
+            self._window.lift()
+            self._window.focus_force()
+
     def hide(self) -> None:
         if self._window and self._window.winfo_exists():
             self._window.withdraw()

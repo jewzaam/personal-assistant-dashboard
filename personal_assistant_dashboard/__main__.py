@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from personal_assistant_dashboard import state_repo, config_manager
+from personal_assistant_dashboard import ipc, state_repo, config_manager
 from personal_assistant_dashboard.collectors import calendar_collector
 from personal_assistant_dashboard.analyzers import calendar_analyzer
 from personal_assistant_dashboard.config import SCOPE_CHECK_DELAY_MS
@@ -170,7 +170,20 @@ def _cmd_gui(args: argparse.Namespace) -> None:
     root.after(100, dashboard.refresh)
     root.after(SCOPE_CHECK_DELAY_MS, dashboard._check_scopes)
 
+    server = ipc.serve(lambda tab: dashboard._schedule(dashboard.show_tab, tab))
     root.mainloop()
+    ipc.close(server)
+
+
+def _cmd_show(args: argparse.Namespace) -> None:
+    try:
+        reply = ipc.send_show(args.tab, ipc.SOCKET_PATH)
+    except OSError as exc:
+        print(f"dashboard not running ({ipc.SOCKET_PATH}: {exc})", file=sys.stderr)
+        sys.exit(1)
+    if reply != "ok":
+        print(reply, file=sys.stderr)
+        sys.exit(1)
 
 
 def main() -> None:
@@ -278,6 +291,18 @@ def main() -> None:
     )
     _add_repo_path_arg(gui_parser)
     gui_parser.set_defaults(func=_cmd_gui)
+
+    # --- show ---
+    show_parser = subparsers.add_parser(
+        "show",
+        help="raise the running dashboard, optionally selecting a tab",
+        description="Raise the running dashboard. Tabs are numbered from 0: "
+        "0=Chat 1=Calendar 2=PRs 3=Tasks 4=Console 5=Settings 6=Info.",
+    )
+    show_parser.add_argument(
+        "tab", type=int, nargs="?", help="tab index, 0-based (1 = Calendar)"
+    )
+    show_parser.set_defaults(func=_cmd_show)
 
     # --- parse and dispatch ---
     args = parser.parse_args()

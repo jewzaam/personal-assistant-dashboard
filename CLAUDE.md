@@ -47,6 +47,7 @@ Coverage target: 80% on non-UI code. UI modules (`dashboard.py`, `*_tab.py`, `co
 - **`voice_input.py`** — mic recording via `local-transcribe`
 - **`gws_auth.py`** — GWS CLI OAuth scope checking
 - **`startup.py`** — XDG autostart `.desktop` file management
+- **`ipc.py`** — Unix socket (`$XDG_RUNTIME_DIR/pa-dashboard.sock`) that `pa gui` listens on so `pa show [tab]` can raise the window and select a tab. Tab index is 0-based, matching `ttk.Notebook` order — reordering tabs in `dashboard.py` changes what users' bound shortcuts open, so update the `show` help text with it. Raising goes through the window-calls GNOME Shell extension (`gdbus ... Windows.Activate`, matched by window title): Mutter turns Tk `lift()`/`focus_force()` from a background request into an "is ready" notification, and `-topmost` did not help either (tested 2026-10-05). `lift()` is only the fallback when the extension is missing
 
 ## Configuration
 
