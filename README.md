@@ -58,6 +58,12 @@ Or directly:
 pa gui
 ```
 
+Raise the running dashboard, optionally selecting a tab by 0-based index (`pa show --help` lists them). Bind this to a desktop keyboard shortcut:
+
+```bash
+pa show 1   # Calendar
+```
+
 View all available commands:
 
 ```bash
