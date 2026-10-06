@@ -3,7 +3,11 @@
 
 from datetime import datetime, timedelta, timezone
 
-from personal_assistant_dashboard.dashboard import _find_active_meetings
+from personal_assistant_dashboard.dashboard import (
+    _blend,
+    _event_phase,
+    _find_active_meetings,
+)
 
 
 def _make_event(
@@ -185,3 +189,26 @@ def test_multiple_attendees_no_meet_code_excluded():
         {"email": "other@example.com", "self": False, "response_status": "accepted"}
     )
     assert _find_active_meetings([event]) == []
+
+
+def test_event_phase():
+    now = datetime.now(timezone.utc)
+    past = _make_event(start=now - timedelta(hours=2), end=now - timedelta(hours=1))
+    ended_now = _make_event(start=now - timedelta(hours=1), end=now)
+    active = _make_event(start=now, end=now + timedelta(minutes=30))
+    future = _make_event(
+        start=now + timedelta(minutes=5), end=now + timedelta(minutes=35)
+    )
+    all_day = _make_event(start=now, end=now + timedelta(days=1), all_day=True)
+    assert _event_phase(past, now) == "past"
+    assert _event_phase(ended_now, now) == "past"
+    assert _event_phase(active, now) == "active"
+    assert _event_phase(future, now) == ""
+    assert _event_phase(all_day, now) == ""
+    assert _event_phase({"start": "", "end": ""}, now) == ""
+
+
+def test_blend():
+    assert _blend("#ffffff", "#000000", 1.0) == "#ffffff"
+    assert _blend("#ffffff", "#000000", 0.0) == "#000000"
+    assert _blend("#ff8000", "#000000", 0.5) == "#804000"
