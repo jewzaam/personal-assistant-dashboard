@@ -112,6 +112,7 @@ MIN_BLOCK_HEIGHT = 22  # Minimum pixels for a readable event block
 TIME_LABEL_WIDTH = 50
 EVENT_LEFT_MARGIN = 55
 EVENT_RIGHT_MARGIN = 15
+ACTIVE_EVENT_GUTTER = 12  # left strip only the current meeting extends into
 WORK_DAY_START = 6
 WORK_DAY_END = 18
 
@@ -3985,6 +3986,10 @@ class Dashboard:
             col_width = available_width / max(num_cols, 1)
             x1 = self._s(EVENT_LEFT_MARGIN) + col * col_width + 1
             x2 = x1 + col_width - 2
+            phase = _event_phase(event, now)
+            # Only the current meeting reaches into the left gutter
+            if phase != "active":
+                x1 += self._s(ACTIVE_EVENT_GUTTER)
 
             # Track original height for padding decisions
             original_height = y2 - y1
@@ -4007,6 +4012,18 @@ class Dashboard:
 
             # Border encodes response status
             event_text_color = COLOR_EVENT_TEXT
+            border_color = COLOR_BORDER_TENTATIVE
+            declined_border_color = COLOR_DECLINED
+            if phase == "past":
+                category_color = _blend(category_color, BG_OUTPUT, 0.4)
+                border_color = _blend(border_color, BG_OUTPUT, 0.4)
+                declined_border_color = _blend(declined_border_color, BG_OUTPUT, 0.4)
+                event_text_color = FG_DIM
+            elif phase == "":
+                # Future: full fill, dimmed border, so the active meeting is
+                # the only block with a full-brightness border
+                border_color = _blend(border_color, BG_OUTPUT, 0.55)
+                declined_border_color = _blend(declined_border_color, BG_OUTPUT, 0.55)
             if response == "declined":
                 # ponytail: dim fill + red dashed border for declined
                 self._canvas.create_rectangle(
@@ -4015,7 +4032,7 @@ class Dashboard:
                     x2,
                     y2,
                     fill=COLOR_DISABLED_BG,
-                    outline=COLOR_DECLINED,
+                    outline=declined_border_color,
                     width=1,
                     dash=(4, 4),
                     tags=tag,
@@ -4028,7 +4045,7 @@ class Dashboard:
                     x2,
                     y2,
                     fill=category_color,
-                    outline=COLOR_BORDER_TENTATIVE,
+                    outline=border_color,
                     width=2,
                     tags=tag,
                 )
@@ -4039,7 +4056,7 @@ class Dashboard:
                     x2,
                     y2,
                     fill=category_color,
-                    outline=COLOR_BORDER_TENTATIVE,
+                    outline=border_color,
                     width=1,
                     dash=(4, 4),
                     tags=tag,
@@ -4435,6 +4452,34 @@ def _layout_events(
             )
 
     return positioned
+
+
+def _event_phase(event: CalendarEvent, now: datetime) -> str:
+    """Return "past", "active", or "" (future/unparseable) for a timed event."""
+    if event.get("all_day"):
+        return ""
+    try:
+        start = datetime.fromisoformat(event.get("start", ""))
+        end = datetime.fromisoformat(event.get("end", ""))
+    except ValueError:
+        return ""
+    if end <= now:
+        return "past"
+    if start <= now:
+        return "active"
+    return ""
+
+
+def _blend(color: str, background: str, weight: float) -> str:
+    """Mix ``weight`` of ``color`` into ``background`` — Tk canvas has no alpha."""
+    mixed = (
+        round(
+            int(color[i : i + 2], 16) * weight
+            + int(background[i : i + 2], 16) * (1 - weight)
+        )
+        for i in (1, 3, 5)
+    )
+    return "#" + "".join(f"{channel:02x}" for channel in mixed)
 
 
 def _find_active_meetings(
