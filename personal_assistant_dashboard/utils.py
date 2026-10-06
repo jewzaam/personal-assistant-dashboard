@@ -188,7 +188,17 @@ def get_gdoc_tab_url(doc_id: str, tab_name: str) -> str | None:
                     "documents",
                     "get",
                     "--params",
-                    json.dumps({"documentId": doc_id, "includeTabsContent": True}),
+                    json.dumps(
+                        {
+                            "documentId": doc_id,
+                            "includeTabsContent": True,
+                            # Titles and ids only — without a mask this pulls
+                            # every tab's full content. ponytail: 4 levels of
+                            # childTabs; deeper tabs are not found.
+                            "fields": "tabs(tabProperties,childTabs(tabProperties,"
+                            "childTabs(tabProperties,childTabs(tabProperties))))",
+                        }
+                    ),
                 ],
                 timeout=15,
             )
