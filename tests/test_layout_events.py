@@ -144,3 +144,16 @@ def test_zero_duration_event_gets_own_column():
         result = _layout_events(events, 8)
         assert {p["col"] for p in result} == {0, 1}
         assert all(p["num_cols"] == 2 for p in result)
+
+
+def test_active_event_goes_leftmost():
+    from datetime import datetime
+
+    needs = _meeting(9, 11, "needs", response_status="needsAction")
+    current = _meeting(10, 12, "current")
+    now = datetime.fromisoformat("2026-08-12T11:30:00-04:00")
+    cols = {p["event"]["id"]: p["col"] for p in _layout_events([needs, current], 8)}
+    assert cols == {"needs": 0, "current": 1}
+    result = _layout_events([needs, current], 8, now=now)
+    cols = {p["event"]["id"]: p["col"] for p in result}
+    assert cols == {"needs": 1, "current": 0}
