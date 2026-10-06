@@ -3970,7 +3970,9 @@ class Dashboard:
 
         # Layout and draw events
         self._canvas_event_map.clear()
-        positioned = _layout_events(day_events, earliest, self._dismissed_conflicts)
+        positioned = _layout_events(
+            day_events, earliest, self._dismissed_conflicts, now=now
+        )
 
         available_width = (
             canvas_width - self._s(EVENT_LEFT_MARGIN) - self._s(EVENT_RIGHT_MARGIN)
@@ -4019,11 +4021,6 @@ class Dashboard:
                 border_color = _blend(border_color, BG_OUTPUT, 0.4)
                 declined_border_color = _blend(declined_border_color, BG_OUTPUT, 0.4)
                 event_text_color = FG_DIM
-            elif phase == "":
-                # Future: full fill, dimmed border, so the active meeting is
-                # the only block with a full-brightness border
-                border_color = _blend(border_color, BG_OUTPUT, 0.55)
-                declined_border_color = _blend(declined_border_color, BG_OUTPUT, 0.55)
             if response == "declined":
                 # ponytail: dim fill + red dashed border for declined
                 self._canvas.create_rectangle(
@@ -4369,6 +4366,7 @@ def _layout_events(
     events: list[CalendarEvent],
     earliest_hour: int,
     dismissed_conflicts: set[str] | None = None,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     dismissed = dismissed_conflicts or set()
     timed = [
@@ -4417,10 +4415,12 @@ def _layout_events(
                 sorted_ends.append(_e)
         num_cols = len(sorted_ends)
 
-        # Pass 2: assign columns by priority, start time as tiebreaker
+        # Pass 2: assign columns by priority, start time as tiebreaker.
+        # The current meeting goes leftmost so it can reach into the gutter.
         order = sorted(
             range(len(cluster)),
             key=lambda i: (
+                not (now and _event_phase(cluster[i], now) == "active"),
                 _event_column_priority(cluster[i], dismissed),
                 intervals[i][0],
             ),
