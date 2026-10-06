@@ -113,6 +113,7 @@ TIME_LABEL_WIDTH = 50
 EVENT_LEFT_MARGIN = 55
 EVENT_RIGHT_MARGIN = 15
 ACTIVE_EVENT_GUTTER = 12  # left strip only the current meeting extends into
+JOIN_LEAD_MINUTES = 5  # `pa join` with nothing active opens a meeting this close
 WORK_DAY_START = 6
 WORK_DAY_END = 18
 
@@ -2373,6 +2374,22 @@ class Dashboard:
         self._selected_event_tag = evt_tag
         self._show_event_details(cal_event)
 
+    def join_meeting(self) -> None:
+        """Open the current or next meeting's links. Used by `pa join`."""
+        cal_event = _pick_join_event(
+            self._all_events,
+            datetime.now().astimezone(),
+            timedelta(minutes=JOIN_LEAD_MINUTES),
+        )
+        if cal_event is None:
+            self.log_console(
+                f"pa join: no meeting in progress or starting within "
+                f"{JOIN_LEAD_MINUTES} min",
+                "warning",
+            )
+            return
+        self._open_event_links(cal_event)
+
     def _open_event_links(self, cal_event: CalendarEvent) -> None:
         """Open the event's notes docs and join its video conference."""
         import webbrowser
@@ -4516,6 +4533,39 @@ def _find_active_meetings(
                 continue
             active.append(event)
     return active
+
+
+def _pick_join_event(
+    all_events: list[CalendarEvent], now: datetime, lead: timedelta
+) -> CalendarEvent | None:
+    """The meeting `pa join` opens: in progress (latest start wins), else the
+    earliest starting within *lead*. Solo and declined events never qualify,
+    matching what a double-click would open.
+    """
+    active: list[tuple[datetime, CalendarEvent]] = []
+    upcoming: list[tuple[datetime, CalendarEvent]] = []
+    for event in all_events:
+        if (
+            event.get("all_day")
+            or event.get("status") == "cancelled"
+            or _is_solo_event(event)
+            or _user_response_status(event) == "declined"
+        ):
+            continue
+        try:
+            start = datetime.fromisoformat(event.get("start", ""))
+            end = datetime.fromisoformat(event.get("end", ""))
+        except ValueError:
+            continue
+        if start <= now < end:
+            active.append((start, event))
+        elif now < start <= now + lead:
+            upcoming.append((start, event))
+    if active:
+        return max(active, key=lambda pair: pair[0])[1]
+    if upcoming:
+        return min(upcoming, key=lambda pair: pair[0])[1]
+    return None
 
 
 def _filter_events_for_date(

@@ -170,20 +170,34 @@ def _cmd_gui(args: argparse.Namespace) -> None:
     root.after(100, dashboard.refresh)
     root.after(SCOPE_CHECK_DELAY_MS, dashboard._check_scopes)
 
-    server = ipc.serve(lambda tab: dashboard._schedule(dashboard.show_tab, tab))
+    def _on_request(command: str, tab: int | None) -> None:
+        if command == "join":
+            dashboard._schedule(dashboard.join_meeting)
+        else:
+            dashboard._schedule(dashboard.show_tab, tab)
+
+    server = ipc.serve(_on_request)
     root.mainloop()
     ipc.close(server)
 
 
-def _cmd_show(args: argparse.Namespace) -> None:
+def _send_ipc(request: str) -> None:
     try:
-        reply = ipc.send_show(args.tab, ipc.SOCKET_PATH)
+        reply = ipc.send(request, ipc.SOCKET_PATH)
     except OSError as exc:
         print(f"dashboard not running ({ipc.SOCKET_PATH}: {exc})", file=sys.stderr)
         sys.exit(1)
     if reply != "ok":
         print(reply, file=sys.stderr)
         sys.exit(1)
+
+
+def _cmd_show(args: argparse.Namespace) -> None:
+    _send_ipc("show" if args.tab is None else f"show {args.tab}")
+
+
+def _cmd_join(_args: argparse.Namespace) -> None:
+    _send_ipc("join")
 
 
 def main() -> None:
@@ -303,6 +317,16 @@ def main() -> None:
         "tab", type=int, nargs="?", help="tab index, 0-based (1 = Calendar)"
     )
     show_parser.set_defaults(func=_cmd_show)
+
+    # --- join ---
+    join_parser = subparsers.add_parser(
+        "join",
+        help="open the current or next meeting's links",
+        description="Open the links of the meeting in progress (latest start "
+        "wins) or, if none, the next one starting soon — same as "
+        "double-clicking it on the Calendar tab. Result goes to Console.",
+    )
+    join_parser.set_defaults(func=_cmd_join)
 
     # --- parse and dispatch ---
     args = parser.parse_args()
