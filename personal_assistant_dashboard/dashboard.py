@@ -223,16 +223,20 @@ class Dashboard:
         threading.Thread(
             target=self._activate_or_lift, args=(title,), daemon=True, name="activate"
         ).start()
-        if index is None or not self._notebook:
+        if not self._notebook:
             return
-        tabs = self._notebook.tabs()
-        if not 0 <= index < len(tabs):
-            self.log_console(
-                f"pa show: no tab {index} (valid: 0-{len(tabs) - 1})", "warning"
-            )
-            return
-        # While shaded, _on_tab_changed unshades to the newly selected tab.
-        self._notebook.select(index)
+        if index is not None:
+            tabs = self._notebook.tabs()
+            if not 0 <= index < len(tabs):
+                self.log_console(
+                    f"pa show: no tab {index} (valid: 0-{len(tabs) - 1})", "warning"
+                )
+                return
+            # While shaded, _on_tab_changed unshades to the newly selected tab.
+            self._notebook.select(index)
+        # Landing on the calendar shows the day, not a stale meeting's details.
+        if str(self._notebook.select()) == self._cal_tab_id:
+            self._hide_detail_panel()
 
     def _activate_or_lift(self, title: str) -> None:
         """Background thread: window-calls Activate, else lift on the Tk thread."""
