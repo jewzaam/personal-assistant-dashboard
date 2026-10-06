@@ -3621,6 +3621,20 @@ class Dashboard:
 
             init_repo(path=self._state_path)
 
+            if self._first_cal_load:
+                # Startup: show last run's events now; the collect below is
+                # network-bound and replaces them when it finishes.
+                cached: list[CalendarEvent] = []
+                for path in sorted(
+                    (self._state_path / "calendar").glob("events*.json")
+                ):
+                    try:
+                        cached.extend(json.loads(path.read_text()))
+                    except (json.JSONDecodeError, OSError):
+                        pass
+                if cached:
+                    self._schedule(self._show_cached_events, cached)
+
             config = load_config(repo_path=self._state_path)
             calendar_ids = config.get("calendars", ["primary"])
             self._schedule(
@@ -3673,11 +3687,21 @@ class Dashboard:
                     find_attended_event_ids,
                 )
 
+                self._schedule(self._status_var.set, "Checking Meet attendance...")
                 attended = find_attended_event_ids(missed)
                 if attended:
                     missed = [e for e in missed if e.get("id", "") not in attended]
 
-            # Warm 1:1 caches in background
+            self._schedule(
+                self._on_data_loaded,
+                all_events,
+                all_conflicts,
+                all_changes,
+                missed,
+            )
+
+            # Warm 1:1 caches after the render — only the detail panel's Notes
+            # link needs them, and they are network calls
             get_gdoc_tab_url(ONE_ON_ONE_DOC_ID, "")
             today_str = today.strftime("%Y-%m-%d")
             for evt in all_events:
@@ -3689,17 +3713,17 @@ class Dashboard:
                     if email:
                         resolve_display_name(email)
 
-            self._schedule(
-                self._on_data_loaded,
-                all_events,
-                all_conflicts,
-                all_changes,
-                missed,
-            )
-
         except Exception as exc:
             logger.exception("Dashboard refresh failed")
             self._schedule(self._status_var.set, f"Error: {exc}")
+
+    def _show_cached_events(self, events: list[CalendarEvent]) -> None:
+        """Render events from disk without _on_data_loaded's bell logic —
+        that must see the live load first, or startup changes would bell."""
+        if self._all_events:
+            return  # live data already arrived
+        self._all_events = events
+        self._render_current_day(preserve_scroll=True)
 
     def _on_data_loaded(
         self,
