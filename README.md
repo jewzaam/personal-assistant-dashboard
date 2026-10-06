@@ -64,6 +64,12 @@ Raise the running dashboard, optionally selecting a tab by 0-based index (`pa sh
 pa show 1   # Calendar
 ```
 
+Open the meeting in progress (or the next one starting within 5 minutes) — its video link and notes docs, same as double-clicking it:
+
+```bash
+pa join
+```
+
 View all available commands:
 
 ```bash

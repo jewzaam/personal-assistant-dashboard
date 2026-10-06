@@ -15,28 +15,31 @@ from personal_assistant_dashboard import ipc
 
 
 def test_parse_request() -> None:
-    assert ipc.parse_request("show") is None
-    assert ipc.parse_request("show 1\n") == 1
-    for bad in ["", "hide 1", "show x", "show 1 2"]:
+    assert ipc.parse_request("show") == ("show", None)
+    assert ipc.parse_request("show 1\n") == ("show", 1)
+    assert ipc.parse_request("join\n") == ("join", None)
+    for bad in ["", "hide 1", "show x", "show 1 2", "join 1"]:
         with pytest.raises(ValueError):
             ipc.parse_request(bad)
 
 
 def test_round_trip(tmp_path: Path) -> None:
     path = tmp_path / "pa.sock"
-    received: list[int | None] = []
+    received: list[tuple[str, int | None]] = []
     done = threading.Event()
 
-    def on_show(tab: int | None) -> None:
-        received.append(tab)
+    def on_request(command: str, tab: int | None) -> None:
+        received.append((command, tab))
         done.set()
 
-    server = ipc.serve(on_show, path)
+    server = ipc.serve(on_request, path)
     try:
-        assert ipc.send_show(1, path) == "ok"
+        assert ipc.send("show 1", path) == "ok"
         assert done.wait(2)
-        assert ipc.send_show(None, path) == "ok"
-        assert received == [1, None]
+        assert ipc.send("show", path) == "ok"
+        assert ipc.send("join", path) == "ok"
+        assert ipc.send("bogus", path).startswith("error:")
+        assert received == [("show", 1), ("show", None), ("join", None)]
     finally:
         ipc.close(server, path)
     assert not path.exists()
@@ -45,9 +48,9 @@ def test_round_trip(tmp_path: Path) -> None:
 def test_serve_replaces_stale_socket(tmp_path: Path) -> None:
     path = tmp_path / "pa.sock"
     path.write_text("stale")
-    server = ipc.serve(lambda tab: None, path)
+    server = ipc.serve(lambda command, tab: None, path)
     try:
-        assert ipc.send_show(0, path) == "ok"
+        assert ipc.send("show 0", path) == "ok"
     finally:
         ipc.close(server, path)
 
@@ -56,19 +59,19 @@ def test_survives_client_that_hangs_up(tmp_path: Path) -> None:
     import socket
 
     path = tmp_path / "pa.sock"
-    server = ipc.serve(lambda tab: None, path)
+    server = ipc.serve(lambda command, tab: None, path)
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as rude:
             rude.connect(str(path))
             rude.sendall(b"show 1")
-        assert ipc.send_show(2, path) == "ok"
+        assert ipc.send("show 2", path) == "ok"
     finally:
         ipc.close(server, path)
 
 
-def test_send_show_not_running(tmp_path: Path) -> None:
+def test_send_not_running(tmp_path: Path) -> None:
     with pytest.raises(OSError):
-        ipc.send_show(1, tmp_path / "missing.sock")
+        ipc.send("show 1", tmp_path / "missing.sock")
 
 
 def test_cli_show_not_running(tmp_path: Path) -> None:
