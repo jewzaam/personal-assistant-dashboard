@@ -235,9 +235,9 @@ class Dashboard:
                 return
             # While shaded, _on_tab_changed unshades to the newly selected tab.
             self._notebook.select(index)
-        # Landing on the calendar shows the day, not a stale meeting's details.
+        # Landing on the calendar shows today, not a stale day or meeting's details.
         if str(self._notebook.select()) == self._cal_tab_id:
-            self._hide_detail_panel()
+            self._go_today()  # also closes the detail panel
 
     def _activate_or_lift(self, title: str) -> None:
         """Background thread: window-calls Activate, else lift on the Tk thread."""
