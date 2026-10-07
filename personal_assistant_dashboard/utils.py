@@ -134,6 +134,26 @@ _ANCHOR_PATTERN = re.compile(
 )
 
 
+_DRIVE_FILE_URL_PATTERN = re.compile(r"https://drive\.google\.com/file/")
+
+
+def get_recording_urls(event: CalendarEvent) -> list[str]:
+    """Return Meet recording URLs attached to an event.
+
+    Meet attaches the recording as a Drive file titled "... Recording".
+    """
+    urls: list[str] = []
+    for att in event.get("attachments", []):
+        url = att.get("url", "")
+        if (
+            _DRIVE_FILE_URL_PATTERN.match(url)
+            and "recording" in att.get("title", "").lower()
+            and url not in urls
+        ):
+            urls.append(url)
+    return urls
+
+
 def _link_text(html: str) -> str:
     """Strip tags and unescape entities from an anchor's inner HTML."""
     return unescape(re.sub(r"<[^>]+>", "", html)).strip()
