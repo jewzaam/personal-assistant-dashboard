@@ -114,6 +114,7 @@ EVENT_LEFT_MARGIN = 55
 EVENT_RIGHT_MARGIN = 15
 ACTIVE_EVENT_GUTTER = 12  # left strip only the current meeting extends into
 JOIN_LEAD_MINUTES = 5  # `pa join` with nothing active opens a meeting this close
+JOIN_BUFFER_MINUTES = 10  # opening links outside start/end ± this skips the call
 WORK_DAY_START = 6
 WORK_DAY_END = 18
 
@@ -2396,7 +2397,12 @@ class Dashboard:
 
         urls: list[str] = []
         meeting_url = get_meeting_url(cal_event)
-        if meeting_url:
+        # Far from the meeting, double-click is for its notes, not the call.
+        if meeting_url and _is_near_meeting_time(
+            cal_event,
+            datetime.now().astimezone(),
+            timedelta(minutes=JOIN_BUFFER_MINUTES),
+        ):
             urls.append(meeting_url)
         one_on_one = _one_on_one_doc(cal_event)
         if one_on_one and one_on_one[1] not in urls:
@@ -4559,6 +4565,18 @@ def _find_active_meetings(
                 continue
             active.append(event)
     return active
+
+
+def _is_near_meeting_time(
+    event: CalendarEvent, now: datetime, buffer: timedelta
+) -> bool:
+    """True if *now* is within *buffer* of the event's start-to-end span."""
+    try:
+        start = datetime.fromisoformat(event.get("start", ""))
+        end = datetime.fromisoformat(event.get("end", ""))
+        return start - buffer <= now <= end + buffer
+    except (ValueError, TypeError):  # TypeError: all-day dates are naive
+        return False
 
 
 def _pick_join_event(

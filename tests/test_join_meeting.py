@@ -3,7 +3,10 @@
 
 from datetime import datetime, timedelta, timezone
 
-from personal_assistant_dashboard.dashboard import _pick_join_event
+from personal_assistant_dashboard.dashboard import (
+    _is_near_meeting_time,
+    _pick_join_event,
+)
 
 NOW = datetime(2026, 10, 6, 10, 0, tzinfo=timezone.utc)
 LEAD = timedelta(minutes=5)
@@ -54,6 +57,16 @@ def test_ended_meeting_not_picked() -> None:
 def test_solo_and_declined_skipped() -> None:
     assert _pick(_event("focus", -5, 30, solo=True)) is None
     assert _pick(_event("nope", -5, 30, response="declined")) is None
+
+
+def test_near_meeting_time_buffer() -> None:
+    buffer = timedelta(minutes=10)
+    assert _is_near_meeting_time(_event("soon", 10, 40), NOW, buffer)
+    assert not _is_near_meeting_time(_event("later", 11, 40), NOW, buffer)
+    assert _is_near_meeting_time(_event("just over", -40, -10), NOW, buffer)
+    assert not _is_near_meeting_time(_event("long over", -40, -11), NOW, buffer)
+    all_day = {"start": "2026-10-06", "end": "2026-10-07"}
+    assert not _is_near_meeting_time(all_day, NOW, buffer)
 
 
 def test_large_meeting_with_omitted_guests_not_solo() -> None:
