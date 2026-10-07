@@ -4346,8 +4346,10 @@ def _is_solo_event(event: CalendarEvent) -> bool:
     attendees = event.get("attendees", [])
     if not attendees:
         return True
+    # Google trims a large meeting's guest list down to just self, so an
+    # only-self list is solo only when the user created the event.
     non_self = [a for a in attendees if not a.get("self")]
-    return len(non_self) == 0
+    return len(non_self) == 0 and event.get("organizer_self", False)
 
 
 def _parse_hour(time_str: str) -> float:

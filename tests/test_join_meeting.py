@@ -25,6 +25,7 @@ def _event(
         "start": (NOW + timedelta(minutes=start_min)).isoformat(),
         "end": (NOW + timedelta(minutes=end_min)).isoformat(),
         "attendees": attendees,
+        "organizer_self": solo,
     }
 
 
@@ -53,3 +54,9 @@ def test_ended_meeting_not_picked() -> None:
 def test_solo_and_declined_skipped() -> None:
     assert _pick(_event("focus", -5, 30, solo=True)) is None
     assert _pick(_event("nope", -5, 30, response="declined")) is None
+
+
+def test_large_meeting_with_omitted_guests_not_solo() -> None:
+    event = _event("all hands", -5, 30, solo=True)
+    event["organizer_self"] = False
+    assert _pick(event) == "all hands"
