@@ -12,6 +12,7 @@ from personal_assistant_dashboard.utils import (
     format_event_time,
     get_meeting_url,
     get_notes_doc_urls,
+    get_recording_urls,
 )
 
 # -- format_event_time --------------------------------------------------------
@@ -181,6 +182,19 @@ def test_get_notes_doc_urls_skips_recording_because_it_is_not_a_doc():
         ]
     }
     assert get_notes_doc_urls(event) == []
+
+
+def test_get_recording_urls_keeps_drive_recordings_only():
+    video = "https://drive.google.com/file/d/vid/view"
+    event = {
+        "attachments": [
+            {"title": "Weekly sync Notes (2026-09-01) Recording", "url": video},
+            {"title": "Weekly sync Recording", "url": video},
+            {"title": "Notes", "url": "https://docs.google.com/document/d/x/edit"},
+            {"title": "Slides", "url": "https://drive.google.com/file/d/s/view"},
+        ]
+    }
+    assert get_recording_urls(event) == [video]
 
 
 def test_get_notes_doc_urls_keeps_agenda_naming_chat_or_gemini():

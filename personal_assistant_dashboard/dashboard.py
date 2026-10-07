@@ -100,6 +100,7 @@ from personal_assistant_dashboard.utils import (
     get_gdoc_tab_url,
     get_meeting_url,
     get_notes_doc_urls,
+    get_recording_urls,
     resolve_display_name,
     run_cmd,
 )
@@ -2392,16 +2393,20 @@ class Dashboard:
         self._open_event_links(cal_event)
 
     def _open_event_links(self, cal_event: CalendarEvent) -> None:
-        """Open the event's notes docs and join its video conference."""
+        """Open the event's notes docs plus its recording or video call."""
         import webbrowser
 
-        urls: list[str] = []
+        now = datetime.now().astimezone()
+        recordings = get_recording_urls(cal_event) if _has_ended(cal_event, now) else []
         meeting_url = get_meeting_url(cal_event)
+        urls: list[str] = recordings
         # Far from the meeting, double-click is for its notes, not the call.
-        if meeting_url and _is_near_meeting_time(
-            cal_event,
-            datetime.now().astimezone(),
-            timedelta(minutes=JOIN_BUFFER_MINUTES),
+        if (
+            not recordings
+            and meeting_url
+            and _is_near_meeting_time(
+                cal_event, now, timedelta(minutes=JOIN_BUFFER_MINUTES)
+            )
         ):
             urls.append(meeting_url)
         one_on_one = _one_on_one_doc(cal_event)
@@ -4575,6 +4580,14 @@ def _is_near_meeting_time(
         start = datetime.fromisoformat(event.get("start", ""))
         end = datetime.fromisoformat(event.get("end", ""))
         return start - buffer <= now <= end + buffer
+    except (ValueError, TypeError):  # TypeError: all-day dates are naive
+        return False
+
+
+def _has_ended(event: CalendarEvent, now: datetime) -> bool:
+    """True if the event's end is before *now*."""
+    try:
+        return datetime.fromisoformat(event.get("end", "")) < now
     except (ValueError, TypeError):  # TypeError: all-day dates are naive
         return False
 

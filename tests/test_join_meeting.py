@@ -4,6 +4,7 @@
 from datetime import datetime, timedelta, timezone
 
 from personal_assistant_dashboard.dashboard import (
+    _has_ended,
     _is_near_meeting_time,
     _pick_join_event,
 )
@@ -67,6 +68,12 @@ def test_near_meeting_time_buffer() -> None:
     assert not _is_near_meeting_time(_event("long over", -40, -11), NOW, buffer)
     all_day = {"start": "2026-10-06", "end": "2026-10-07"}
     assert not _is_near_meeting_time(all_day, NOW, buffer)
+
+
+def test_has_ended() -> None:
+    assert _has_ended(_event("over", -30, -1), NOW)
+    assert not _has_ended(_event("now", -30, 1), NOW)
+    assert not _has_ended({"start": "2026-10-05", "end": "2026-10-06"}, NOW)
 
 
 def test_large_meeting_with_omitted_guests_not_solo() -> None:
