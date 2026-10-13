@@ -64,7 +64,7 @@ Raise the running dashboard, optionally selecting a tab by 0-based index (`pa sh
 pa show 1   # Calendar
 ```
 
-Open the meeting in progress (or the next one starting within 5 minutes) — its video link and notes docs, same as double-clicking it:
+Open the meeting in progress or starting within 5 minutes — its video link and notes docs, same as double-clicking it. When several qualify, the latest start wins, so at the end of one meeting it opens the next:
 
 ```bash
 pa join

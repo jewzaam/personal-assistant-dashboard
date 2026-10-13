@@ -114,7 +114,7 @@ TIME_LABEL_WIDTH = 50
 EVENT_LEFT_MARGIN = 55
 EVENT_RIGHT_MARGIN = 15
 ACTIVE_EVENT_GUTTER = 12  # left strip only the current meeting extends into
-JOIN_LEAD_MINUTES = 5  # `pa join` with nothing active opens a meeting this close
+JOIN_LEAD_MINUTES = 5  # `pa join` prefers a meeting starting this close
 JOIN_BUFFER_MINUTES = 10  # opening links outside start/end ± this skips the call
 WORK_DAY_START = 6
 WORK_DAY_END = 18
@@ -4595,12 +4595,12 @@ def _has_ended(event: CalendarEvent, now: datetime) -> bool:
 def _pick_join_event(
     all_events: list[CalendarEvent], now: datetime, lead: timedelta
 ) -> CalendarEvent | None:
-    """The meeting `pa join` opens: in progress (latest start wins), else the
-    earliest starting within *lead*. Solo and declined events never qualify,
-    matching what a double-click would open.
+    """The meeting `pa join` opens: of those in progress or starting within
+    *lead*, the latest start wins — so at the tail of one meeting it opens the
+    next. Solo and declined events never qualify, matching what a double-click
+    would open.
     """
-    active: list[tuple[datetime, CalendarEvent]] = []
-    upcoming: list[tuple[datetime, CalendarEvent]] = []
+    candidates: list[tuple[datetime, CalendarEvent]] = []
     for event in all_events:
         if (
             event.get("all_day")
@@ -4614,15 +4614,11 @@ def _pick_join_event(
             end = datetime.fromisoformat(event.get("end", ""))
         except ValueError:
             continue
-        if start <= now < end:
-            active.append((start, event))
-        elif now < start <= now + lead:
-            upcoming.append((start, event))
-    if active:
-        return max(active, key=lambda pair: pair[0])[1]
-    if upcoming:
-        return min(upcoming, key=lambda pair: pair[0])[1]
-    return None
+        if start <= now + lead and now < end:
+            candidates.append((start, event))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda pair: pair[0])[1]
 
 
 def _filter_events_for_date(

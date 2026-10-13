@@ -322,9 +322,10 @@ def main() -> None:
     join_parser = subparsers.add_parser(
         "join",
         help="open the current or next meeting's links",
-        description="Open the links of the meeting in progress (latest start "
-        "wins) or, if none, the next one starting soon — same as "
-        "double-clicking it on the Calendar tab. Result goes to Console.",
+        description="Open the links of the meeting in progress or starting "
+        "within 5 minutes (latest start wins, so the next meeting beats the "
+        "one ending) — same as double-clicking it on the Calendar tab. "
+        "Result goes to Console.",
     )
     join_parser.set_defaults(func=_cmd_join)
 
