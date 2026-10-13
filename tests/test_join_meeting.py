@@ -42,13 +42,18 @@ def test_latest_started_active_wins() -> None:
     assert _pick(_event("early", -30, 30), _event("late", -5, 25)) == "late"
 
 
-def test_active_beats_upcoming() -> None:
-    assert _pick(_event("soon", 2, 30), _event("now", -10, 20)) == "now"
+def test_upcoming_beats_ending() -> None:
+    assert _pick(_event("next", 2, 30), _event("ending", -30, 2)) == "next"
+
+
+def test_active_kept_when_next_beyond_lead() -> None:
+    assert _pick(_event("too far", 6, 30), _event("ending", -30, 2)) == "ending"
 
 
 def test_upcoming_within_lead() -> None:
-    assert _pick(_event("later", 4, 30), _event("sooner", 3, 30)) == "sooner"
+    assert _pick(_event("later", 4, 30), _event("sooner", 3, 30)) == "later"
     assert _pick(_event("too far", 6, 30)) is None
+    assert _pick(_event("edge", 5, 30)) == "edge"
 
 
 def test_ended_meeting_not_picked() -> None:
