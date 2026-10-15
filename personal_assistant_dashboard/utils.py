@@ -164,7 +164,9 @@ def get_notes_doc_urls(event: CalendarEvent) -> list[str]:
 
     Looks at attachments and at links in the description, keeps Google Docs
     whose title says "notes", and drops the Gemini notes, transcripts and
-    recordings that ride along on the same event. Order is preserved and
+    recordings that ride along on the same event. A doc with no title -- an
+    anchor whose text is the URL itself, or a bare URL in plain text -- is
+    kept too: nothing says it is not the notes. Order is preserved and
     duplicates removed.
     """
     candidates: list[tuple[str, str]] = [
@@ -176,13 +178,20 @@ def get_notes_doc_urls(event: CalendarEvent) -> list[str]:
         (_link_text(label), unescape(url))
         for url, label in _ANCHOR_PATTERN.findall(description)
     ]
+    candidates += [
+        ("", url)
+        for url in _GDOC_URL_PATTERN.findall(
+            unescape(_ANCHOR_PATTERN.sub("", description))
+        )
+    ]
 
     urls: list[str] = []
     for title, url in candidates:
         if not _GDOC_URL_PATTERN.match(url):
             continue
         name = title.lower()
-        if "notes" not in name:
+        untitled = not name or _GDOC_URL_PATTERN.match(title)
+        if not untitled and "notes" not in name:
             continue
         if any(marker in name for marker in _NOT_AGENDA_MARKERS):
             continue
