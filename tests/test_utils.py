@@ -219,6 +219,19 @@ def test_get_notes_doc_urls_from_description_anchor():
     assert get_notes_doc_urls(event) == [DOC]
 
 
+def test_get_notes_doc_urls_keeps_untitled_docs():
+    bare = "https://docs.google.com/document/d/bare1/edit"
+    event = {
+        "description": (
+            '<a href="' + DOC + '">' + DOC + "</a>"
+            '<a href="https://docs.google.com/document/d/q3/edit">Q3 roadmap</a>'
+            "<br>agenda: " + bare + "?usp=sharing&amp;x=1"
+            " https://example.com/notes"
+        )
+    }
+    assert get_notes_doc_urls(event) == [DOC, bare + "?usp=sharing&x=1"]
+
+
 def test_get_notes_doc_urls_dedupes_attachment_and_description():
     event = {
         "attachments": [{"title": "Notes", "url": DOC}],
