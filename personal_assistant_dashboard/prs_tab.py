@@ -948,10 +948,6 @@ class PrsTab:
             reverse=self._newest_first,
         )
         visible.sort(key=lambda p: _repo_from_url(p.get("repository_url", "")))
-        # Priority PRs float to top
-        visible.sort(
-            key=lambda p: p.get("html_url", "") not in self._priority,
-        )
         last_repo = ""
         for pr in visible:
             repo = _repo_from_url(pr.get("repository_url", ""))
