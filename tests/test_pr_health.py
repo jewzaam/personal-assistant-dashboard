@@ -49,7 +49,7 @@ def test_fetch_prs_records_rate_limit_failure():
         "personal_assistant_dashboard.prs_tab.run_cmd",
         return_value=_result(1, stderr=RATE_LIMIT),
     ):
-        assert _fetch_prs("q", tally) == []
+        assert _fetch_prs("q", tally) is None
     assert tally.status == "error"
     assert RATE_LIMIT in tally.errors[0]
 
