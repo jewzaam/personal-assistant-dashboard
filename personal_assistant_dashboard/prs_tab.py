@@ -54,6 +54,12 @@ SCODE_FG_PUBLIC = COLOR_SECTION_HEADER
 # is the failure that matters, an unnecessary work profile is not.
 SCODE_PROFILE_PUBLIC = "personal"
 SCODE_PROFILE_PRIVATE = "work"
+# GitHub search intermittently answers 200 with total_count 0 and
+# incomplete_results false for queries that do have results (seen
+# 2026-10-22, author:@me and review-requested:@me). An empty answer after a
+# non-empty one is treated as a failed call until it repeats this many
+# refreshes in a row, so a real drop to zero still lands (~15 min).
+EMPTY_CONFIRM_REFRESHES = 3
 
 
 def _age_str(iso_date: str) -> str:
@@ -106,8 +112,12 @@ class _Tally:
         return "warning" if self.fail else "ok"
 
 
-def _fetch_prs(query: str, tally: _Tally | None = None) -> list[dict[str, Any]]:
-    """Run gh api search and return items list."""
+def _fetch_prs(query: str, tally: _Tally | None = None) -> list[dict[str, Any]] | None:
+    """Run gh api search and return items list, None when the call failed.
+
+    None is not [] — a failed search must not read as "no PRs", or the
+    refresh wipes them from the tab.
+    """
     tally = tally or _Tally()
     result = run_cmd(
         [
@@ -119,7 +129,7 @@ def _fetch_prs(query: str, tally: _Tally | None = None) -> list[dict[str, Any]]:
         timeout=120,
     )
     if not tally.record(f"search {query}", result.returncode, result.stderr):
-        return []
+        return None
     # --paginate concatenates JSON objects; parse each one
     all_items: list[dict[str, Any]] = []
     for line in result.stdout.splitlines():
@@ -388,6 +398,7 @@ class PrsTab:
         self._auto_refresh_id: str | None = None
         self._refreshing = False
         self._skipped_refreshes = 0
+        self._empty_streak: dict[str, int] = {}
         self._load_dismissed()
         self._load_priority()
         self._load_starred_labels()
@@ -650,32 +661,51 @@ class PrsTab:
             # review-requested:@me misses PRs after submitting a review
             # (GitHub removes user from requested reviewers). Query both
             # and merge to get the full reviewer universe.
-            requested = _fetch_prs(
-                "is:pr+review-requested:@me+state:open+archived:false", tally
+            requested = self._search(
+                "is:pr+review-requested:@me+state:open+archived:false",
+                tally,
+                bool(self._requested_urls),
             )
-            requested_urls = {p.get("html_url", "") for p in requested}
             # review-requested also matches team requests; this one is
             # direct-only, so the difference is the team-only set.
-            direct_urls = {
-                p.get("html_url", "")
-                for p in _fetch_prs(
-                    "is:pr+user-review-requested:@me+state:open+archived:false",
-                    tally,
-                )
-            }
+            direct = self._search(
+                "is:pr+user-review-requested:@me+state:open+archived:false",
+                tally,
+                bool(self._direct_urls),
+            )
             reviewed = _fetch_prs(
                 "is:pr+reviewed-by:@me+state:open+archived:false+-author:@me", tally
             )
-            seen = set(requested_urls)
-            for p in reviewed:
-                url = p.get("html_url", "")
-                if url not in seen:
-                    requested.append(p)
-                    seen.add(url)
-            review = requested
-            my = _fetch_prs(
-                "is:pr+author:@me+state:open+archived:false+sort:updated-desc", tally
+            # A failed search keeps the last good results instead of wiping
+            # them. The review side falls back as a unit: rows are gated on
+            # requested_urls and sectioned by direct_urls, so a fresh list
+            # beside a stale URL set would hide or mis-section them. Reading
+            # these off the worker thread is safe because _on_data_loaded
+            # reassigns them, never mutates in place.
+            # ponytail: one failed review search discards the other two
+            # fresh ones until the next refresh (5 min); per-query merge if
+            # that lag matters.
+            if requested is None or direct is None or reviewed is None:
+                review = self._review_prs
+                requested_urls = self._requested_urls
+                direct_urls = self._direct_urls
+            else:
+                requested_urls = {p.get("html_url", "") for p in requested}
+                direct_urls = {p.get("html_url", "") for p in direct}
+                seen = set(requested_urls)
+                for p in reviewed:
+                    url = p.get("html_url", "")
+                    if url not in seen:
+                        requested.append(p)
+                        seen.add(url)
+                review = requested
+            my = self._search(
+                "is:pr+author:@me+state:open+archived:false+sort:updated-desc",
+                tally,
+                bool(self._my_prs),
             )
+            if my is None:
+                my = self._my_prs
             review_meta = _fetch_review_meta(review, tally)
             incoming_cr = _fetch_incoming_change_requests(my, tally)
             all_prs = review + my
@@ -714,6 +744,33 @@ class PrsTab:
                 self._log, "PRs tab: refresh failed, see logs for details", "error"
             )
 
+    def _search(
+        self, query: str, tally: _Tally, had_results: bool
+    ) -> list[dict[str, Any]] | None:
+        """_fetch_prs, with a sudden empty answer treated as a failure.
+
+        See EMPTY_CONFIRM_REFRESHES. reviewed-by:@me goes through
+        _fetch_prs directly: its PRs only show when also in requested_urls,
+        so a bogus empty there hides nothing.
+        """
+        items = _fetch_prs(query, tally)
+        if items is None or items or not had_results:
+            self._empty_streak[query] = 0
+            return items
+        streak = self._empty_streak.get(query, 0) + 1
+        self._empty_streak[query] = streak
+        if streak >= EMPTY_CONFIRM_REFRESHES:
+            return items
+        # Undo the success _fetch_prs counted; the result is not trusted.
+        tally.ok -= 1
+        tally.record(
+            f"search {query}",
+            1,
+            f"0 results after non-empty ({streak}/{EMPTY_CONFIRM_REFRESHES}),"
+            " keeping previous",
+        )
+        return None
+
     def _apply_health(self, tally: _Tally) -> None:
         """Colour the status dot from the refresh's gh call outcomes.
 
@@ -735,7 +792,7 @@ class PrsTab:
         total = tally.ok + tally.fail
         self._log(
             f"[PRs] {tally.fail}/{total} gh calls failed,"
-            f" list may be incomplete — {detail}",
+            f" kept last results where a search failed — {detail}",
             "error" if status == "error" else "warning",
         )
 
