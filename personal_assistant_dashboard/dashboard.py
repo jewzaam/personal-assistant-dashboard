@@ -90,6 +90,7 @@ from personal_assistant_dashboard.config import (
 from personal_assistant_dashboard.meeting_notes import (
     create_notes_file,
     find_notes_file,
+    invoke_prep_skill,
     open_notes_file,
 )
 from personal_assistant_dashboard.state_repo import DEFAULT_STATE_PATH
@@ -567,11 +568,12 @@ class Dashboard:
         self._root.after(GEOMETRY_CAPTURE_DELAY_MS, self._capture_geometry)
         # Always start calendar data refresh (bells need fresh data)
         self._start_cal_refresh()
-        # Seed the Chat tab with the help text. Called directly, not through
-        # _on_quick_chat_send — that one selects the Chat tab, which would
-        # override the tab _apply_ui_state just restored.
-        self._chat_tab._append_user("help")
-        self._try_builtin_command("help")
+        # Chat agent wakes on first user message — no startup greeting.
+        # If there's no prior chat history, show the built-in command help
+        # without switching away from the tab _apply_ui_state restored.
+        if not self._chat_tab.load_history():
+            self._chat_tab._append_user("help", log=False)
+            self._try_builtin_command("help")
 
     def _schedule(self, fn: Any, *args: Any) -> None:
         """Schedule a callback on the main thread from a background thread."""
@@ -1244,24 +1246,48 @@ class Dashboard:
 
     _BUILTIN_COMMANDS: dict[str, str] = {
         "help": "Show this help message",
+        "session_id": "Show the current chat session ID",
         "plan:": "Append a plan item to plans.md",
         "action:": "Append an action item to actions.md",
-        "!<cmd>": "Run a shell command locally",
+        "!<cmd>": "Run a shell command locally (not sent to agent)",
     }
 
     def _try_builtin_command(self, text: str) -> bool:
-        """Intercept built-in commands (help).
+        """Intercept built-in commands (help, session_id).
 
         Returns True if the text was handled (caller should not send to chat).
         The caller is responsible for displaying the user message first.
         """
         lower = text.strip().lower()
         if lower == "help":
-            lines = ["Built-in commands:"]
+            from personal_assistant_dashboard.utils import list_local_skills
+
+            lines: list[str] = []
+            for title, skills_dir in (
+                ("Global skills:", Path.home() / ".claude" / "skills"),
+                ("Local skills:", WORK_DIR / ".claude" / "skills"),
+            ):
+                lines.append(title)
+                skills = list_local_skills(skills_dir)
+                if skills:
+                    for name, desc in skills:
+                        lines.append(f"  /{name}  — {desc}")
+                else:
+                    lines.append("  (none)")
+                lines.append("")
+            lines.append("Built-in commands:")
             for cmd, desc in self._BUILTIN_COMMANDS.items():
                 lines.append(f"  {cmd}  — {desc}")
             if hasattr(self, "_chat_tab"):
                 self._chat_tab._append_system("\n".join(lines))
+            return True
+        if lower == "session_id":
+            sid: str | None = None
+            if hasattr(self, "_chat_tab") and self._chat_tab._client is not None:
+                sid = self._chat_tab._client.get_active_session_id()
+            msg = sid if sid else "none until next message is sent"
+            if hasattr(self, "_chat_tab"):
+                self._chat_tab._append_system(msg)
             return True
         return False
 
@@ -1349,11 +1375,19 @@ class Dashboard:
                 if self._notebook.tab(tab_id, "text") == "Chat":
                     self._notebook.select(tab_id)
                     break
+        # Dashboard-local commands don't go to Claude, so we don't log them
+        # to the chat log either — the reply isn't logged, and on restart we'd
+        # replay a bare "You: <cmd>" with no response.
+        text_lower = text.strip().lower()
+        is_local = (
+            text_lower in self._BUILTIN_COMMANDS
+            or any(text_lower.startswith(p) for p in self._QUICK_CAPTURE_PREFIXES)
+            or text.startswith("!")
+        )
         if hasattr(self, "_chat_tab"):
-            self._chat_tab._append_user(text)
+            self._chat_tab._append_user(text, log=not is_local)
 
-        # Built-in commands, shell escape, and quick-capture are handled here;
-        # anything else falls through to the "no longer supported" notice.
+        # Built-in commands, shell escape, and quick-capture — don't send to Claude
         if self._try_builtin_command(text):
             return "break"
         if self._try_shell_command(text):
@@ -3011,6 +3045,7 @@ class Dashboard:
             if not filepath:
                 filepath = create_notes_file(evt)
             open_notes_file(filepath)
+            invoke_prep_skill(filepath, self._chat_tab.send_message)
             if open_notes_btn:
                 open_notes_btn.configure(state=tk.NORMAL)
 
