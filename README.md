@@ -12,7 +12,7 @@ Personal Assistant provides a dashboard interface for managing context-aware tas
 
 - **Assistant** — Voice-driven task input
 - **Actions** — Prioritized task list with context from tracked work
-- **Chat** — Local commands only (`help`, `plan:`, `action:`, `!<cmd>`); Claude chat removed
+- **Chat** — Claude via the Agent SDK, plus local commands (`help`, `session_id`, `plan:`, `action:`, `!<cmd>`)
 - **Calendar** — Google Calendar integration with change tracking and 1:1 meeting notes
 - **PRs** — GitHub pull requests requiring review or authored by user, with dismiss/restore and filtering
 - **Transcripts** — Historical voice transcription archive
