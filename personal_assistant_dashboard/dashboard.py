@@ -7,6 +7,7 @@ lazy window build, winfo_exists() safety.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import platform
@@ -187,6 +188,11 @@ class Dashboard:
         self._notebook: ttk.Notebook | None = None
         self._cal_refresh_timer: str | None = None
         self._cal_refreshing = False
+        # Post-edit refreshes run alongside the auto-refresh, so an older
+        # fetch can finish last; each refresh takes a number at start and
+        # _on_data_loaded drops results older than what's already drawn.
+        self._refresh_seq = itertools.count(1)  # next() is atomic under the GIL
+        self._drawn_refresh_seq = 0
         self._shaded = False
         self._voice_input: Any = None
         self._unshaded_geometry: str = ""
@@ -846,6 +852,17 @@ class Dashboard:
             sashrelief=tk.FLAT,
         )
         self._paned.pack(fill=tk.BOTH, expand=True)
+
+        # All-day events for the shown day; packed above the canvas only when
+        # there are any. The canvas y axis is hours, so they can't go on it.
+        self._all_day_label = tk.Label(
+            self._calendar_frame,
+            bg=BG_WINDOW,
+            fg=FG_TEXT,
+            font=self._font_body,
+            anchor=tk.W,
+            justify=tk.LEFT,
+        )
 
         # Left pane: canvas + scrollbar
         self._canvas_container = tk.Frame(self._paned, bg=BORDER_COLOR)
@@ -2521,6 +2538,10 @@ class Dashboard:
             if not _is_solo_event(hit_event):
                 self._open_event_links(hit_event)
                 return
+            if hit_event not in self._all_events:
+                # Clipped slice of a multi-day event: quick-add edit would
+                # rewrite the whole event to this one day's slice.
+                return
             evt_start = _parse_hour(hit_event["start"])
             evt_end = _parse_hour(hit_event["end"])
             duration_min = int((evt_end - evt_start) * 60)
@@ -3655,6 +3676,7 @@ class Dashboard:
         self._cal_refresh_btn.configure(fg=FG_TEXT)
 
     def _do_refresh(self) -> None:
+        refresh_seq = next(self._refresh_seq)
         try:
             from personal_assistant_dashboard.collectors.calendar_collector import (
                 collect_all_calendars,
@@ -3740,6 +3762,7 @@ class Dashboard:
 
             self._schedule(
                 self._on_data_loaded,
+                refresh_seq,
                 all_events,
                 all_conflicts,
                 all_changes,
@@ -3773,11 +3796,20 @@ class Dashboard:
 
     def _on_data_loaded(
         self,
+        refresh_seq: int,
         events: list[CalendarEvent],
         conflicts: list[Any],
         changes: list[Any],
         missed_meetings: list[CalendarEvent] | None = None,
     ) -> None:
+        if refresh_seq < self._drawn_refresh_seq:
+            logger.info(
+                "Dropping stale calendar refresh #%d (#%d already drawn)",
+                refresh_seq,
+                self._drawn_refresh_seq,
+            )
+            return
+        self._drawn_refresh_seq = refresh_seq
         self._all_events = events
         self._all_conflicts = conflicts
         self._all_changes = changes
@@ -4011,6 +4043,13 @@ class Dashboard:
 
         conflict_ids = self._resolve_conflict_ids(day_events)
         missed_ids = {e.get("id", "") for e in getattr(self, "_missed_meetings", [])}
+
+        all_day = [e.get("summary", "") for e in day_events if e.get("all_day")]
+        if all_day and self._paned:
+            self._all_day_label.configure(text="All day: " + "  \u00b7  ".join(all_day))
+            self._all_day_label.pack(fill=tk.X, padx=self._s(8), before=self._paned)
+        else:
+            self._all_day_label.pack_forget()
 
         # Time range
         earliest, latest = _day_time_range(day_events)
@@ -4656,6 +4695,63 @@ def _pick_join_event(
     return max(candidates, key=lambda pair: pair[0])[1]
 
 
+def _clip_event_to_date(event: CalendarEvent, date_str: str) -> CalendarEvent | None:
+    """The part of *event* that falls on *date_str*, or None if none does.
+
+    All-day events show on every date they cover (Google's end date is
+    exclusive). A timed event spanning midnight comes back as a copy clipped
+    to the day, so layout and hour math see only that day's slice — the
+    original stays in ``_all_events``. Either kind, when it covers more than
+    one date, gets " (day x/y)" appended to the copy's summary.
+    """
+    start_str = event.get("start", "")
+    end_str = event.get("end", "") or start_str
+    if event.get("all_day") or len(start_str) <= 10:
+        end_date = end_str[:10] if end_str[:10] > start_str[:10] else start_str[:10]
+        if start_str[:10] == date_str or start_str[:10] <= date_str < end_date:
+            try:
+                first = date.fromisoformat(start_str[:10])
+                last = date.fromisoformat(end_date) - timedelta(days=1)
+                return _tag_day_of_span(
+                    event, date.fromisoformat(date_str), first, last
+                )
+            except ValueError:
+                return event
+        return None
+    try:
+        start = datetime.fromisoformat(start_str)
+        end = datetime.fromisoformat(end_str)
+        day = date.fromisoformat(date_str)
+    except ValueError:
+        return event if date_str in start_str else None
+    day_start = datetime.combine(day, datetime.min.time(), tzinfo=start.tzinfo)
+    day_end = day_start + timedelta(days=1)
+    if start >= day_end or (end <= day_start and start < day_start):
+        return None
+    if start >= day_start and end < day_end:
+        return event
+    clipped = dict(event)
+    clipped["start"] = max(start, day_start).isoformat()
+    # ponytail: 23:59, not next midnight — _parse_hour reads midnight as 0
+    clipped["end"] = min(end, day_end - timedelta(minutes=1)).isoformat()
+    # End is exclusive: an event ending at midnight doesn't cover the next day
+    last = (end - timedelta(microseconds=1)).astimezone(start.tzinfo).date()
+    return _tag_day_of_span(clipped, day, start.date(), last)  # type: ignore[arg-type]
+
+
+def _tag_day_of_span(
+    event: CalendarEvent, day: date, first: date, last: date
+) -> CalendarEvent:
+    """Copy of *event* with " (day x/y)" on its summary when it spans dates."""
+    span_days = (last - first).days + 1
+    if span_days <= 1:
+        return event
+    tagged = dict(event)
+    day_number = (day - first).days + 1
+    tagged["summary"] = f"{event.get('summary', '')} (day {day_number}/{span_days})"
+    return tagged  # type: ignore[return-value]
+
+
 def _filter_events_for_date(
     all_events: list[CalendarEvent],
     date_str: str,
@@ -4669,9 +4765,9 @@ def _filter_events_for_date(
     them from here.
     """
     day_events = []
-    for event in all_events:
-        start = event.get("start", "")
-        if date_str not in start:
+    for raw_event in all_events:
+        event = _clip_event_to_date(raw_event, date_str)
+        if event is None:
             continue
         if is_task_event(event):
             continue
