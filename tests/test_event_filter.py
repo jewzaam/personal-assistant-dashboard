@@ -27,3 +27,110 @@ def test_declined_toggle_does_not_reveal_tasks():
     """Nothing reveals a task-event — completed or not, it never renders."""
     result = _filter_events_for_date([_TASK], _DATE, show_declined=True)
     assert result == []
+
+
+_PTO_ALL_DAY = {
+    "id": "pto",
+    "start": "2026-08-17",
+    "end": "2026-08-20",  # exclusive: covers 17, 18, 19
+    "all_day": True,
+    "summary": "PTO",
+}
+_OOO_TIMED = {
+    "id": "ooo",
+    "start": "2026-08-17T13:00:00-04:00",
+    "end": "2026-08-19T10:00:00-04:00",
+    "all_day": False,
+    "summary": "OOO",
+}
+
+
+def test_multi_day_all_day_shows_on_each_covered_day():
+    for day in ("2026-08-17", "2026-08-18", "2026-08-19"):
+        assert [e["id"] for e in _filter_events_for_date([_PTO_ALL_DAY], day)] == [
+            "pto"
+        ]
+    assert _filter_events_for_date([_PTO_ALL_DAY], "2026-08-20") == []
+    assert _filter_events_for_date([_PTO_ALL_DAY], "2026-08-16") == []
+
+
+def test_single_day_all_day_unchanged():
+    holiday = {**_PTO_ALL_DAY, "start": "2026-08-18", "end": "2026-08-19"}
+    assert _filter_events_for_date([holiday], "2026-08-18") == [holiday]
+    assert _filter_events_for_date([holiday], "2026-08-19") == []
+
+
+def test_multi_day_timed_event_clipped_per_day():
+    spans = {
+        day: [
+            (e["start"], e["end"]) for e in _filter_events_for_date([_OOO_TIMED], day)
+        ]
+        for day in (
+            "2026-08-16",
+            "2026-08-17",
+            "2026-08-18",
+            "2026-08-19",
+            "2026-08-20",
+        )
+    }
+    assert spans == {
+        "2026-08-16": [],
+        "2026-08-17": [("2026-08-17T13:00:00-04:00", "2026-08-17T23:59:00-04:00")],
+        "2026-08-18": [("2026-08-18T00:00:00-04:00", "2026-08-18T23:59:00-04:00")],
+        "2026-08-19": [("2026-08-19T00:00:00-04:00", "2026-08-19T10:00:00-04:00")],
+        "2026-08-20": [],
+    }
+    assert _OOO_TIMED["start"] == "2026-08-17T13:00:00-04:00"  # original untouched
+
+
+def test_event_ending_at_midnight_not_on_next_day():
+    late = {
+        "id": "late",
+        "start": "2026-08-18T23:00:00-04:00",
+        "end": "2026-08-19T00:00:00-04:00",
+    }
+    assert [e["end"] for e in _filter_events_for_date([late], "2026-08-18")] == [
+        "2026-08-18T23:59:00-04:00"
+    ]
+    assert _filter_events_for_date([late], "2026-08-19") == []
+
+
+def test_same_day_timed_event_returned_as_is():
+    assert _filter_events_for_date([_MEETING], _DATE)[0] is _MEETING
+
+
+def _summaries(event, days):
+    return [
+        [e["summary"] for e in _filter_events_for_date([event], day)] for day in days
+    ]
+
+
+def test_multi_day_all_day_tagged_with_day_of_span():
+    days = ("2026-08-17", "2026-08-18", "2026-08-19")
+    assert _summaries(_PTO_ALL_DAY, days) == [
+        ["PTO (day 1/3)"],
+        ["PTO (day 2/3)"],
+        ["PTO (day 3/3)"],
+    ]
+    assert _PTO_ALL_DAY["summary"] == "PTO"  # original untouched
+
+
+def test_multi_day_timed_tagged_with_day_of_span():
+    days = ("2026-08-17", "2026-08-18", "2026-08-19")
+    assert _summaries(_OOO_TIMED, days) == [
+        ["OOO (day 1/3)"],
+        ["OOO (day 2/3)"],
+        ["OOO (day 3/3)"],
+    ]
+
+
+def test_single_day_events_not_tagged():
+    late = {
+        "id": "late",
+        "summary": "late",
+        "start": "2026-08-18T23:00:00-04:00",
+        "end": "2026-08-19T00:00:00-04:00",
+    }
+    holiday = {**_PTO_ALL_DAY, "start": "2026-08-18", "end": "2026-08-19"}
+    assert _summaries(late, ["2026-08-18"]) == [["late"]]
+    assert _summaries(holiday, ["2026-08-18"]) == [["PTO"]]
