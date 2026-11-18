@@ -131,6 +131,46 @@ def test_realistic_day():
     assert by_id["gsd"]["col"] < by_id["auto"]["col"]
 
 
+def test_priority_order_needing_extra_column_does_not_crash():
+    """Priority order is not start order, so first-fit can need more columns
+    than the start-order optimum. Sizing must follow the assignment."""
+    events = [
+        {
+            "id": "staff",
+            "summary": "x",
+            "start": "2026-11-18T08:30:00-05:00",
+            "end": "2026-11-18T09:30:00-05:00",
+            "attendees": [{"self": True, "response_status": "accepted"}],
+        },
+        {
+            "id": "next",
+            "summary": "x",
+            "start": "2026-11-18T09:00:00-05:00",
+            "end": "2026-11-18T10:00:00-05:00",
+            "attendees": [{"self": True, "response_status": "accepted"}],
+        },
+        {
+            "id": "login",
+            "summary": "x",
+            "start": "2026-11-18T09:30:00-05:00",
+            "end": "2026-11-18T10:30:00-05:00",
+            "attendees": [{"self": True, "response_status": "tentative"}],
+        },
+        {
+            "id": "delivery",
+            "summary": "x",
+            "start": "2026-11-18T10:00:00-05:00",
+            "end": "2026-11-18T10:25:00-05:00",
+            "attendees": [{"self": True, "response_status": "accepted"}],
+        },
+    ]
+    result = _layout_events(events, 8)
+    assert len(result) == 4
+    by_id = {p["event"]["id"]: p for p in result}
+    assert all(p["num_cols"] == 3 for p in result)
+    assert by_id["login"]["col"] == 2
+
+
 def test_empty_events():
     assert _layout_events([], 8) == []
 
