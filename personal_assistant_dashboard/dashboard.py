@@ -4534,20 +4534,8 @@ def _layout_events(
     positioned: list[dict[str, Any]] = []
     for cluster in clusters:
         intervals = [_layout_interval(e) for e in cluster]
-        # Pass 1: optimal column count via start-time greedy
-        sorted_ends: list[float] = []
-        for s, _e in sorted(intervals):
-            placed = False
-            for ci, ce in enumerate(sorted_ends):
-                if s >= ce:
-                    sorted_ends[ci] = _e
-                    placed = True
-                    break
-            if not placed:
-                sorted_ends.append(_e)
-        num_cols = len(sorted_ends)
 
-        # Pass 2: assign columns by priority, start time as tiebreaker.
+        # Assign columns by priority, start time as tiebreaker.
         # The current meeting goes leftmost so it can reach into the gutter.
         order = sorted(
             range(len(cluster)),
@@ -4558,8 +4546,12 @@ def _layout_events(
             ),
         )
 
+        # Sizing comes from this assignment, not a separate start-order pass.
+        # First-fit is only optimal in start order; priority order can need an
+        # extra column, and pre-sizing from the optimal count left events with
+        # no assigned column (KeyError -> blank canvas).
         # ponytail: per-column interval list, fine for <50 events/day
-        col_intervals: list[list[tuple[float, float]]] = [[] for _ in range(num_cols)]
+        col_intervals: list[list[tuple[float, float]]] = []
         assignments: dict[int, int] = {}
         for i in order:
             s, e = intervals[i]
@@ -4568,6 +4560,10 @@ def _layout_events(
                     col_ivs.append((s, e))
                     assignments[i] = ci
                     break
+            else:
+                col_intervals.append([(s, e)])
+                assignments[i] = len(col_intervals) - 1
+        num_cols = len(col_intervals)
 
         for i, event in enumerate(cluster):
             s, e = intervals[i]
