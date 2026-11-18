@@ -45,6 +45,27 @@ def run_cmd(
     )
 
 
+def launch_failure(
+    proc: subprocess.Popen[bytes], stderr_file: IO[bytes], settle_s: float
+) -> str | None:
+    """Wait up to *settle_s* for a launched GUI process; return why it failed.
+
+    None when it exited 0 or is still running after *settle_s* — a launcher
+    that hands off to a running instance exits quickly, one that becomes the
+    app itself never does. Otherwise the exit code plus whatever it wrote to
+    *stderr_file*. Blocks, so call off the UI thread.
+    """
+    try:
+        returncode = proc.wait(timeout=settle_s)
+    except subprocess.TimeoutExpired:
+        return None
+    if returncode == 0:
+        return None
+    stderr_file.seek(0)
+    stderr = stderr_file.read().decode("utf-8", errors="replace").strip()
+    return f"exit {returncode}" + (f": {stderr}" if stderr else "")
+
+
 def format_event_time(time_str: str) -> str:
     """Format ISO datetime string to HH:MM.
 

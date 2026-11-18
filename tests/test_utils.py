@@ -15,6 +15,7 @@ from personal_assistant_dashboard.utils import (
     get_meeting_url,
     get_notes_doc_urls,
     get_recording_urls,
+    launch_failure,
     list_local_skills,
 )
 
@@ -396,3 +397,41 @@ def test_list_local_skills_follows_symlinks(tmp_path):
         pytest.skip(f"symlink creation not permitted: {exc}")
     result = list_local_skills(skills_dir)
     assert result == [("myskill", "A symlinked skill.")]
+
+
+class _FakeProc:
+    """Popen stand-in: wait() returns *returncode*, or times out when None."""
+
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+    def wait(self, timeout=None):
+        import subprocess
+
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired("chrome", timeout)
+        return self.returncode
+
+
+class TestLaunchFailure:
+    """launch_failure: exit 0 or still running is success; nonzero reports."""
+
+    @staticmethod
+    def _check(returncode, stderr=b""):
+        import io
+
+        stderr_file = io.BytesIO(stderr)
+        stderr_file.seek(len(stderr))  # child wrote, offset at end
+        return launch_failure(_FakeProc(returncode), stderr_file, 10)
+
+    def test_exit_zero_is_success(self):
+        assert self._check(0, b"Opening in existing browser session.\n") is None
+
+    def test_still_running_is_success(self):
+        assert self._check(None) is None
+
+    def test_nonzero_reports_code_and_stderr(self):
+        assert self._check(3, b"boom\n") == "exit 3: boom"
+
+    def test_nonzero_without_stderr(self):
+        assert self._check(1) == "exit 1"

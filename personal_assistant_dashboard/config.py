@@ -188,3 +188,6 @@ CHROME_PROFILE: str = str(_load_pa_config().get("chrome_profile", ""))
 # Commands
 GWS_BINARY = "gws"
 CHROME_BINARY = "google-chrome"
+# Handing off to a running Chrome exits within this; still running = it became
+# the browser, which counts as success.
+CHROME_SETTLE_S = 10

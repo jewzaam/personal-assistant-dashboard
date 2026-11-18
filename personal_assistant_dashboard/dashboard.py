@@ -12,6 +12,7 @@ import json
 import logging
 import platform
 import subprocess
+import tempfile
 import threading
 import tkinter as tk
 from tkinter import ttk
@@ -30,6 +31,7 @@ from personal_assistant_dashboard.config import (
     CANVAS_MIN_WIDTH,
     CHROME_BINARY,
     CHROME_PROFILE,
+    CHROME_SETTLE_S,
     COLOR_ACCEPTED,
     COLOR_ALERT,
     COLOR_BORDER_TENTATIVE,
@@ -103,6 +105,7 @@ from personal_assistant_dashboard.utils import (
     get_meeting_url,
     get_notes_doc_urls,
     get_recording_urls,
+    launch_failure,
     resolve_display_name,
     run_cmd,
 )
@@ -2483,10 +2486,22 @@ class Dashboard:
         if CHROME_PROFILE:
             argv.insert(1, f"--profile-directory={CHROME_PROFILE}")
         logger.info("OPEN_EVENT_LINKS: launching %s", argv)
+        # ponytail: unlinked temp file, not a pipe — if this launch becomes
+        # the browser it logs to stderr for the whole session, and a pipe
+        # nobody drains would block it once full.
+        stderr_file = tempfile.TemporaryFile()
         try:
-            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # cwd: inheriting ours breaks Chrome silently once pa_workspace
+            # is moved under a running dashboard.
+            proc = subprocess.Popen(
+                argv,
+                cwd=Path.home(),
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+            )
             self.log_console(f"[Calendar] {' '.join(argv)}", "info")
         except OSError as exc:
+            stderr_file.close()
             # Most likely PATH: XDG autostart does not get a login shell's.
             logger.exception("OPEN_EVENT_LINKS: chrome launch failed")
             self.log_console(
@@ -2506,7 +2521,27 @@ class Dashboard:
                     browser_name,
                     opened,
                 )
-        self.log_console(f"Opened {len(urls)} link(s) for {summary}", "info")
+            self.log_console(f"Opened {len(urls)} link(s) for {summary}", "info")
+            return
+
+        def _report() -> None:
+            with stderr_file:
+                failure = launch_failure(proc, stderr_file, CHROME_SETTLE_S)
+            if failure:
+                logger.error("OPEN_EVENT_LINKS: chrome failed: %s", failure)
+                self._schedule(
+                    self.log_console,
+                    f"[Calendar] {CHROME_BINARY} failed for {summary}: {failure}",
+                    "error",
+                )
+            else:
+                self._schedule(
+                    self.log_console,
+                    f"Opened {len(urls)} link(s) for {summary}",
+                    "info",
+                )
+
+        threading.Thread(target=_report, daemon=True, name="chrome-launch").start()
 
     def _on_double_click(self, event: Any) -> None:
         """Open an event's links, edit a solo event, or quick-add in blank area."""
